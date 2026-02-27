@@ -201,6 +201,12 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 
+# BMAD Framework
+_bmad/
+.github/agents/bmad-*
+.github/prompts/bmad-*
+.github/prompts/bmad_*
+
 # Marimo
 marimo/_static/
 marimo/_lsp/
