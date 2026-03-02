@@ -66,6 +66,13 @@ async def test_budget_check_node_transitions_retry_to_running(make_story_state: 
 
 
 @pytest.mark.asyncio
+async def test_budget_check_node_transitions_to_escalated_when_budget_exceeded(make_story_state: StoryState) -> None:
+    state = make_story_state.model_copy(update={"budget": BudgetState(invocation_count=1, max_invocations=1)})
+    result = await budget_check_node(state)
+    assert result.status == TaskState.ESCALATED
+
+
+@pytest.mark.asyncio
 async def test_agent_dispatch_node_transitions_to_validating(make_story_state: StoryState) -> None:
     state = make_story_state.model_copy(update={"status": TaskState.RUNNING})
     result = await agent_dispatch_node(state)

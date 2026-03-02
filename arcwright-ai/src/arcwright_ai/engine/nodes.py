@@ -42,12 +42,13 @@ async def preflight_node(state: StoryState) -> StoryState:
 
 
 async def budget_check_node(state: StoryState) -> StoryState:
-    """Placeholder budget check node — transitions RETRY → RUNNING if needed.
+    """Placeholder budget check node — handles budget/execution status transitions.
 
-    If the incoming state is RETRY (e.g., from a validation retry cycle),
-    transitions back to RUNNING so the agent can be re-invoked.  Otherwise
-    passes state through unchanged.  The actual routing decision (ok vs
-    exceeded) is made by ``route_budget_check``.
+    If the budget is already exceeded, transitions to ESCALATED so the graph
+    can terminate in an explicit escalated state. If the incoming state is
+    RETRY (e.g., from a validation retry cycle), transitions back to RUNNING
+    so the agent can be re-invoked. Otherwise passes state through unchanged.
+    The routing decision (ok vs exceeded) is made by ``route_budget_check``.
 
     Args:
         state: Current story execution state.
@@ -56,6 +57,13 @@ async def budget_check_node(state: StoryState) -> StoryState:
         Updated state with status adjusted if coming from RETRY.
     """
     logger.info("engine.node.enter", extra={"data": {"node": "budget_check", "story": str(state.story_id)}})
+    if route_budget_check(state) == "exceeded":
+        updated = state.model_copy(update={"status": TaskState.ESCALATED})
+        logger.info(
+            "engine.node.exit",
+            extra={"data": {"node": "budget_check", "story": str(state.story_id), "status": str(updated.status)}},
+        )
+        return updated
     if state.status == TaskState.RETRY:
         updated = state.model_copy(update={"status": TaskState.RUNNING})
         logger.info(

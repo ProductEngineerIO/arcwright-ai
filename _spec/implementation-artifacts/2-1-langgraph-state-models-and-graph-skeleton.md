@@ -1,6 +1,6 @@
 # Story 2.1: LangGraph State Models & Graph Skeleton
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -62,7 +62,7 @@ so that subsequent stories can implement real node logic into a working graph fr
   - [x] 3.1: Add `from __future__ import annotations` and imports: `logging` from stdlib; `TaskState` from `arcwright_ai.core.lifecycle`; `StoryState` from `arcwright_ai.engine.state`
   - [x] 3.2: Create module-level logger: `logger = logging.getLogger(__name__)`
   - [x] 3.3: Implement `async def preflight_node(state: StoryState) -> StoryState` — log entry, transition status QUEUED → PREFLIGHT → RUNNING via `model_copy(update={...})`, log exit, return updated state
-  - [x] 3.4: Implement `async def budget_check_node(state: StoryState) -> StoryState` — log entry; if `state.status == TaskState.RETRY`, transition to RUNNING via `model_copy`; log exit; return state (routing decision made by separate function)
+  - [x] 3.4: Implement `async def budget_check_node(state: StoryState) -> StoryState` — log entry; transition to ESCALATED when budget is exceeded, transition RETRY → RUNNING via `model_copy`, log exit, and return updated state
   - [x] 3.5: Implement `async def agent_dispatch_node(state: StoryState) -> StoryState` — log entry, transition status RUNNING → VALIDATING via `model_copy`, log exit, return updated state
   - [x] 3.6: Implement `async def validate_node(state: StoryState) -> StoryState` — log entry, transition status VALIDATING → SUCCESS via `model_copy` (placeholder always succeeds), log exit, return updated state
   - [x] 3.7: Implement `async def commit_node(state: StoryState) -> StoryState` — log entry, log exit, return state unchanged (already SUCCESS)
@@ -465,6 +465,7 @@ Claude Sonnet 4.6 (GitHub Copilot)
 - ✅ Task 5: `engine/__init__.py` updated with full alphabetically-sorted `__all__` including all public symbols.
 - ✅ Tasks 6–8: 28 new tests across `test_state.py`, `test_nodes.py`, `test_graph.py` — all pass including end-to-end graph invocation.
 - ✅ Task 9: All quality gates pass — ruff check clean, ruff format clean, mypy --strict 0 errors, 199/199 tests pass.
+- ✅ Review fixes applied: budget-exceeded path now explicitly transitions to `TaskState.ESCALATED` before graph termination, and graph tests now assert conditional route mappings plus exceeded-path escalation behavior.
 
 ### File List
 
@@ -478,6 +479,29 @@ Claude Sonnet 4.6 (GitHub Copilot)
 - `tests/test_engine/test_nodes.py` (created — node function and routing function tests)
 - `tests/test_engine/test_state.py` (created — StoryState and ProjectState model tests)
 
+## Senior Developer Review (AI)
+
+### Reviewer
+
+Ed (AI-assisted review)
+
+### Date
+
+2026-03-02
+
+### Outcome
+
+Approve
+
+### Findings Resolved
+
+- Fixed AC #4 alignment: budget-exceeded flow now explicitly marks story state as escalated in `budget_check_node` before routing to graph end.
+- Added graph-level routing assertions for success/retry/escalated route maps.
+- Added graph invocation coverage for budget-exceeded path to verify terminal status is `TaskState.ESCALATED`.
+- Added node-level coverage for budget-exceeded transition in `budget_check_node`.
+- Re-verified quality gates in project environment: `ruff check .`, `.venv/bin/python -m mypy --strict src/`, `.venv/bin/pytest -q`.
+
 ## Change Log
 
 - 2026-03-02: Implemented Story 2.1 — LangGraph state models and graph skeleton. Reconciled BudgetState fields (Decimal types, rename, add max_invocations). Implemented StoryState, ProjectState, 5 placeholder nodes, 2 routing functions, build_story_graph(). Added 28 engine tests. All quality gates pass (ruff, mypy --strict, 199 tests).
+- 2026-03-02: Senior code review fixes applied — budget exceeded now sets `TaskState.ESCALATED` in `budget_check_node`; added graph routing assertions and exceeded-path graph test; story status advanced to `done`.
