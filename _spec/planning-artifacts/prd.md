@@ -233,7 +233,7 @@ He didn't lose the 4 completed stories. He didn't re-run anything that already p
 
 ---
 
-### Journey 3: Marcus — The Evaluator (MVP, Trust Ramp)
+### Journey 3: Marcus — The Evaluator (Growth, Trust Ramp)
 
 Marcus has heard about Arcwright AI. He's intrigued but skeptical — he's been burned by autonomous tools that produce garbage and call it done. He installs:
 
@@ -750,21 +750,21 @@ Remains in MVP as a learning exercise, not a shipping feature. The spike answers
 
 ### Decision Provenance
 
-- **FR12:** System logs every significant implementation decision the agent makes during story execution
+- **FR12:** System logs every implementation decision where the agent chose between multiple alternatives, deviated from acceptance criteria, or selected a design pattern — each logged as a provenance entry during story execution
 - **FR13:** Each provenance entry includes the decision, alternatives considered, rationale, and references to acceptance criteria or architecture docs
 - **FR14:** Provenance is written as markdown files in `.arcwright-ai/runs/<run-id>/provenance/`
 - **FR15:** Provenance is attached to generated pull requests for code review context
 
 ### Context Injection
 
-- **FR16:** System reads BMAD planning artifacts (PRD, architecture doc, story acceptance criteria) and injects relevant context into agent prompts
-- **FR17:** System answers methodology questions using static rules derived from BMAD artifacts (answerer component)
+- **FR16:** System reads BMAD planning artifacts and injects the story's acceptance criteria, the matching architecture section, and applicable domain requirements into each agent prompt
+- **FR17:** System responds with the applicable BMAD rule when the agent queries about workflow steps, artifact formats, or naming conventions (answerer component, static rule lookup)
 - **FR18:** System resolves story dependencies and artifact references before agent invocation
 
 ### Agent Invocation
 
 - **FR19:** System invokes Claude Code SDK per story with no persistent agent state between stories
-- **FR20:** System enforces that agent file operations cannot modify files outside the project base directory (application-level path validation)
+- **FR20:** System enforces that agent file operations cannot modify files outside the project base directory
 - **FR21:** System writes temporary files to `.arcwright-ai/tmp/`, auto-added to `.gitignore`, cleaned up at story completion
 - **FR22:** System implements backoff and queuing when API rate limits are hit
 
@@ -818,7 +818,7 @@ Remains in MVP as a learning exercise, not a shipping feature. The spike answers
 
 | NFR | Requirement | Measurable Criteria |
 |-----|-------------|-------------------|
-| **NFR9** | Orchestration overhead (StateGraph transitions, worktree operations, validation setup) is negligible relative to story execution | Orchestration overhead < 30 seconds per story (excluding SDK invocation and validation) |
+| **NFR9** | Orchestration overhead (orchestration engine transitions, worktree operations, validation setup) is negligible relative to story execution | Orchestration overhead < 30 seconds per story (excluding agent invocation and validation) |
 | **NFR10** | Token ceiling enforcement stops spending before the next invocation, not after | Overshoot limited to a single SDK invocation's token cost |
 | **NFR11** | Retry cycles (V3 reflexion) converge or halt within configured limits — no infinite retry loops | Every story terminates within max_retries × timeout_per_story |
 | **NFR12a** | Cost tracking captures every SDK invocation with no missed calls | 100% of SDK invocations reflected in cost tracking (automated, testable) |
@@ -828,16 +828,16 @@ Remains in MVP as a learning exercise, not a shipping feature. The spike answers
 
 | NFR | Requirement | Measurable Criteria |
 |-----|-------------|-------------------|
-| **NFR13** | System works with Claude Code SDK version pinned in project dependencies — no implicit dependency on latest SDK | Explicit SDK version in `pyproject.toml`; tested against pinned version |
+| **NFR13** | System works with AI agent SDK version pinned in project dependencies — no implicit dependency on latest SDK | Explicit SDK version in project dependency manifest; tested against pinned version |
 | **NFR14** | Git operations (worktree create/delete, branch, commit, push) work with standard git 2.25+ | No dependency on git features introduced after 2.25 (Ubuntu 20.04 floor) |
-| **NFR15** | Generated PRs conform to GitHub API format and render correctly in GitHub web UI | Provenance sections render as valid markdown in GitHub PR view |
+| **NFR15** | Generated PRs conform to SCM platform API format and render correctly in the platform's pull request view | Provenance sections render as valid markdown in pull request view |
 
 ### Observability
 
 | NFR | Requirement | Measurable Criteria |
 |-----|-------------|-------------------|
 | **NFR16** | Every run produces a complete summary file without requiring additional commands | `summary.md` generated for 100% of runs (success, halt, and timeout) |
-| **NFR17** | Decision provenance is human-readable without tooling — plain markdown, clear structure | Non-technical reviewer can understand provenance entries (qualitative) |
+| **NFR17** | Decision provenance is human-readable without tooling — plain markdown, clear structure | Each provenance entry uses only markdown headings, lists, and prose; no custom formats or binary data. Readability validated by a non-author reviewer completing a provenance review within 2× the time of a standard code-only PR review. |
 | **NFR18** | Halt reports contain all required diagnostic fields: (1) failing AC ID, (2) retry count + history, (3) last agent output (truncated), (4) suggested fix. Missing any field = NFR violation. | 100% of halt reports contain all 4 required fields |
 
 ### System-Wide Quality Attributes
