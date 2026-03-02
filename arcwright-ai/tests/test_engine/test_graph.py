@@ -32,6 +32,31 @@ def make_initial_state() -> StoryState:
     )
 
 
+@pytest.fixture
+def graph_project_state(tmp_path: Path) -> StoryState:
+    """Provide a StoryState with a real project directory for full-graph invocation tests."""
+    spec_dir = tmp_path / "_spec" / "planning-artifacts"
+    spec_dir.mkdir(parents=True)
+    (spec_dir / "prd.md").write_text("# PRD\n\n## FR1\nTest requirement", encoding="utf-8")
+    (spec_dir / "architecture.md").write_text("# Architecture\n\n### Decision 1\nTest decision", encoding="utf-8")
+
+    story_path = tmp_path / "_spec" / "implementation-artifacts" / "2-1-state-models.md"
+    story_path.parent.mkdir(parents=True, exist_ok=True)
+    story_path.write_text(
+        "# Story 2.1\n\n## Acceptance Criteria\n\n1. Test AC\n\n## Dev Notes\n\nFR1, Decision 1\n",
+        encoding="utf-8",
+    )
+
+    return StoryState(
+        story_id=StoryId("2-1-state-models"),
+        epic_id=EpicId("epic-2"),
+        run_id=RunId("20260302-143052-a7f3"),
+        story_path=story_path,
+        project_root=tmp_path,
+        config=make_run_config(),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Graph construction tests
 # ---------------------------------------------------------------------------
@@ -69,27 +94,25 @@ def test_graph_contains_expected_conditional_routing() -> None:
 
 
 @pytest.mark.asyncio
-async def test_graph_success_path_end_to_end() -> None:
+async def test_graph_success_path_end_to_end(graph_project_state: StoryState) -> None:
     graph = build_story_graph()
-    initial_state = make_initial_state()
-    result = await graph.ainvoke(initial_state)
+    result = await graph.ainvoke(graph_project_state)
     # LangGraph may return a dict or a state object depending on config
     final_status = result.get("status") if isinstance(result, dict) else result.status
     assert final_status == TaskState.SUCCESS
 
 
 @pytest.mark.asyncio
-async def test_graph_invocation_no_errors() -> None:
+async def test_graph_invocation_no_errors(graph_project_state: StoryState) -> None:
     graph = build_story_graph()
-    initial_state = make_initial_state()
     # Should not raise
-    await graph.ainvoke(initial_state)
+    await graph.ainvoke(graph_project_state)
 
 
 @pytest.mark.asyncio
-async def test_graph_budget_exceeded_path_escalates_and_exits() -> None:
+async def test_graph_budget_exceeded_path_escalates_and_exits(graph_project_state: StoryState) -> None:
     graph = build_story_graph()
-    initial_state = make_initial_state().model_copy(
+    initial_state = graph_project_state.model_copy(
         update={
             "budget": BudgetState(
                 invocation_count=1,

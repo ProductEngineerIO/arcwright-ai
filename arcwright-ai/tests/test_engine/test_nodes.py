@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import logging
 from decimal import Decimal
 from pathlib import Path
 
 import pytest
 
 from arcwright_ai.core.config import ApiConfig, RunConfig
+from arcwright_ai.core.constants import CONTEXT_BUNDLE_FILENAME, DIR_ARCWRIGHT, DIR_RUNS, DIR_STORIES
+from arcwright_ai.core.exceptions import ContextError
 from arcwright_ai.core.lifecycle import TaskState
-from arcwright_ai.core.types import BudgetState, EpicId, RunId, StoryId
+from arcwright_ai.core.types import BudgetState, ContextBundle, EpicId, RunId, StoryId
 from arcwright_ai.engine.nodes import (
     agent_dispatch_node,
     budget_check_node,
@@ -40,14 +43,39 @@ def make_story_state() -> StoryState:
     )
 
 
+@pytest.fixture
+def story_state_with_project(tmp_path: Path) -> StoryState:
+    """Create a StoryState backed by a real project directory with BMAD artifacts."""
+    spec_dir = tmp_path / "_spec" / "planning-artifacts"
+    spec_dir.mkdir(parents=True)
+    (spec_dir / "prd.md").write_text("# PRD\n\n## FR1\nTest requirement", encoding="utf-8")
+    (spec_dir / "architecture.md").write_text("# Architecture\n\n### Decision 1\nTest decision", encoding="utf-8")
+
+    story_path = tmp_path / "_spec" / "implementation-artifacts" / "2-6-preflight.md"
+    story_path.parent.mkdir(parents=True, exist_ok=True)
+    story_path.write_text(
+        "# Story 2.6\n\n## Acceptance Criteria\n\n1. Test AC\n\n## Dev Notes\n\nFR1, Decision 1\n",
+        encoding="utf-8",
+    )
+
+    return StoryState(
+        story_id=StoryId("2-6-preflight-node"),
+        epic_id=EpicId("epic-2"),
+        run_id=RunId("20260302-143052-a7f3"),
+        story_path=story_path,
+        project_root=tmp_path,
+        config=make_run_config(),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Node transition tests
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_preflight_node_transitions_to_running(make_story_state: StoryState) -> None:
-    result = await preflight_node(make_story_state)
+async def test_preflight_node_transitions_to_running(story_state_with_project: StoryState) -> None:
+    result = await preflight_node(story_state_with_project)
     assert result.status == TaskState.RUNNING
 
 
@@ -157,3 +185,154 @@ def test_route_validation_returns_retry(make_story_state: StoryState) -> None:
 def test_route_validation_returns_escalated(make_story_state: StoryState) -> None:
     state = make_story_state.model_copy(update={"status": TaskState.ESCALATED})
     assert route_validation(state) == "escalated"
+
+
+# ---------------------------------------------------------------------------
+# Preflight node — real implementation tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_preflight_node_resolves_context_and_transitions_to_running(
+    story_state_with_project: StoryState,
+) -> None:
+    """Successful preflight populates context_bundle and transitions to RUNNING."""
+    result = await preflight_node(story_state_with_project)
+
+    assert result.status == TaskState.RUNNING
+    assert result.context_bundle is not None
+    assert result.context_bundle.story_content != ""
+
+
+@pytest.mark.asyncio
+async def test_preflight_node_writes_checkpoint_file(
+    story_state_with_project: StoryState,
+) -> None:
+    """Checkpoint file is written at the expected path after successful preflight."""
+    await preflight_node(story_state_with_project)
+
+    checkpoint_file = (
+        story_state_with_project.project_root
+        / DIR_ARCWRIGHT
+        / DIR_RUNS
+        / str(story_state_with_project.run_id)
+        / DIR_STORIES
+        / str(story_state_with_project.story_id)
+        / CONTEXT_BUNDLE_FILENAME
+    )
+    assert checkpoint_file.exists()
+    assert "# Context Bundle" in checkpoint_file.read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_preflight_node_raises_context_error_on_missing_story(
+    tmp_path: Path,
+) -> None:
+    """ContextError is raised when the story file does not exist."""
+    state = StoryState(
+        story_id=StoryId("2-6-preflight-node"),
+        epic_id=EpicId("epic-2"),
+        run_id=RunId("20260302-000000-xxxx"),
+        story_path=tmp_path / "nonexistent-story.md",
+        project_root=tmp_path,
+        config=make_run_config(),
+    )
+
+    with pytest.raises(ContextError):
+        await preflight_node(state)
+
+
+@pytest.mark.asyncio
+async def test_preflight_node_transitions_queued_to_preflight_before_running(
+    monkeypatch: pytest.MonkeyPatch,
+    story_state_with_project: StoryState,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Failure path emits terminal logs and retains PREFLIGHT status."""
+
+    async def _raise_context_error(story_path: object, project_root: object, **kwargs: object) -> ContextBundle:
+        raise ContextError("forced failure")
+
+    monkeypatch.setattr("arcwright_ai.engine.nodes.build_context_bundle", _raise_context_error)
+
+    with caplog.at_level(logging.INFO), pytest.raises(ContextError):
+        await preflight_node(story_state_with_project)
+
+    messages = [r.message for r in caplog.records]
+    assert "engine.node.enter" in messages
+    assert "context.error" in messages
+    assert "engine.node.exit" in messages
+    assert "context.resolve" not in messages
+
+    # The context.error/exit logs are emitted inside the except block after the PREFLIGHT transition
+    error_records = [r for r in caplog.records if r.message == "context.error"]
+    exit_records = [r for r in caplog.records if r.message == "engine.node.exit"]
+    assert len(error_records) == 1
+    assert len(exit_records) == 1
+    assert error_records[0].data["status"] == str(TaskState.PREFLIGHT)  # type: ignore[attr-defined]
+    assert exit_records[0].data["status"] == str(TaskState.PREFLIGHT)  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_preflight_node_context_error_never_transitions_to_running(
+    monkeypatch: pytest.MonkeyPatch,
+    story_state_with_project: StoryState,
+) -> None:
+    """On ContextError, preflight applies PREFLIGHT and never applies RUNNING."""
+    transitions: list[TaskState] = []
+    original_model_copy = StoryState.model_copy
+
+    def _tracking_model_copy(self: StoryState, *args: object, **kwargs: object) -> StoryState:
+        update = kwargs.get("update")
+        if isinstance(update, dict):
+            status = update.get("status")
+            if isinstance(status, TaskState):
+                transitions.append(status)
+        return original_model_copy(self, *args, **kwargs)
+
+    async def _raise_context_error(story_path: object, project_root: object, **kwargs: object) -> ContextBundle:
+        raise ContextError("forced failure")
+
+    monkeypatch.setattr(StoryState, "model_copy", _tracking_model_copy)
+    monkeypatch.setattr("arcwright_ai.engine.nodes.build_context_bundle", _raise_context_error)
+
+    with pytest.raises(ContextError):
+        await preflight_node(story_state_with_project)
+
+    assert transitions.count(TaskState.PREFLIGHT) == 1
+    assert TaskState.RUNNING not in transitions
+
+
+@pytest.mark.asyncio
+async def test_preflight_node_creates_checkpoint_directory(
+    story_state_with_project: StoryState,
+) -> None:
+    """Run directory structure is created even when it does not pre-exist."""
+    run_dir = (
+        story_state_with_project.project_root
+        / DIR_ARCWRIGHT
+        / DIR_RUNS
+        / str(story_state_with_project.run_id)
+        / DIR_STORIES
+        / str(story_state_with_project.story_id)
+    )
+    assert not run_dir.exists(), "precondition: directory must not exist before preflight"
+
+    await preflight_node(story_state_with_project)
+
+    assert run_dir.is_dir()
+
+
+@pytest.mark.asyncio
+async def test_preflight_node_emits_structured_log_events(
+    story_state_with_project: StoryState,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """engine.node.enter, context.resolve, and engine.node.exit log events are emitted."""
+    with caplog.at_level(logging.INFO):
+        await preflight_node(story_state_with_project)
+
+    messages = {r.message for r in caplog.records}
+    assert "engine.node.enter" in messages
+    assert "context.resolve" in messages
+    assert "engine.node.exit" in messages
