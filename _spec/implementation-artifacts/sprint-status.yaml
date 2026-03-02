@@ -1,0 +1,104 @@
+# generated: 2026-03-02
+# project: bmad-graph-swarm
+# project_key: NOKEY
+# tracking_system: file-system
+# story_location: _spec/implementation-artifacts
+
+# STATUS DEFINITIONS:
+# ==================
+# Epic Status:
+#   - backlog: Epic not yet started
+#   - in-progress: Epic actively being worked on
+#   - done: All stories in epic completed
+#
+# Epic Status Transitions:
+#   - backlog → in-progress: Automatically when first story is created (via create-story)
+#   - in-progress → done: Manually when all stories reach 'done' status
+#
+# Story Status:
+#   - backlog: Story only exists in epic file
+#   - ready-for-dev: Story file created in stories folder
+#   - in-progress: Developer actively working on implementation
+#   - review: Ready for code review (via Dev's code-review workflow)
+#   - done: Story completed
+#
+# Retrospective Status:
+#   - optional: Can be completed but not required
+#   - done: Retrospective has been completed
+#
+# WORKFLOW NOTES:
+# ===============
+# - Epic transitions to 'in-progress' automatically when first story is created
+# - Stories can be worked in parallel if team capacity allows
+# - SM typically creates next story after previous one is 'done' to incorporate learnings
+# - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
+
+generated: 2026-03-02
+project: bmad-graph-swarm
+project_key: NOKEY
+tracking_system: file-system
+story_location: _spec/implementation-artifacts
+
+development_status:
+  # Epic 1: Project Foundation & Configuration (5 stories, 26 pts)
+  epic-1: in-progress
+  1-1-project-scaffold-and-package-structure: done
+  1-2-core-types-lifecycle-and-exception-hierarchy: backlog
+  1-3-configuration-system-with-two-tier-loading: backlog
+  1-4-cli-init-command: backlog
+  1-5-cli-validate-setup-command: backlog
+  epic-1-retrospective: optional
+
+  # Epic 2: Orchestration Engine & Agent Invocation (7 stories, 37 pts)
+  epic-2: backlog
+  2-1-langgraph-state-models-and-graph-skeleton: backlog
+  2-2-context-injector-bmad-artifact-reader-and-reference-resolver: backlog
+  2-3-context-answerer-static-rule-lookup-engine: backlog
+  2-4-agent-sandbox-path-validation-layer: backlog
+  2-5-agent-invoker-claude-code-sdk-integration: backlog
+  2-6-preflight-node-context-assembly-and-dispatch-preparation: backlog
+  2-7-agent-dispatch-node-and-single-story-cli-command: backlog
+  epic-2-retrospective: optional
+
+  # Epic 3: Validation & Retry Pipeline (4 stories, 23 pts)
+  epic-3: backlog
+  3-1-v6-invariant-validation-deterministic-rule-checks: backlog
+  3-2-v3-reflexion-validation-llm-self-evaluation: backlog
+  3-3-validation-pipeline-artifact-specific-routing: backlog
+  3-4-validate-node-and-retry-loop-integration: backlog
+  epic-3-retrospective: optional
+
+  # Epic 4: Decision Provenance & Run Artifacts (4 stories, 20 pts)
+  epic-4: backlog
+  4-1-provenance-recorder-decision-logging-during-execution: backlog
+  4-2-run-manager-run-directory-lifecycle-and-state-tracking: backlog
+  4-3-run-summary-and-halt-report-generation: backlog
+  4-4-provenance-and-summary-integration-with-engine-nodes: backlog
+  epic-4-retrospective: optional
+
+  # Epic 5: Halt, Resume & Epic Dispatch (5 stories, 21 pts)
+  epic-5: backlog
+  5-1-epic-dispatch-cli-to-engine-pipeline: backlog
+  5-2-halt-controller-graceful-halt-on-unrecoverable-failure: backlog
+  5-3-resume-controller-resume-halted-epic-from-failure-point: backlog
+  5-4-halt-and-resume-integration-with-run-artifacts: backlog
+  5-5-run-status-command-live-and-historical-run-visibility: backlog
+  epic-5-retrospective: optional
+
+  # Epic 6: SCM Integration & PR Generation (6 stories, 29 pts)
+  epic-6: backlog
+  6-1-git-subprocess-wrapper-safe-shell-out-foundation: backlog
+  6-2-worktree-manager-atomic-create-delete-with-recovery: backlog
+  6-3-branch-manager-and-commit-strategy: backlog
+  6-4-pr-body-generator-with-provenance-embedding: backlog
+  6-5-worktree-cleanup-command: backlog
+  6-6-scm-integration-with-engine-nodes: backlog
+  epic-6-retrospective: optional
+
+  # Epic 7: Cost Tracking & Budget Enforcement (4 stories, 16 pts)
+  epic-7: backlog
+  7-1-budgetstate-model-and-cost-accumulation: backlog
+  7-2-budget-check-node-dual-ceiling-enforcement: backlog
+  7-3-cost-display-in-cli-status-and-run-summary: backlog
+  7-4-cost-tracking-integration-with-engine-pipeline: backlog
+  epic-7-retrospective: optional

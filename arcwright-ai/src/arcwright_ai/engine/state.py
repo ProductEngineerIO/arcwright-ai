@@ -1,0 +1,5 @@
+"""Engine state — Pydantic state models for LangGraph orchestration."""
+
+from __future__ import annotations
+
+__all__: list[str] = []
