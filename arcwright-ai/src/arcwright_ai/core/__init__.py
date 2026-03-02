@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from arcwright_ai.core.config import RunConfig, load_config
 from arcwright_ai.core.constants import (
     AGENT_OUTPUT_FILENAME,
     BRANCH_PREFIX,
@@ -106,6 +107,8 @@ __all__: list[str] = [
     "NoOpEmitter",
     "ProjectError",
     "ProvenanceEntry",
+    # config
+    "RunConfig",
     "RunError",
     "RunId",
     "ScmError",
@@ -114,6 +117,7 @@ __all__: list[str] = [
     "TaskState",
     "ValidationError",
     "WorktreeError",
+    "load_config",
     # io
     "load_yaml",
     "read_text_async",

@@ -9,6 +9,7 @@ __all__: list[str] = [
     "AGENT_OUTPUT_FILENAME",
     "BRANCH_PREFIX",
     "COMMIT_MESSAGE_TEMPLATE",
+    "CONFIG_FILENAME",
     "CONTEXT_BUNDLE_FILENAME",
     "DIR_ARCWRIGHT",
     "DIR_PROVENANCE",
@@ -17,12 +18,25 @@ __all__: list[str] = [
     "DIR_STORIES",
     "DIR_TMP",
     "DIR_WORKTREES",
+    "ENV_API_CLAUDE_API_KEY",
+    "ENV_LIMITS_COST_PER_RUN",
+    "ENV_LIMITS_RETRY_BUDGET",
+    "ENV_LIMITS_TIMEOUT_PER_STORY",
+    "ENV_LIMITS_TOKENS_PER_STORY",
+    "ENV_METHODOLOGY_ARTIFACTS_PATH",
+    "ENV_METHODOLOGY_TYPE",
+    "ENV_MODEL_VERSION",
+    "ENV_PREFIX",
+    "ENV_REPRODUCIBILITY_ENABLED",
+    "ENV_REPRODUCIBILITY_RETENTION",
+    "ENV_SCM_BRANCH_TEMPLATE",
     "EXIT_AGENT",
     "EXIT_CONFIG",
     "EXIT_INTERNAL",
     "EXIT_SCM",
     "EXIT_SUCCESS",
     "EXIT_VALIDATION",
+    "GLOBAL_CONFIG_DIR",
     "HALT_REPORT_FILENAME",
     "LOG_FILENAME",
     "MAX_RETRIES",
@@ -88,3 +102,44 @@ STORY_COPY_FILENAME: str = "story.md"
 CONTEXT_BUNDLE_FILENAME: str = "context-bundle.md"
 AGENT_OUTPUT_FILENAME: str = "agent-output.md"
 VALIDATION_FILENAME: str = "validation.md"
+
+# ---------------------------------------------------------------------------
+# Configuration file names and directories
+# ---------------------------------------------------------------------------
+
+#: Name of the YAML configuration file used at both global and project tiers.
+CONFIG_FILENAME: str = "config.yaml"
+
+#: Name of the hidden directory where Arcwright config and run data live.
+GLOBAL_CONFIG_DIR: str = ".arcwright-ai"
+
+# ---------------------------------------------------------------------------
+# Environment variable names for config overrides
+# ---------------------------------------------------------------------------
+#
+# Mapping:  ARCWRIGHT_<SECTION>_<FIELD>  →  RunConfig.<section>.<field>
+#
+#   ARCWRIGHT_API_CLAUDE_API_KEY          → api.claude_api_key        (str)
+#   ARCWRIGHT_MODEL_VERSION               → model.version             (str)
+#   ARCWRIGHT_LIMITS_TOKENS_PER_STORY     → limits.tokens_per_story   (int)
+#   ARCWRIGHT_LIMITS_COST_PER_RUN         → limits.cost_per_run       (float)
+#   ARCWRIGHT_LIMITS_RETRY_BUDGET         → limits.retry_budget       (int)
+#   ARCWRIGHT_LIMITS_TIMEOUT_PER_STORY    → limits.timeout_per_story  (int)
+#   ARCWRIGHT_METHODOLOGY_ARTIFACTS_PATH  → methodology.artifacts_path (str)
+#   ARCWRIGHT_METHODOLOGY_TYPE            → methodology.type          (str)
+#   ARCWRIGHT_SCM_BRANCH_TEMPLATE         → scm.branch_template       (str)
+#   ARCWRIGHT_REPRODUCIBILITY_ENABLED     → reproducibility.enabled   (bool)
+#   ARCWRIGHT_REPRODUCIBILITY_RETENTION   → reproducibility.retention (int)
+
+ENV_PREFIX: str = "ARCWRIGHT_"
+ENV_API_CLAUDE_API_KEY: str = "ARCWRIGHT_API_CLAUDE_API_KEY"
+ENV_MODEL_VERSION: str = "ARCWRIGHT_MODEL_VERSION"
+ENV_LIMITS_TOKENS_PER_STORY: str = "ARCWRIGHT_LIMITS_TOKENS_PER_STORY"
+ENV_LIMITS_COST_PER_RUN: str = "ARCWRIGHT_LIMITS_COST_PER_RUN"
+ENV_LIMITS_RETRY_BUDGET: str = "ARCWRIGHT_LIMITS_RETRY_BUDGET"
+ENV_LIMITS_TIMEOUT_PER_STORY: str = "ARCWRIGHT_LIMITS_TIMEOUT_PER_STORY"
+ENV_METHODOLOGY_ARTIFACTS_PATH: str = "ARCWRIGHT_METHODOLOGY_ARTIFACTS_PATH"
+ENV_METHODOLOGY_TYPE: str = "ARCWRIGHT_METHODOLOGY_TYPE"
+ENV_SCM_BRANCH_TEMPLATE: str = "ARCWRIGHT_SCM_BRANCH_TEMPLATE"
+ENV_REPRODUCIBILITY_ENABLED: str = "ARCWRIGHT_REPRODUCIBILITY_ENABLED"
+ENV_REPRODUCIBILITY_RETENTION: str = "ARCWRIGHT_REPRODUCIBILITY_RETENTION"
