@@ -174,6 +174,7 @@ def test_all_symbols_exported() -> None:
         "ContextError",
         "ProjectError",
         "RunError",
+        "SandboxViolation",
         "ScmError",
         "ValidationError",
         "WorktreeError",

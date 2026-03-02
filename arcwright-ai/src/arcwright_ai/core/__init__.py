@@ -42,6 +42,7 @@ from arcwright_ai.core.exceptions import (
     ContextError,
     ProjectError,
     RunError,
+    SandboxViolation,
     ScmError,
     ValidationError,
     WorktreeError,
@@ -111,6 +112,7 @@ __all__: list[str] = [
     "RunConfig",
     "RunError",
     "RunId",
+    "SandboxViolation",
     "ScmError",
     "StoryId",
     # lifecycle

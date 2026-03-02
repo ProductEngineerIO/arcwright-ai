@@ -14,6 +14,7 @@ __all__: list[str] = [
     "ContextError",
     "ProjectError",
     "RunError",
+    "SandboxViolation",
     "ScmError",
     "ValidationError",
     "WorktreeError",
@@ -80,6 +81,15 @@ class AgentTimeoutError(AgentError):
 
 class AgentBudgetError(AgentError):
     """Raised when token_ceiling or cost_ceiling is exceeded."""
+
+
+class SandboxViolation(AgentError):
+    """Raised when an agent file operation targets a path outside the project boundary.
+
+    Raised by ``agent.sandbox.validate_path`` and ``agent.sandbox.validate_temp_path``
+    when a path violates sandbox rules (path traversal, symlink escape, or wrong
+    temp directory).
+    """
 
 
 # ---------------------------------------------------------------------------

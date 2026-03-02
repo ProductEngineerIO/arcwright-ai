@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
-# Planned public API — symbols implemented in future stories:
-#   invoke_agent  (agent/invoker.py — Story 2.5)
-__all__: list[str] = []
+from arcwright_ai.agent.sandbox import PathValidator, validate_path, validate_temp_path
+
+__all__: list[str] = [
+    "PathValidator",
+    "validate_path",
+    "validate_temp_path",
+]
