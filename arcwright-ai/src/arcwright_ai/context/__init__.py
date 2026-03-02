@@ -2,7 +2,15 @@
 
 from __future__ import annotations
 
-# Planned public API — symbols implemented in future stories:
-#   resolve_context  (context/injector.py  — Story 2.2)
-#   lookup_answer    (context/answerer.py  — Story 2.3)
-__all__: list[str] = []
+from arcwright_ai.context.injector import (
+    build_context_bundle,
+    parse_story,
+    serialize_bundle_to_markdown,
+)
+
+# lookup_answer  (context/answerer.py  — Story 2.3)
+__all__: list[str] = [
+    "build_context_bundle",
+    "parse_story",
+    "serialize_bundle_to_markdown",
+]
