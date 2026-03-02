@@ -1,6 +1,6 @@
 # Story 2.4: Agent Sandbox — Path Validation Layer
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -424,6 +424,37 @@ with pytest.raises(SandboxViolation, match="outside.*project"):
 - [Source: arcwright-ai/src/arcwright_ai/core/exceptions.py — AgentError base class for SandboxViolation]
 - [Source: arcwright-ai/src/arcwright_ai/core/constants.py — DIR_ARCWRIGHT, DIR_TMP constants]
 
+## Senior Developer Review (AI)
+
+### Reviewer
+
+Ed (AI-assisted code review)
+
+### Findings
+
+1. **HIGH — Relative paths resolved against process CWD, not `project_root`** in `validate_path`, which could incorrectly deny valid in-project paths or validate against the wrong boundary depending on invocation context.
+2. **HIGH — `validate_temp_path` repeated the same relative-path resolution issue**, causing valid temp-relative paths to be misclassified when the process CWD differed from the story worktree root.
+3. **MEDIUM — Boundary check used `os.path.commonpath()` string logic instead of `Path`-native containment**, diverging from project path-handling conventions and making path semantics less explicit.
+
+### Resolution Applied
+
+- Updated `validate_path` to resolve non-absolute paths relative to `project_root` before boundary enforcement.
+- Updated `validate_temp_path` to resolve non-absolute paths relative to `project_root` before tmp-directory enforcement.
+- Replaced `os.path.commonpath()` boundary logic with `Path.is_relative_to()` using resolved `Path` objects.
+- Added regression tests for relative sandbox paths:
+  - `test_validate_path_allows_relative_path_within_project`
+  - `test_validate_temp_path_allows_relative_tmp_path`
+
+### Verification
+
+- `.venv/bin/python -m pytest tests/test_agent/test_sandbox.py -q` → **19 passed**
+- `.venv/bin/python -m ruff check src/arcwright_ai/agent/sandbox.py tests/test_agent/test_sandbox.py` → **All checks passed**
+- `.venv/bin/python -m mypy --strict src/arcwright_ai/agent/sandbox.py` → **Success: no issues found**
+
+### Review Outcome
+
+**Approved — changes requested issues fixed.**
+
 ## Dev Agent Record
 
 ### Agent Model Used
@@ -438,12 +469,13 @@ No debug issues encountered. Clean implementation.
 
 - Implemented `SandboxViolation` as a subclass of `AgentError` in `core/exceptions.py` with Google-style docstring.
 - Updated `core/__init__.py` to import and re-export `SandboxViolation` (added to both import block and `__all__`).
-- Implemented `PathValidator` protocol (`@runtime_checkable`) and `validate_path` function in `agent/sandbox.py` with defense-in-depth `..` component detection, `os.path.commonpath()` boundary check, symlink escape detection via `.resolve()`, and structured event logging.
+- Implemented `PathValidator` protocol (`@runtime_checkable`) and `validate_path` function in `agent/sandbox.py` with defense-in-depth `..` component detection, resolved-path boundary checks, symlink escape detection via `.resolve()`, and structured event logging.
 - Implemented `validate_temp_path` function that delegates to `validate_path` first then checks `.is_relative_to()` against the `.arcwright-ai/tmp/` directory.
 - Updated `agent/__init__.py` to export `PathValidator`, `validate_path`, `validate_temp_path`; removed aspirational comments per Epic 1 retro action.
-- Created `tests/test_agent/test_sandbox.py` with 17 unit tests covering all acceptance criteria: valid paths, traversal rejection, symlink escape detection, temp file validation, protocol satisfaction, exception hierarchy, and error message quality.
+- Created `tests/test_agent/test_sandbox.py` with 19 unit tests covering all acceptance criteria: valid paths, traversal rejection, symlink escape detection, temp file validation, protocol satisfaction, exception hierarchy, error message quality, and relative-path handling.
 - Updated `tests/test_core/test_exceptions.py` `test_all_symbols_exported` to include `SandboxViolation` in its expected set.
-- All quality gates passed: `ruff check .` — zero violations; `ruff format --check .` — clean; `mypy --strict src/` — zero errors; `pytest tests/test_agent/test_sandbox.py -v` — 17/17 passed; `pytest` — 259/259 passed, zero regressions.
+- Added post-review hardening for relative-path behavior in sandbox validation and temp-path validation.
+- Review verification passed: `pytest tests/test_agent/test_sandbox.py -q` — 19/19 passed; `ruff check` on touched files — clean; `mypy --strict src/arcwright_ai/agent/sandbox.py` — clean.
 
 ### File List
 
@@ -451,9 +483,12 @@ No debug issues encountered. Clean implementation.
 - `src/arcwright_ai/core/__init__.py` — MODIFIED: Added `SandboxViolation` import and `__all__` entry
 - `src/arcwright_ai/agent/sandbox.py` — MODIFIED (was placeholder): `PathValidator` protocol, `validate_path`, `validate_temp_path` implemented
 - `src/arcwright_ai/agent/__init__.py` — MODIFIED: Added `PathValidator`, `validate_path`, `validate_temp_path` exports; removed aspirational comments
-- `tests/test_agent/test_sandbox.py` — CREATED: 17 unit tests for all sandbox functionality
+- `tests/test_agent/test_sandbox.py` — CREATED: 19 unit tests for all sandbox functionality
 - `tests/test_core/test_exceptions.py` — MODIFIED: Added `SandboxViolation` to `test_all_symbols_exported` expected set
+- `src/arcwright_ai/agent/sandbox.py` — MODIFIED (review): Resolved relative paths against `project_root`; switched boundary check to `Path.is_relative_to()`
+- `tests/test_agent/test_sandbox.py` — MODIFIED (review): Added relative-path regression tests
 
 ### Change Log
 
 - feat(agent): implement Story 2.4 — Agent Sandbox Path Validation Layer (Date: 2026-03-02)
+- fix(agent): code review hardening for sandbox relative-path validation and pathlib boundary checks (Date: 2026-03-02)

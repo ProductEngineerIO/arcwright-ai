@@ -65,6 +65,13 @@ def test_validate_path_allows_nested_subdirectory(project_root: Path) -> None:
     assert validate_path(target, project_root, "read") is True
 
 
+def test_validate_path_allows_relative_path_within_project(project_root: Path) -> None:
+    """validate_path resolves relative paths against project_root, not process cwd."""
+    target = project_root / "src" / "relative.py"
+    target.touch()
+    assert validate_path(Path("src/relative.py"), project_root, "write") is True
+
+
 def test_validate_path_allows_arcwright_subdirectory(project_root: Path) -> None:
     """validate_path returns True for paths inside .arcwright-ai subdirectories."""
     runs_dir = project_root / ".arcwright-ai" / "runs" / "12345"
@@ -112,6 +119,13 @@ def test_validate_path_rejects_absolute_outside_project(project_root: Path) -> N
     outside = Path("/etc/passwd")
     with pytest.raises(SandboxViolation):
         validate_path(outside, project_root, "read")
+
+
+def test_validate_temp_path_allows_relative_tmp_path(project_root: Path, arcwright_tmp: Path) -> None:
+    """validate_temp_path resolves relative paths against project_root."""
+    target = arcwright_tmp / "relative-temp.txt"
+    target.touch()
+    assert validate_temp_path(Path(".arcwright-ai/tmp/relative-temp.txt"), project_root) is True
 
 
 def test_validate_path_rejects_symlink_escape(project_root: Path) -> None:

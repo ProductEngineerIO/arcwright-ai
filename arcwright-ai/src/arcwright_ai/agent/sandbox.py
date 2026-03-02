@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from arcwright_ai.core.constants import DIR_ARCWRIGHT, DIR_TMP
@@ -83,7 +82,8 @@ def validate_path(path: Path, project_root: Path, operation: str) -> bool:
         )
 
     resolved_root = project_root.resolve()
-    resolved_path = path.resolve()  # also follows symlinks
+    candidate_path = path if path.is_absolute() else resolved_root / path
+    resolved_path = candidate_path.resolve()  # also follows symlinks
 
     # Symlink escape: log event if the original path is a symlink
     if path.exists() and path.is_symlink():
@@ -98,15 +98,7 @@ def validate_path(path: Path, project_root: Path, operation: str) -> bool:
             },
         )
 
-    # Boundary check using os.path.commonpath for robustness
-    try:
-        common = os.path.commonpath([str(resolved_root), str(resolved_path)])
-        within = common == str(resolved_root)
-    except ValueError:
-        # commonpath raises ValueError on different drives (Windows); treat as outside
-        within = False
-
-    if not within:
+    if not resolved_path.is_relative_to(resolved_root):
         logger.info(
             "agent.sandbox.deny",
             extra={
@@ -158,7 +150,8 @@ def validate_temp_path(path: Path, project_root: Path) -> bool:
     validate_path(path, project_root, "write_temp")
 
     tmp_dir = (project_root / DIR_ARCWRIGHT / DIR_TMP).resolve()
-    resolved_path = path.resolve()
+    candidate_path = path if path.is_absolute() else project_root.resolve() / path
+    resolved_path = candidate_path.resolve()
 
     if not resolved_path.is_relative_to(tmp_dir):
         logger.info(
