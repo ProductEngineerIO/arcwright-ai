@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 _FR_PATTERN = re.compile(r"\bFR[-\u2010]?\d+\b", re.IGNORECASE)
 _NFR_PATTERN = re.compile(r"\bNFR[-\u2010]?\d+\b", re.IGNORECASE)
-_ARCH_PATTERN = re.compile(r"\b(?:Decision|D)\s*\d+\b", re.IGNORECASE)
+_ARCH_PATTERN = re.compile(r"\b(?:Decision|D)\s*\d+\b|§\w+", re.IGNORECASE)
 
 # ---------------------------------------------------------------------------
 # Data classes (internal — not Pydantic, no Pydantic overhead needed)
@@ -92,6 +92,8 @@ def _normalise_nfr(ref: str) -> str:
 
 def _normalise_arch(ref: str) -> str:
     """Normalise an architecture reference to ``Decision<digits>`` form."""
+    if ref.startswith("§"):
+        return ref.upper().replace(" ", "")
     # e.g. "D4", "D 4", "Decision 4" → all normalise to "Decision4" for matching
     m = re.search(r"\d+", ref)
     return f"Decision{m.group()}" if m else ref
@@ -120,7 +122,7 @@ async def parse_story(story_path: Path) -> ParsedStory:
     """
     try:
         raw_content = await read_text_async(story_path)
-    except OSError as exc:
+    except (OSError, UnicodeError) as exc:
         raise ContextError(
             f"Cannot read story file: {story_path}",
             details={"path": str(story_path), "error": str(exc)},
@@ -360,6 +362,35 @@ async def _resolve_architecture_references(
     return resolved
 
 
+async def _load_project_conventions(project_root: Path) -> str:
+    """Load project conventions content for context bundling if available.
+
+    Args:
+        project_root: Root directory of the project.
+
+    Returns:
+        Project conventions markdown content, or an empty string when no
+        conventions document can be found.
+    """
+    candidate_paths = [
+        project_root / "project-context.md",
+        project_root / "docs" / "project-context.md",
+        project_root / DIR_SPEC / "planning-artifacts" / "project-context.md",
+    ]
+
+    for candidate_path in candidate_paths:
+        try:
+            return await read_text_async(candidate_path)
+        except OSError:
+            continue
+
+    logger.info(
+        "context.unresolved",
+        extra={"data": {"ref": "project-conventions", "source": str(project_root)}},
+    )
+    return ""
+
+
 # ---------------------------------------------------------------------------
 # Step 3: Bundle builder
 # ---------------------------------------------------------------------------
@@ -421,10 +452,11 @@ async def build_context_bundle(
 
     parsed = await parse_story(story_path)
 
-    fr_results, nfr_results, arch_results = await asyncio.gather(
+    fr_results, nfr_results, arch_results, project_conventions = await asyncio.gather(
         _resolve_fr_references(parsed.fr_references, effective_prd),
         _resolve_nfr_references(parsed.nfr_references, effective_prd),
         _resolve_architecture_references(parsed.architecture_references, effective_arch),
+        _load_project_conventions(project_root),
     )
 
     total_found = len(fr_results) + len(nfr_results) + len(arch_results)
@@ -446,7 +478,7 @@ async def build_context_bundle(
         story_content=parsed.raw_content,
         architecture_sections=_format_resolved_references(arch_results),
         domain_requirements=_format_resolved_references(fr_results + nfr_results),
-        answerer_rules="",
+        answerer_rules=project_conventions,
     )
 
 

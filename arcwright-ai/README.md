@@ -24,6 +24,8 @@ pip install -e ".[dev]"
 
 # Run tests
 pytest
+# Prefer explicit venv execution to avoid interpreter mismatch
+.venv/bin/python -m pytest -q
 
 # Lint
 ruff check .

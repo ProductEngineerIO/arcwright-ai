@@ -1,6 +1,6 @@
 # Story 2.2: Context Injector — BMAD Artifact Reader & Reference Resolver
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -470,6 +470,7 @@ Claude Sonnet 4.6 (GitHub Copilot)
 - Task 5: `Path` moved to `TYPE_CHECKING` block per TC003 ruff rule; `ContextBundle` promoted to top-level import since used at runtime.
 - Task 6: `@pytest.mark.asyncio` provided automatically by `asyncio_mode=auto` in pyproject.toml.
 - Task 7: All quality gates passed — 218/218 tests, zero ruff, zero mypy.
+- Review remediation: Added `§` architecture anchor extraction support, loaded project conventions into `ContextBundle.answerer_rules`, added NFR resolver coverage, and hardened unreadable-file handling to raise `ContextError`.
 
 ### Completion Notes List
 
@@ -478,15 +479,24 @@ Claude Sonnet 4.6 (GitHub Copilot)
 - Normalisation: `FR1`/`FR-1` → `FR1`; `Decision4`/`D4`/`D 4` → `Decision4` for deduplication and matching.
 - `build_context_bundle()` runs FR, NFR, and architecture resolution in parallel via `asyncio.gather()`.
 - Missing PRD / architecture files → `context.unresolved` log events, empty string fields in bundle. Missing story file → `ContextError` raised.
-- `answerer_rules=""` left empty for Story 2.3.
-- 16 new unit tests added; 218 total tests pass (no regressions).
+- `answerer_rules` now carries project conventions from `project-context.md` when available (with structured unresolved logging when missing).
+- 20 injector unit tests pass, including NFR resolution and `§` section-anchor extraction coverage.
 
 ### File List
 
 - `arcwright-ai/src/arcwright_ai/context/injector.py` — (modified) full implementation replacing placeholder
 - `arcwright-ai/src/arcwright_ai/context/__init__.py` — (modified) real exports added
-- `arcwright-ai/tests/test_context/test_injector.py` — (created) 16 unit tests
+- `arcwright-ai/tests/test_context/test_injector.py` — (created) 20 unit tests
+
+### Senior Developer Review (AI)
+
+- 2026-03-02: Adversarial review identified 5 issues (3 high, 2 medium) covering architecture anchor parsing, conventions bundling, NFR resolver coverage, unreadable file handling, and story/git transparency.
+- 2026-03-02: All high/medium code issues were fixed automatically in `context/injector.py` and `tests/test_context/test_injector.py`.
+- 2026-03-02: Post-fix gates passed (`ruff check .`, `ruff format --check .`, `.venv/bin/python -m mypy --strict src/`, `pytest tests/test_context/test_injector.py -q`).
+- 2026-03-02: Full suite re-verified with canonical venv command: `.venv/bin/python -m pytest -q` → `222 passed` (warnings only from upstream Python 3.14 deprecations).
 
 ### Change Log
 
 - 2026-03-02: Implemented Story 2.2 — Context Injector, BMAD Artifact Reader & Reference Resolver. Added `ParsedStory`, `ResolvedReference`, `parse_story`, `_resolve_fr_references`, `_resolve_nfr_references`, `_resolve_architecture_references`, `_format_resolved_references`, `build_context_bundle`, `serialize_bundle_to_markdown`. Updated context package exports. Created 16 unit tests. All quality gates passed.
+- 2026-03-02: Code review remediation applied — added `§` architecture anchor extraction, project conventions loading into `ContextBundle.answerer_rules`, added NFR resolver tests, added section-anchor parser test, and widened story read failure handling to raise `ContextError` for unreadable files.
+- 2026-03-02: Validation evidence captured with canonical environment command `.venv/bin/python -m pytest -q` (full suite: 222 passed).

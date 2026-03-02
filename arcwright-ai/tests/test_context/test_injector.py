@@ -10,6 +10,7 @@ import pytest
 from arcwright_ai.context.injector import (
     _resolve_architecture_references,
     _resolve_fr_references,
+    _resolve_nfr_references,
     build_context_bundle,
     parse_story,
     serialize_bundle_to_markdown,
@@ -139,6 +140,18 @@ async def test_parse_story_extracts_architecture_references(story_file: Path) ->
 
 
 @pytest.mark.asyncio
+async def test_parse_story_extracts_section_anchor_references(tmp_path: Path) -> None:
+    """Section-anchor references in § form are extracted from story text."""
+    path = tmp_path / "anchor.md"
+    path.write_text(
+        "# Story\n\nReference architecture section §D4 for context.\n\n## Acceptance Criteria\n\n1. Uses anchors.\n",
+        encoding="utf-8",
+    )
+    parsed = await parse_story(path)
+    assert "§D4" in {ref.upper() for ref in parsed.architecture_references}
+
+
+@pytest.mark.asyncio
 async def test_parse_story_extracts_acceptance_criteria(story_file: Path) -> None:
     """Acceptance criteria section text is extracted correctly."""
     parsed = await parse_story(story_file)
@@ -188,6 +201,28 @@ async def test_resolve_fr_references_logs_unresolved(tmp_path: Path, caplog: pyt
     prd.write_text(SAMPLE_PRD_CONTENT, encoding="utf-8")
     with caplog.at_level(logging.INFO):
         results = await _resolve_fr_references(["FR99"], prd)
+    assert results == []
+    assert any("context.unresolved" in record.message for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_resolve_nfr_references_finds_matching_sections(tmp_path: Path) -> None:
+    """NFR5 and NFR7 are resolved from PRD content."""
+    prd = tmp_path / "prd.md"
+    prd.write_text(SAMPLE_PRD_CONTENT, encoding="utf-8")
+    results = await _resolve_nfr_references(["NFR5", "NFR7"], prd)
+    ref_ids = {r.ref_id for r in results}
+    assert "NFR5" in ref_ids
+    assert "NFR7" in ref_ids
+
+
+@pytest.mark.asyncio
+async def test_resolve_nfr_references_logs_unresolved(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """NFR-99 not in PRD is logged as context.unresolved, not raised."""
+    prd = tmp_path / "prd.md"
+    prd.write_text(SAMPLE_PRD_CONTENT, encoding="utf-8")
+    with caplog.at_level(logging.INFO):
+        results = await _resolve_nfr_references(["NFR99"], prd)
     assert results == []
     assert any("context.unresolved" in record.message for record in caplog.records)
 
@@ -262,6 +297,18 @@ async def test_build_context_bundle_handles_missing_architecture(story_file: Pat
     bundle = await build_context_bundle(story_file, tmp_path)
     assert isinstance(bundle, ContextBundle)
     assert bundle.architecture_sections == ""
+
+
+@pytest.mark.asyncio
+async def test_build_context_bundle_loads_project_conventions(story_file: Path, project_fixture: Path) -> None:
+    """Project conventions are loaded into answerer_rules when present."""
+    docs_dir = project_fixture / "docs"
+    docs_dir.mkdir(parents=True)
+    (docs_dir / "project-context.md").write_text("# Conventions\n\nUse snake_case.", encoding="utf-8")
+
+    bundle = await build_context_bundle(story_file, project_fixture)
+
+    assert "Use snake_case." in bundle.answerer_rules
 
 
 # ---------------------------------------------------------------------------
