@@ -6,7 +6,7 @@ inputDocuments:
 date: 2026-03-02
 author: Ed
 epicCount: 7
-storyCount: 34
+storyCount: 35
 totalPoints: 172
 frCoverage: '36/36'
 nfrCoverage: '20/20'
@@ -173,7 +173,7 @@ This document provides the complete epic and story breakdown for Arcwright AI, d
 | FR4 | Epic 5 | Halt on max retry failure, preserve completed work |
 | FR5 | Epic 5 | Resume halted epic from failure point |
 | FR6 | Epic 6 | Git worktree isolation per story |
-| FR7 | Epic 6 | Worktree cleanup (manual, automatic, post-merge) |
+| FR7 | Epic 6 | Worktree cleanup (MVP: manual only per D7; automatic & post-merge deferred to Growth) |
 | FR8 | Epic 3 | V3 reflexion validation against acceptance criteria |
 | FR9 | Epic 3 | Retry on reflexion failure up to configurable max |
 | FR10 | Epic 3 | V6 invariant checks (file exists, schema, naming) |
@@ -247,6 +247,8 @@ Developer can install Arcwright AI, initialize a project, validate their setup, 
 
 ### Story 1.1: Project Scaffold & Package Structure
 
+**Priority**: HIGH | **Points**: 8
+
 As a developer contributing to Arcwright AI,
 I want a fully scaffolded Python project with the 8-package structure defined in the architecture,
 So that all subsequent stories have a working build, test, and lint pipeline to develop against.
@@ -267,6 +269,8 @@ So that all subsequent stories have a working build, test, and lint pipeline to 
 **And** `pytest` runs with zero tests collected (test directories exist, no test files yet)
 
 ### Story 1.2: Core Types, Lifecycle & Exception Hierarchy
+
+**Priority**: HIGH | **Points**: 5
 
 As a developer building Arcwright AI subsystems,
 I want the shared type definitions, task lifecycle state machine, and exception hierarchy established in `core/`,
@@ -290,6 +294,8 @@ So that all subsequent subsystem stories import from a stable, well-tested found
 
 ### Story 1.3: Configuration System with Two-Tier Loading
 
+**Priority**: HIGH | **Points**: 5
+
 As a developer setting up Arcwright AI,
 I want a configuration system that loads settings from environment variables, project config, and global config with proper precedence,
 So that I can configure API keys, model versions, token ceilings, and project-specific settings with confidence that invalid config is caught at startup.
@@ -310,6 +316,8 @@ So that I can configure API keys, model versions, token ceilings, and project-sp
 
 ### Story 1.4: CLI Init Command
 
+**Priority**: HIGH | **Points**: 3
+
 As a developer starting a new Arcwright AI project,
 I want to run `arcwright-ai init` to scaffold the `.arcwright-ai/` directory with default config and `.gitignore` entries,
 So that my project is ready for dispatching runs with minimal manual setup.
@@ -327,6 +335,8 @@ So that my project is ready for dispatching runs with minimal manual setup.
 **And** unit tests cover: fresh init, idempotent re-init, BMAD artifact detection, `.gitignore` append behavior
 
 ### Story 1.5: CLI Validate-Setup Command
+
+**Priority**: HIGH | **Points**: 5
 
 As a developer about to dispatch my first run,
 I want to run `arcwright-ai validate-setup` to verify my configuration, API key, and project structure with clear pass/fail per check,
@@ -349,6 +359,8 @@ Developer can dispatch a single story and have the LangGraph engine invoke Claud
 
 ### Story 2.1: LangGraph State Models & Graph Skeleton
 
+**Priority**: HIGH | **Points**: 5
+
 As a developer building the orchestration engine,
 I want the Pydantic state models (`ProjectState`, `StoryState`) and a minimal LangGraph StateGraph skeleton with placeholder nodes,
 So that subsequent stories can implement real node logic into a working graph framework.
@@ -367,6 +379,8 @@ So that subsequent stories can implement real node logic into a working graph fr
 **And** unit tests verify graph construction, node routing (success path, retry path, escalated path), and state model validation
 
 ### Story 2.2: Context Injector — BMAD Artifact Reader & Reference Resolver
+
+**Priority**: HIGH | **Points**: 5
 
 As a developer dispatching a story,
 I want the system to read BMAD planning artifacts and resolve FR/NFR/architecture references from the story file into a focused context bundle,
@@ -388,6 +402,8 @@ So that the agent receives the relevant requirements, architecture decisions, an
 
 ### Story 2.3: Context Answerer — Static Rule Lookup Engine
 
+**Priority**: MEDIUM | **Points**: 3
+
 As a developer whose agent needs to query BMAD conventions during implementation,
 I want a static rule lookup engine that responds to agent questions about workflow steps, artifact formats, and naming conventions,
 So that the agent can follow project conventions without LLM-based interpretation.
@@ -405,6 +421,8 @@ So that the agent can follow project conventions without LLM-based interpretatio
 
 ### Story 2.4: Agent Sandbox — Path Validation Layer
 
+**Priority**: HIGH | **Points**: 3
+
 As a developer ensuring agent safety,
 I want an application-level path validation layer that prevents the agent from modifying files outside the project boundary,
 So that story execution cannot corrupt the main branch, other worktrees, or the host system.
@@ -421,6 +439,8 @@ So that story execution cannot corrupt the main branch, other worktrees, or the 
 **And** unit tests cover: valid paths (within project), path traversal rejection, symlink escape detection, temp file validation, `.arcwright-ai/` subdirectory access
 
 ### Story 2.5: Agent Invoker — Claude Code SDK Integration
+
+**Priority**: HIGH | **Points**: 8
 
 As a developer dispatching a story,
 I want the system to invoke Claude Code SDK with the assembled context bundle and receive the agent's implementation output,
@@ -443,6 +463,8 @@ So that stories are implemented by the AI agent in a stateless, sandboxed sessio
 
 ### Story 2.6: Preflight Node — Context Assembly & Dispatch Preparation
 
+**Priority**: HIGH | **Points**: 5
+
 As a developer dispatching a story,
 I want the preflight graph node to resolve all context, prepare the execution environment, and write the context bundle checkpoint,
 So that the agent receives complete context and provenance can trace exactly what information informed the implementation.
@@ -462,6 +484,8 @@ So that the agent receives complete context and provenance can trace exactly wha
 
 ### Story 2.7: Agent Dispatch Node & Single Story CLI Command
 
+**Priority**: HIGH | **Points**: 8
+
 As a developer,
 I want to run `arcwright-ai dispatch --story STORY-N.N` and have the full preflight → budget_check → agent_dispatch pipeline execute for a single story,
 So that I can verify the core execution loop works end-to-end.
@@ -478,7 +502,7 @@ So that I can verify the core execution loop works end-to-end.
 **And** CLI output shows story start, agent invocation, and completion status using Rich/Typer formatting
 **And** structured JSONL events are written to `.arcwright-ai/runs/<run-id>/log.jsonl` for: `run.start`, `story.start`, `context.resolve`, `agent.dispatch`, `agent.response`
 **And** exit code is 0 on successful agent completion (validation not yet wired)
-**And** `arcwright-ai dispatch --epic EPIC-N` dispatches all stories in the epic sequentially in dependency order per FR1/FR3
+**And** `arcwright-ai dispatch --epic EPIC-N` dispatches all stories in the epic sequentially in dependency order per FR1/FR3 (basic sequential iteration only — no pre-dispatch confirmation, scope validation, or cost estimates; full epic dispatch UX is Story 5.1)
 **And** integration test with mock SDK verifies the full CLI → engine → context → agent pipeline
 
 ## Epic 3: Validation & Retry Pipeline
@@ -486,6 +510,8 @@ So that I can verify the core execution loop works end-to-end.
 Developer can trust that every story output is validated against acceptance criteria (V3 reflexion) and invariant rules (V6), with automatic retry on failure — no silent bad output.
 
 ### Story 3.1: V6 Invariant Validation — Deterministic Rule Checks
+
+**Priority**: HIGH | **Points**: 5
 
 As a developer who needs confidence in code quality,
 I want deterministic invariant checks that verify file existence, schema validity, and naming conventions on every story output,
@@ -503,6 +529,8 @@ So that basic structural correctness is guaranteed without relying on LLM judgme
 **And** unit tests cover: all-pass scenario, missing file detection, naming convention violation, syntax error detection, schema validation failure
 
 ### Story 3.2: V3 Reflexion Validation — LLM Self-Evaluation
+
+**Priority**: HIGH | **Points**: 8
 
 As a developer who needs the agent to verify its own work against acceptance criteria,
 I want V3 reflexion validation that has the agent self-evaluate whether its implementation satisfies each acceptance criterion,
@@ -523,6 +551,8 @@ So that the agent catches its own mistakes before the story is marked as complet
 
 ### Story 3.3: Validation Pipeline — Artifact-Specific Routing
 
+**Priority**: HIGH | **Points**: 5
+
 As a developer dispatching stories,
 I want a unified validation pipeline that routes story outputs through both V6 invariant and V3 reflexion checks in the correct order,
 So that every story passes through the complete validation chain before being marked as complete.
@@ -542,6 +572,8 @@ So that every story passes through the complete validation chain before being ma
 **And** unit tests cover: V6-fail short-circuits V3, V6-pass + V3-pass, V6-pass + V3-fail, pipeline result aggregation
 
 ### Story 3.4: Validate Node & Retry Loop Integration
+
+**Priority**: HIGH | **Points**: 5
 
 As a developer dispatching stories,
 I want the validation node wired into the LangGraph StateGraph with retry logic that re-dispatches the agent on V3 failure up to a configurable maximum,
