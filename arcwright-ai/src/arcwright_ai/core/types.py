@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime  # noqa: F401  # re-exported for downstream use
+from decimal import Decimal
 from typing import NewType
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -102,20 +103,22 @@ class BudgetState(ArcwrightModel):
 
     Note: BudgetState is frozen per ArcwrightModel convention.  When budget
     values need updating, create a new instance via model_copy(update={...}).
+    Uses ``Decimal`` for cost fields to ensure exact decimal arithmetic and
+    avoid IEEE 754 floating-point rounding errors in financial calculations.
 
     Attributes:
         invocation_count: Number of SDK invocations made.
         total_tokens: Cumulative tokens consumed (input + output).
-        estimated_cost_usd: Running cost estimate in USD.
-        token_ceiling: Maximum tokens allowed (0 = unlimited).
-        cost_ceiling_usd: Maximum cost allowed in USD (0.0 = unlimited).
+        estimated_cost: Running cost estimate in USD (exact Decimal).
+        max_invocations: Maximum SDK invocations allowed (0 = unlimited).
+        max_cost: Maximum cost allowed in USD (Decimal; 0 = unlimited).
     """
 
     invocation_count: int = 0
     total_tokens: int = 0
-    estimated_cost_usd: float = 0.0
-    token_ceiling: int = 0
-    cost_ceiling_usd: float = 0.0
+    estimated_cost: Decimal = Decimal("0")
+    max_invocations: int = 0
+    max_cost: Decimal = Decimal("0")
 
 
 class ProvenanceEntry(ArcwrightModel):

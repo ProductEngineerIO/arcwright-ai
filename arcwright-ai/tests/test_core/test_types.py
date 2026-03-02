@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 import pytest
 from pydantic import ValidationError as PydanticValidationError
 
@@ -144,24 +146,24 @@ def test_budget_state_default_values() -> None:
     budget = BudgetState()
     assert budget.invocation_count == 0
     assert budget.total_tokens == 0
-    assert budget.estimated_cost_usd == 0.0
-    assert budget.token_ceiling == 0
-    assert budget.cost_ceiling_usd == 0.0
+    assert budget.estimated_cost == Decimal("0")
+    assert budget.max_invocations == 0
+    assert budget.max_cost == Decimal("0")
 
 
 def test_budget_state_custom_values() -> None:
     budget = BudgetState(
         invocation_count=3,
         total_tokens=10000,
-        estimated_cost_usd=0.05,
-        token_ceiling=50000,
-        cost_ceiling_usd=1.00,
+        estimated_cost=Decimal("0.05"),
+        max_invocations=10,
+        max_cost=Decimal("1.00"),
     )
     assert budget.invocation_count == 3
     assert budget.total_tokens == 10000
-    assert budget.estimated_cost_usd == pytest.approx(0.05)
-    assert budget.token_ceiling == 50000
-    assert budget.cost_ceiling_usd == pytest.approx(1.00)
+    assert budget.estimated_cost == Decimal("0.05")
+    assert budget.max_invocations == 10
+    assert budget.max_cost == Decimal("1.00")
 
 
 def test_budget_state_is_frozen() -> None:

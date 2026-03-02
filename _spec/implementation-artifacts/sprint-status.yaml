@@ -50,8 +50,8 @@ development_status:
   epic-1-retrospective: done
 
   # Epic 2: Orchestration Engine & Agent Invocation (7 stories, 37 pts)
-  epic-2: backlog
-  2-1-langgraph-state-models-and-graph-skeleton: backlog
+  epic-2: in-progress
+  2-1-langgraph-state-models-and-graph-skeleton: review
   2-2-context-injector-bmad-artifact-reader-and-reference-resolver: backlog
   2-3-context-answerer-static-rule-lookup-engine: backlog
   2-4-agent-sandbox-path-validation-layer: backlog
