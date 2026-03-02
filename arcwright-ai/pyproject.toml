@@ -24,6 +24,7 @@ dev = [
     "ruff>=0.8",
     "mypy>=1.13",
     "pre-commit>=4.0",
+    "types-PyYAML>=6.0",
 ]
 
 [project.scripts]
@@ -49,7 +50,12 @@ disallow_untyped_defs = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src"]
 asyncio_mode = "auto"
+filterwarnings = [
+    "ignore:'asyncio.get_event_loop_policy' is deprecated and slated for removal in Python 3.16:DeprecationWarning:pytest_asyncio.plugin",
+    "ignore:'asyncio.set_event_loop_policy' is deprecated and slated for removal in Python 3.16:DeprecationWarning:pytest_asyncio.plugin",
+]
 markers = [
     "slow: marks tests that use real git operations (deselect with '-m \"not slow\"')",
 ]

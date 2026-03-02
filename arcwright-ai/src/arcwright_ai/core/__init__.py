@@ -1,10 +1,123 @@
-"""Core package — Shared types, configuration, lifecycle, and exception hierarchy."""
+"""Core package — Shared types, lifecycle, exceptions, constants, events, and I/O primitives."""
 
 from __future__ import annotations
 
-# Planned public API — symbols will be added as core types are implemented:
-#   TaskState, EpicState    (core/types.py      — Story 1.2)
-#   TaskLifecycle           (core/lifecycle.py  — Story 1.2)
-#   ArchwrightConfig        (core/config.py     — Story 1.3)
-#   ArchwrightError         (core/exceptions.py — Story 1.2)
-__all__: list[str] = []
+from arcwright_ai.core.constants import (
+    AGENT_OUTPUT_FILENAME,
+    BRANCH_PREFIX,
+    COMMIT_MESSAGE_TEMPLATE,
+    CONTEXT_BUNDLE_FILENAME,
+    DIR_ARCWRIGHT,
+    DIR_PROVENANCE,
+    DIR_RUNS,
+    DIR_SPEC,
+    DIR_STORIES,
+    DIR_TMP,
+    DIR_WORKTREES,
+    EXIT_AGENT,
+    EXIT_CONFIG,
+    EXIT_INTERNAL,
+    EXIT_SCM,
+    EXIT_SUCCESS,
+    EXIT_VALIDATION,
+    HALT_REPORT_FILENAME,
+    LOG_FILENAME,
+    MAX_RETRIES,
+    RUN_ID_DATETIME_FORMAT,
+    RUN_METADATA_FILENAME,
+    STORY_COPY_FILENAME,
+    SUMMARY_FILENAME,
+    VALIDATION_FILENAME,
+    WORKTREE_DIR_TEMPLATE,
+)
+from arcwright_ai.core.events import EventEmitter, NoOpEmitter
+from arcwright_ai.core.exceptions import (
+    AgentBudgetError,
+    AgentError,
+    AgentTimeoutError,
+    ArcwrightError,
+    BranchError,
+    ConfigError,
+    ContextError,
+    ProjectError,
+    RunError,
+    ScmError,
+    ValidationError,
+    WorktreeError,
+)
+from arcwright_ai.core.io import load_yaml, read_text_async, save_yaml, write_text_async
+from arcwright_ai.core.lifecycle import VALID_TRANSITIONS, TaskState, validate_transition
+from arcwright_ai.core.types import (
+    ArcwrightModel,
+    ArtifactRef,
+    BudgetState,
+    ContextBundle,
+    EpicId,
+    ProvenanceEntry,
+    RunId,
+    StoryId,
+)
+
+__all__: list[str] = [
+    # constants
+    "AGENT_OUTPUT_FILENAME",
+    "BRANCH_PREFIX",
+    "COMMIT_MESSAGE_TEMPLATE",
+    "CONTEXT_BUNDLE_FILENAME",
+    "DIR_ARCWRIGHT",
+    "DIR_PROVENANCE",
+    "DIR_RUNS",
+    "DIR_SPEC",
+    "DIR_STORIES",
+    "DIR_TMP",
+    "DIR_WORKTREES",
+    "EXIT_AGENT",
+    "EXIT_CONFIG",
+    "EXIT_INTERNAL",
+    "EXIT_SCM",
+    "EXIT_SUCCESS",
+    "EXIT_VALIDATION",
+    "HALT_REPORT_FILENAME",
+    "LOG_FILENAME",
+    "MAX_RETRIES",
+    "RUN_ID_DATETIME_FORMAT",
+    "RUN_METADATA_FILENAME",
+    "STORY_COPY_FILENAME",
+    "SUMMARY_FILENAME",
+    "VALIDATION_FILENAME",
+    "VALID_TRANSITIONS",
+    "WORKTREE_DIR_TEMPLATE",
+    # exceptions
+    "AgentBudgetError",
+    "AgentError",
+    "AgentTimeoutError",
+    "ArcwrightError",
+    # types
+    "ArcwrightModel",
+    "ArtifactRef",
+    "BranchError",
+    "BudgetState",
+    "ConfigError",
+    "ContextBundle",
+    "ContextError",
+    "EpicId",
+    # events
+    "EventEmitter",
+    "NoOpEmitter",
+    "ProjectError",
+    "ProvenanceEntry",
+    "RunError",
+    "RunId",
+    "ScmError",
+    "StoryId",
+    # lifecycle
+    "TaskState",
+    "ValidationError",
+    "WorktreeError",
+    # io
+    "load_yaml",
+    "read_text_async",
+    "save_yaml",
+    "validate_transition",
+    "write_text_async",
+]

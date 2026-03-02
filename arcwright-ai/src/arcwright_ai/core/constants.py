@@ -1,5 +1,90 @@
-"""Core constants — Project-wide constant values and enumerations."""
+"""Core constants — Project-wide constant values and magic strings.
+
+No magic string should appear elsewhere in the codebase — centralise everything here.
+"""
 
 from __future__ import annotations
 
-__all__: list[str] = []
+__all__: list[str] = [
+    "AGENT_OUTPUT_FILENAME",
+    "BRANCH_PREFIX",
+    "COMMIT_MESSAGE_TEMPLATE",
+    "CONTEXT_BUNDLE_FILENAME",
+    "DIR_ARCWRIGHT",
+    "DIR_PROVENANCE",
+    "DIR_RUNS",
+    "DIR_SPEC",
+    "DIR_STORIES",
+    "DIR_TMP",
+    "DIR_WORKTREES",
+    "EXIT_AGENT",
+    "EXIT_CONFIG",
+    "EXIT_INTERNAL",
+    "EXIT_SCM",
+    "EXIT_SUCCESS",
+    "EXIT_VALIDATION",
+    "HALT_REPORT_FILENAME",
+    "LOG_FILENAME",
+    "MAX_RETRIES",
+    "RUN_ID_DATETIME_FORMAT",
+    "RUN_METADATA_FILENAME",
+    "STORY_COPY_FILENAME",
+    "SUMMARY_FILENAME",
+    "VALIDATION_FILENAME",
+    "WORKTREE_DIR_TEMPLATE",
+]
+
+# ---------------------------------------------------------------------------
+# Directory names
+# ---------------------------------------------------------------------------
+
+DIR_ARCWRIGHT: str = ".arcwright-ai"
+DIR_SPEC: str = "_spec"
+DIR_RUNS: str = "runs"
+DIR_TMP: str = "tmp"
+DIR_WORKTREES: str = "worktrees"
+DIR_PROVENANCE: str = "provenance"
+DIR_STORIES: str = "stories"
+
+# ---------------------------------------------------------------------------
+# Exit codes
+# ---------------------------------------------------------------------------
+
+EXIT_SUCCESS: int = 0
+EXIT_VALIDATION: int = 1
+EXIT_AGENT: int = 2
+EXIT_CONFIG: int = 3
+EXIT_SCM: int = 4
+EXIT_INTERNAL: int = 5
+
+# ---------------------------------------------------------------------------
+# Operational defaults
+# ---------------------------------------------------------------------------
+
+MAX_RETRIES: int = 3
+BRANCH_PREFIX: str = "arcwright/"
+
+# ---------------------------------------------------------------------------
+# Run ID and git templates
+# ---------------------------------------------------------------------------
+
+#: strftime format string for the datetime portion of a run ID.
+RUN_ID_DATETIME_FORMAT: str = "%Y%m%d-%H%M%S"
+
+COMMIT_MESSAGE_TEMPLATE: str = "[arcwright] {story_title}\n\nStory: {story_path}\nRun: {run_id}"
+WORKTREE_DIR_TEMPLATE: str = ".arcwright-ai/worktrees/{story_slug}"
+
+# ---------------------------------------------------------------------------
+# File names
+# ---------------------------------------------------------------------------
+
+LOG_FILENAME: str = "log.jsonl"
+RUN_METADATA_FILENAME: str = "run.yaml"
+SUMMARY_FILENAME: str = "summary.md"
+HALT_REPORT_FILENAME: str = "halt-report.md"
+
+# Story lifecycle file names (under runs/<run-id>/stories/<story-slug>/)
+STORY_COPY_FILENAME: str = "story.md"
+CONTEXT_BUNDLE_FILENAME: str = "context-bundle.md"
+AGENT_OUTPUT_FILENAME: str = "agent-output.md"
+VALIDATION_FILENAME: str = "validation.md"
