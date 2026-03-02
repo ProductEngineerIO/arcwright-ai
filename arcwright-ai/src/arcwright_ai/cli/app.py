@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import typer
 
-from arcwright_ai.cli.status import init_command
+from arcwright_ai.cli.status import init_command, validate_setup_command
 
 app = typer.Typer(
     name="arcwright-ai",
@@ -14,6 +14,7 @@ app = typer.Typer(
 
 # Register commands
 app.command(name="init")(init_command)
+app.command(name="validate-setup")(validate_setup_command)
 
 
 @app.callback(invoke_without_command=True)

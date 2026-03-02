@@ -46,7 +46,7 @@ development_status:
   1-2-core-types-lifecycle-and-exception-hierarchy: done
   1-3-configuration-system-with-two-tier-loading: done
   1-4-cli-init-command: done
-  1-5-cli-validate-setup-command: backlog
+  1-5-cli-validate-setup-command: done
   epic-1-retrospective: optional
 
   # Epic 2: Orchestration Engine & Agent Invocation (7 stories, 37 pts)
