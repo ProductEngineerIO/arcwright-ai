@@ -2,4 +2,382 @@
 
 from __future__ import annotations
 
-__all__: list[str] = []
+import asyncio
+import logging
+import os
+import random
+import re
+from dataclasses import dataclass
+from decimal import Decimal
+from typing import TYPE_CHECKING, Any
+
+from arcwright_ai.core.constants import DIR_ARCWRIGHT, DIR_TMP
+from arcwright_ai.core.exceptions import AgentError, AgentTimeoutError, SandboxViolation
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator, Awaitable, Callable
+    from pathlib import Path
+
+    from claude_code_sdk.types import PermissionResultAllow, PermissionResultDeny
+
+    from arcwright_ai.agent.sandbox import PathValidator
+
+__all__: list[str] = ["InvocationResult", "invoke_agent"]
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Module-level constants
+# ---------------------------------------------------------------------------
+
+_BACKOFF_BASE: float = 1.0
+_BACKOFF_CAP: float = 60.0
+_BACKOFF_MAX_RETRIES: int = 5
+_RATE_LIMIT_RE: re.Pattern[str] = re.compile(r"rate.?limit|429|too many requests", re.IGNORECASE)
+_FILE_WRITE_TOOLS: frozenset[str] = frozenset({"CreateFile", "Edit", "MultiEdit", "Write"})
+
+
+# ---------------------------------------------------------------------------
+# InvocationResult dataclass
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class InvocationResult:
+    """Result of a single Claude Code SDK invocation.
+
+    Captures the agent's output text, token consumption, cost, and
+    session metadata for budget tracking and provenance.
+
+    Attributes:
+        output_text: The agent's full text output (concatenated TextBlocks).
+        tokens_input: Input tokens consumed (from SDK usage report).
+        tokens_output: Output tokens consumed (from SDK usage report).
+        total_cost: Estimated cost in USD (Decimal for exact arithmetic).
+        duration_ms: Wall-clock duration of the invocation in milliseconds.
+        session_id: SDK session identifier for debugging.
+        num_turns: Number of conversational turns in the session.
+        is_error: Whether the SDK reported an error condition.
+    """
+
+    output_text: str
+    tokens_input: int
+    tokens_output: int
+    total_cost: Decimal
+    duration_ms: int
+    session_id: str
+    num_turns: int
+    is_error: bool
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+
+def _wrap_sdk_error(error: Exception) -> AgentError:
+    """Wrap an SDK or generic exception into the appropriate AgentError subclass.
+
+    Args:
+        error: The original exception to wrap.
+
+    Returns:
+        An ``AgentError`` (or appropriate subclass) preserving the original
+        message in ``details``.
+    """
+    from claude_code_sdk._errors import ClaudeSDKError
+
+    message = str(error)
+    details: dict[str, Any] = {"original_error": message}
+    if isinstance(error, ClaudeSDKError):
+        if re.search(r"timeout", message, re.IGNORECASE):
+            return AgentTimeoutError(f"Agent session timed out: {message}", details=details)
+        return AgentError(f"SDK error: {message}", details=details)
+    return AgentError(f"Unexpected error during agent invocation: {message}", details=details)
+
+
+def _validate_tool_use(block: Any, sandbox: PathValidator, cwd: Path) -> None:
+    """Validate a ToolUseBlock file path through the sandbox (defense-in-depth).
+
+    Called for every ToolUseBlock in the SDK stream after the primary
+    ``can_use_tool`` callback. Raises ``SandboxViolation`` to abort the
+    invocation if a file-writing tool targets a path outside the boundary.
+
+    Args:
+        block: A ``ToolUseBlock`` from the SDK message stream.
+        sandbox: The injected path validator function.
+        cwd: The working directory (sandbox boundary).
+
+    Raises:
+        SandboxViolation: If the tool targets a path outside the sandbox boundary.
+    """
+    from pathlib import Path as _Path
+
+    if block.name in _FILE_WRITE_TOOLS:
+        file_path_str: str | None = block.input.get("file_path") or block.input.get("path")
+        if file_path_str:
+            file_path = _Path(file_path_str)
+            temp_dir = (cwd / DIR_ARCWRIGHT / DIR_TMP).resolve()
+            candidate_path = file_path if file_path.is_absolute() else cwd.resolve() / file_path
+
+            if candidate_path.resolve().is_relative_to(temp_dir):
+                temp_dir.mkdir(parents=True, exist_ok=True)
+
+            try:
+                sandbox(file_path, cwd, block.name)
+            except SandboxViolation:
+                logger.info(
+                    "agent.sandbox.deny",
+                    extra={
+                        "data": {
+                            "tool": block.name,
+                            "path": str(file_path),
+                            "cwd": str(cwd),
+                        }
+                    },
+                )
+                raise
+
+            if file_path.is_absolute() and file_path.resolve().is_relative_to(temp_dir):
+                return
+
+            normalized_parts = os.path.normpath(file_path_str).split(os.sep)
+            if (
+                normalized_parts[:3] == [".", DIR_ARCWRIGHT, DIR_TMP]
+                or normalized_parts[:2] == [DIR_ARCWRIGHT, DIR_TMP]
+            ) and not candidate_path.resolve().is_relative_to(temp_dir):
+                raise SandboxViolation(
+                    f"Temp files must target {temp_dir}, got: {candidate_path.resolve()}",
+                    details={
+                        "path": file_path_str,
+                        "resolved": str(candidate_path.resolve()),
+                        "expected_tmp": str(temp_dir),
+                    },
+                )
+
+
+def _make_tool_validator(
+    sandbox: PathValidator,
+    cwd: Path,
+) -> Callable[[str, dict[str, Any], Any], Awaitable[PermissionResultAllow | PermissionResultDeny]]:
+    """Create a ``can_use_tool`` callback that enforces sandbox rules at the SDK level.
+
+    Returns an async callback compatible with ``ClaudeCodeOptions.can_use_tool``
+    that passes file-writing tool calls through the injected ``PathValidator``,
+    returning ``PermissionResultDeny`` for sandbox violations.
+
+    Args:
+        sandbox: The injected path validator.
+        cwd: The working directory (sandbox boundary).
+
+    Returns:
+        An async callback that returns ``PermissionResultAllow`` for safe paths
+        and ``PermissionResultDeny`` for sandbox violations.
+    """
+    from pathlib import Path as _Path
+
+    from claude_code_sdk.types import PermissionResultAllow, PermissionResultDeny
+
+    async def can_use_tool(
+        tool_name: str,
+        tool_input: dict[str, Any],
+        context: Any,
+    ) -> PermissionResultAllow | PermissionResultDeny:
+        if tool_name in _FILE_WRITE_TOOLS:
+            file_path_str: str | None = tool_input.get("file_path") or tool_input.get("path")
+            if file_path_str:
+                file_path = _Path(file_path_str)
+                temp_dir = (cwd / DIR_ARCWRIGHT / DIR_TMP).resolve()
+                candidate_path = file_path if file_path.is_absolute() else cwd.resolve() / file_path
+                if candidate_path.resolve().is_relative_to(temp_dir):
+                    temp_dir.mkdir(parents=True, exist_ok=True)
+
+                try:
+                    sandbox(file_path, cwd, tool_name)
+                except SandboxViolation as exc:
+                    logger.info(
+                        "agent.sandbox.deny",
+                        extra={
+                            "data": {
+                                "tool": tool_name,
+                                "path": file_path_str,
+                                "cwd": str(cwd),
+                                "reason": str(exc),
+                            }
+                        },
+                    )
+                    return PermissionResultDeny(message=str(exc))
+
+                if file_path.is_absolute() and file_path.resolve().is_relative_to(temp_dir):
+                    return PermissionResultAllow()
+
+                normalized_parts = os.path.normpath(file_path_str).split(os.sep)
+                if (
+                    normalized_parts[:3] == [".", DIR_ARCWRIGHT, DIR_TMP]
+                    or normalized_parts[:2] == [DIR_ARCWRIGHT, DIR_TMP]
+                ) and not candidate_path.resolve().is_relative_to(temp_dir):
+                    return PermissionResultDeny(
+                        message=f"Temp files must target {temp_dir}, got: {candidate_path.resolve()}"
+                    )
+        return PermissionResultAllow()
+
+    return can_use_tool
+
+
+async def _invoke_with_backoff(
+    prompt: str,
+    options: Any,
+) -> AsyncGenerator[Any, None]:
+    """Invoke the SDK with exponential backoff on rate limit errors.
+
+    Calls ``claude_code_sdk.query()`` and re-yields all messages. On rate
+    limit errors (detected via regex on the error message) it sleeps with
+    exponential backoff and jitter before retrying, up to
+    ``_BACKOFF_MAX_RETRIES`` attempts.
+
+    Args:
+        prompt: The prompt string to pass to the SDK.
+        options: A ``ClaudeCodeOptions`` instance.
+
+    Yields:
+        Typed SDK message objects as yielded by ``claude_code_sdk.query()``.
+
+    Raises:
+        AgentError: On non-rate-limit SDK errors or when max retries is exhausted.
+    """
+    from claude_code_sdk import query as sdk_query
+    from claude_code_sdk._errors import ClaudeSDKError
+
+    for attempt in range(_BACKOFF_MAX_RETRIES):
+        try:
+            async for message in sdk_query(prompt=prompt, options=options):
+                yield message
+            return
+        except ClaudeSDKError as exc:
+            if _RATE_LIMIT_RE.search(str(exc)):
+                wait = min(
+                    _BACKOFF_BASE * (2**attempt) + random.uniform(0, 0.5),
+                    _BACKOFF_CAP,
+                )
+                logger.info(
+                    "agent.rate_limit",
+                    extra={
+                        "data": {
+                            "attempt": attempt + 1,
+                            "wait_seconds": round(wait, 2),
+                        }
+                    },
+                )
+                await asyncio.sleep(wait)
+            else:
+                raise _wrap_sdk_error(exc) from exc
+
+    raise AgentError(
+        "Rate limit: max retries exhausted",
+        details={"attempts": _BACKOFF_MAX_RETRIES},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+
+async def invoke_agent(
+    prompt: str,
+    *,
+    model: str,
+    cwd: Path,
+    sandbox: PathValidator,
+    max_turns: int | None = None,
+) -> InvocationResult:
+    """Invoke Claude Code SDK to execute a story implementation.
+
+    Calls the SDK's ``query()`` async iterator, processes streaming messages,
+    validates file operations through the injected sandbox, and captures
+    token usage for budget tracking. Each invocation is stateless — no
+    persistent agent state is shared between calls.
+
+    Args:
+        prompt: The assembled prompt string from ``build_prompt()``.
+        model: Claude model version identifier
+            (e.g., ``"claude-sonnet-4-20250514"``).
+        cwd: Working directory for agent file operations (typically the
+            worktree path). Also serves as the sandbox boundary.
+        sandbox: Path validator function (``PathValidator`` protocol) for
+            sandbox enforcement via dependency injection.
+        max_turns: Optional maximum number of conversational turns.
+
+    Returns:
+        ``InvocationResult`` containing agent output, token usage, cost,
+        and session metadata.
+
+    Raises:
+        AgentError: On SDK invocation failure (network, process crash,
+            malformed response), or when rate limit max retries is exhausted.
+        AgentTimeoutError: On SDK timeout.
+        SandboxViolation: If the agent attempts a file operation outside
+            the sandbox boundary.
+    """
+    from claude_code_sdk import ClaudeCodeOptions, query  # noqa: F401
+    from claude_code_sdk.types import AssistantMessage, ResultMessage, TextBlock, ToolUseBlock
+
+    options = ClaudeCodeOptions(
+        model=model,
+        cwd=str(cwd),
+        permission_mode="bypassPermissions",
+        max_turns=max_turns,
+        can_use_tool=_make_tool_validator(sandbox, cwd),
+    )
+
+    output_parts: list[str] = []
+    result_message: ResultMessage | None = None
+
+    try:
+        async for message in _invoke_with_backoff(prompt, options):
+            if isinstance(message, AssistantMessage):
+                for block in message.content:
+                    if isinstance(block, TextBlock):
+                        output_parts.append(block.text)
+                    elif isinstance(block, ToolUseBlock):
+                        _validate_tool_use(block, sandbox, cwd)
+            elif isinstance(message, ResultMessage):
+                result_message = message
+    except AgentError:
+        raise
+    except Exception as exc:
+        raise _wrap_sdk_error(exc) from exc
+
+    if result_message is None:
+        raise AgentError(
+            "SDK stream ended without ResultMessage",
+            details={"prompt_length": len(prompt)},
+        )
+
+    usage: dict[str, Any] = result_message.usage or {}
+    tokens_input: int = int(usage.get("input_tokens", 0))
+    tokens_output: int = int(usage.get("output_tokens", 0))
+    cost_float: float = result_message.total_cost_usd or 0.0
+
+    logger.info(
+        "agent.response",
+        extra={
+            "data": {
+                "tokens_input": tokens_input,
+                "tokens_output": tokens_output,
+                "cost_usd": str(round(cost_float, 6)),
+                "session_id": result_message.session_id,
+            }
+        },
+    )
+
+    return InvocationResult(
+        output_text="".join(output_parts),
+        tokens_input=tokens_input,
+        tokens_output=tokens_output,
+        total_cost=Decimal(str(cost_float)),
+        duration_ms=result_message.duration_ms,
+        session_id=result_message.session_id,
+        num_turns=result_message.num_turns,
+        is_error=result_message.is_error,
+    )
