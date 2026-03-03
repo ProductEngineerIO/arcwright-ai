@@ -7,9 +7,18 @@ import logging
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
+from arcwright_ai.agent.invoker import invoke_agent
+from arcwright_ai.agent.prompt import build_prompt
+from arcwright_ai.agent.sandbox import validate_path
 from arcwright_ai.context.injector import build_context_bundle, serialize_bundle_to_markdown
-from arcwright_ai.core.constants import CONTEXT_BUNDLE_FILENAME, DIR_ARCWRIGHT, DIR_RUNS, DIR_STORIES
-from arcwright_ai.core.exceptions import ContextError
+from arcwright_ai.core.constants import (
+    AGENT_OUTPUT_FILENAME,
+    CONTEXT_BUNDLE_FILENAME,
+    DIR_ARCWRIGHT,
+    DIR_RUNS,
+    DIR_STORIES,
+)
+from arcwright_ai.core.exceptions import AgentError, ContextError
 from arcwright_ai.core.io import write_text_async
 from arcwright_ai.core.lifecycle import TaskState
 from arcwright_ai.engine.state import StoryState  # noqa: TC001
@@ -121,16 +130,83 @@ async def budget_check_node(state: StoryState) -> StoryState:
 
 
 async def agent_dispatch_node(state: StoryState) -> StoryState:
-    """Placeholder agent dispatch node — transitions RUNNING → VALIDATING.
+    """Agent dispatch node — invokes Claude Code SDK with assembled context.
+
+    Builds the SDK prompt from the preflight context bundle, invokes the
+    agent, captures output and token usage, writes the agent output
+    checkpoint, and transitions status from RUNNING → VALIDATING.
 
     Args:
-        state: Current story execution state.
+        state: Current story execution state (expected status: RUNNING,
+            context_bundle populated by preflight).
 
     Returns:
-        Updated state with status set to VALIDATING.
+        Updated state with agent_output, budget updated, status VALIDATING.
+
+    Raises:
+        ContextError: If context_bundle is None (preflight did not run).
+        AgentError: If the SDK invocation fails.
     """
     logger.info("engine.node.enter", extra={"data": {"node": "agent_dispatch", "story": str(state.story_id)}})
-    updated = state.model_copy(update={"status": TaskState.VALIDATING})
+
+    if state.context_bundle is None:
+        raise ContextError("agent_dispatch_node requires context_bundle from preflight")
+
+    prompt = build_prompt(state.context_bundle)
+    logger.info(
+        "agent.dispatch",
+        extra={
+            "data": {
+                "story": str(state.story_id),
+                "model": state.config.model.version,
+                "prompt_length": len(prompt),
+            }
+        },
+    )
+
+    try:
+        result = await invoke_agent(
+            prompt,
+            model=state.config.model.version,
+            cwd=state.project_root,
+            sandbox=validate_path,
+        )
+    except AgentError:
+        logger.info(
+            "agent.error",
+            extra={"data": {"node": "agent_dispatch", "story": str(state.story_id), "status": str(state.status)}},
+        )
+        logger.info(
+            "engine.node.exit",
+            extra={"data": {"node": "agent_dispatch", "story": str(state.story_id), "status": str(state.status)}},
+        )
+        raise
+
+    # Update budget
+    new_budget = state.budget.model_copy(
+        update={
+            "invocation_count": state.budget.invocation_count + 1,
+            "total_tokens": state.budget.total_tokens + result.tokens_input + result.tokens_output,
+            "estimated_cost": state.budget.estimated_cost + result.total_cost,
+        }
+    )
+
+    # Write agent output checkpoint
+    checkpoint_dir: Path = (
+        state.project_root / DIR_ARCWRIGHT / DIR_RUNS / str(state.run_id) / DIR_STORIES / str(state.story_id)
+    )
+    await asyncio.to_thread(checkpoint_dir.mkdir, parents=True, exist_ok=True)
+    await write_text_async(checkpoint_dir / AGENT_OUTPUT_FILENAME, result.output_text)
+
+    # Transition: RUNNING → VALIDATING
+    updated = state.model_copy(
+        update={
+            "agent_output": result.output_text,
+            "budget": new_budget,
+            "status": TaskState.VALIDATING,
+        }
+    )
+
     logger.info(
         "engine.node.exit",
         extra={"data": {"node": "agent_dispatch", "story": str(state.story_id), "status": str(updated.status)}},

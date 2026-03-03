@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from langgraph.graph.state import CompiledStateGraph
 
+from arcwright_ai.agent.invoker import InvocationResult
 from arcwright_ai.core.config import ApiConfig, RunConfig
 from arcwright_ai.core.lifecycle import TaskState
 from arcwright_ai.core.types import BudgetState, EpicId, RunId, StoryId
@@ -57,6 +58,25 @@ def graph_project_state(tmp_path: Path) -> StoryState:
     )
 
 
+@pytest.fixture
+def mock_agent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Monkeypatch invoke_agent for graph integration tests that traverse agent_dispatch."""
+
+    async def _mock(*args: object, **kwargs: object) -> InvocationResult:
+        return InvocationResult(
+            output_text="Mock agent output",
+            tokens_input=100,
+            tokens_output=50,
+            total_cost=Decimal("0.01"),
+            duration_ms=100,
+            session_id="mock-session",
+            num_turns=1,
+            is_error=False,
+        )
+
+    monkeypatch.setattr("arcwright_ai.engine.nodes.invoke_agent", _mock)
+
+
 # ---------------------------------------------------------------------------
 # Graph construction tests
 # ---------------------------------------------------------------------------
@@ -94,7 +114,10 @@ def test_graph_contains_expected_conditional_routing() -> None:
 
 
 @pytest.mark.asyncio
-async def test_graph_success_path_end_to_end(graph_project_state: StoryState) -> None:
+async def test_graph_success_path_end_to_end(
+    graph_project_state: StoryState,
+    mock_agent: None,
+) -> None:
     graph = build_story_graph()
     result = await graph.ainvoke(graph_project_state)
     # LangGraph may return a dict or a state object depending on config
@@ -103,14 +126,20 @@ async def test_graph_success_path_end_to_end(graph_project_state: StoryState) ->
 
 
 @pytest.mark.asyncio
-async def test_graph_invocation_no_errors(graph_project_state: StoryState) -> None:
+async def test_graph_invocation_no_errors(
+    graph_project_state: StoryState,
+    mock_agent: None,
+) -> None:
     graph = build_story_graph()
     # Should not raise
     await graph.ainvoke(graph_project_state)
 
 
 @pytest.mark.asyncio
-async def test_graph_budget_exceeded_path_escalates_and_exits(graph_project_state: StoryState) -> None:
+async def test_graph_budget_exceeded_path_escalates_and_exits(
+    graph_project_state: StoryState,
+    mock_agent: None,
+) -> None:
     graph = build_story_graph()
     initial_state = graph_project_state.model_copy(
         update={

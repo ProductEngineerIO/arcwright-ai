@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Deterministic orchestration shell for autonomous AI agent execution"
 requires-python = ">=3.11"
 license = { text = "MIT" }
-authors = [{ name = "Ed" }]
+authors = [{ name = "Ed Hertzog" }]
 dependencies = [
     "langgraph>=0.2,<1.0",
     "typer[all]>=0.12,<1.0",

@@ -1,4 +1,4 @@
-"""Tests for engine/nodes.py — placeholder node functions and routing logic."""
+"""Tests for engine/nodes.py — graph node implementations and routing logic."""
 
 from __future__ import annotations
 
@@ -8,9 +8,16 @@ from pathlib import Path
 
 import pytest
 
+from arcwright_ai.agent.invoker import InvocationResult
 from arcwright_ai.core.config import ApiConfig, RunConfig
-from arcwright_ai.core.constants import CONTEXT_BUNDLE_FILENAME, DIR_ARCWRIGHT, DIR_RUNS, DIR_STORIES
-from arcwright_ai.core.exceptions import ContextError
+from arcwright_ai.core.constants import (
+    AGENT_OUTPUT_FILENAME,
+    CONTEXT_BUNDLE_FILENAME,
+    DIR_ARCWRIGHT,
+    DIR_RUNS,
+    DIR_STORIES,
+)
+from arcwright_ai.core.exceptions import AgentError, ContextError
 from arcwright_ai.core.lifecycle import TaskState
 from arcwright_ai.core.types import BudgetState, ContextBundle, EpicId, RunId, StoryId
 from arcwright_ai.engine.nodes import (
@@ -101,10 +108,11 @@ async def test_budget_check_node_transitions_to_escalated_when_budget_exceeded(m
 
 
 @pytest.mark.asyncio
-async def test_agent_dispatch_node_transitions_to_validating(make_story_state: StoryState) -> None:
-    state = make_story_state.model_copy(update={"status": TaskState.RUNNING})
-    result = await agent_dispatch_node(state)
-    assert result.status == TaskState.VALIDATING
+async def test_agent_dispatch_node_raises_context_error_when_bundle_missing(make_story_state: StoryState) -> None:
+    """agent_dispatch_node raises ContextError if context_bundle is None."""
+    state = make_story_state.model_copy(update={"status": TaskState.RUNNING, "context_bundle": None})
+    with pytest.raises(ContextError, match="context_bundle"):
+        await agent_dispatch_node(state)
 
 
 @pytest.mark.asyncio
@@ -335,4 +343,119 @@ async def test_preflight_node_emits_structured_log_events(
     messages = {r.message for r in caplog.records}
     assert "engine.node.enter" in messages
     assert "context.resolve" in messages
+    assert "engine.node.exit" in messages
+
+
+# ---------------------------------------------------------------------------
+# agent_dispatch_node — real SDK invocation tests (Task 6)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def mock_invoke_result() -> InvocationResult:
+    """Minimal InvocationResult for mocking invoke_agent in dispatch tests."""
+    return InvocationResult(
+        output_text="# Mock Implementation\nDone.",
+        tokens_input=500,
+        tokens_output=200,
+        total_cost=Decimal("0.05"),
+        duration_ms=1000,
+        session_id="test-session-001",
+        num_turns=3,
+        is_error=False,
+    )
+
+
+@pytest.fixture
+async def dispatch_ready_state(
+    story_state_with_project: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_invoke_result: InvocationResult,
+) -> StoryState:
+    """StoryState after preflight with invoke_agent monkeypatched.
+
+    Runs preflight_node on story_state_with_project to populate context_bundle,
+    then patches invoke_agent so agent_dispatch_node avoids real SDK calls.
+    """
+    state = await preflight_node(story_state_with_project)
+
+    async def _mock_invoke(*args: object, **kwargs: object) -> InvocationResult:
+        return mock_invoke_result
+
+    monkeypatch.setattr("arcwright_ai.engine.nodes.invoke_agent", _mock_invoke)
+    return state
+
+
+@pytest.mark.asyncio
+async def test_agent_dispatch_node_invokes_sdk_and_transitions_to_validating(
+    dispatch_ready_state: StoryState,
+    mock_invoke_result: InvocationResult,
+) -> None:
+    """Successful agent_dispatch_node transitions to VALIDATING with agent output."""
+    result = await agent_dispatch_node(dispatch_ready_state)
+    assert result.status == TaskState.VALIDATING
+    assert result.agent_output == mock_invoke_result.output_text
+
+
+@pytest.mark.asyncio
+async def test_agent_dispatch_node_updates_budget(
+    dispatch_ready_state: StoryState,
+    mock_invoke_result: InvocationResult,
+) -> None:
+    """agent_dispatch_node increments invocation_count, total_tokens, and estimated_cost."""
+    result = await agent_dispatch_node(dispatch_ready_state)
+    assert result.budget.invocation_count == 1
+    expected_tokens = mock_invoke_result.tokens_input + mock_invoke_result.tokens_output
+    assert result.budget.total_tokens == expected_tokens
+    assert result.budget.estimated_cost == mock_invoke_result.total_cost
+
+
+@pytest.mark.asyncio
+async def test_agent_dispatch_node_writes_agent_output_checkpoint(
+    dispatch_ready_state: StoryState,
+    mock_invoke_result: InvocationResult,
+) -> None:
+    """agent_dispatch_node writes agent-output.md checkpoint at the expected path."""
+    await agent_dispatch_node(dispatch_ready_state)
+
+    checkpoint_file = (
+        dispatch_ready_state.project_root
+        / DIR_ARCWRIGHT
+        / DIR_RUNS
+        / str(dispatch_ready_state.run_id)
+        / DIR_STORIES
+        / str(dispatch_ready_state.story_id)
+        / AGENT_OUTPUT_FILENAME
+    )
+    assert checkpoint_file.exists()
+    assert checkpoint_file.read_text(encoding="utf-8") == mock_invoke_result.output_text
+
+
+@pytest.mark.asyncio
+async def test_agent_dispatch_node_raises_agent_error_on_sdk_failure(
+    dispatch_ready_state: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """agent_dispatch_node propagates AgentError when invoke_agent raises it."""
+
+    async def _raise_agent_error(*args: object, **kwargs: object) -> InvocationResult:
+        raise AgentError("SDK connection failed")
+
+    monkeypatch.setattr("arcwright_ai.engine.nodes.invoke_agent", _raise_agent_error)
+    with pytest.raises(AgentError, match="SDK connection failed"):
+        await agent_dispatch_node(dispatch_ready_state)
+
+
+@pytest.mark.asyncio
+async def test_agent_dispatch_node_emits_structured_log_events(
+    dispatch_ready_state: StoryState,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """engine.node.enter, agent.dispatch, and engine.node.exit log events are emitted."""
+    with caplog.at_level(logging.INFO):
+        await agent_dispatch_node(dispatch_ready_state)
+
+    messages = {r.message for r in caplog.records}
+    assert "engine.node.enter" in messages
+    assert "agent.dispatch" in messages
     assert "engine.node.exit" in messages
