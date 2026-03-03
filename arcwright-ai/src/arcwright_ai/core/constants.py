@@ -40,6 +40,8 @@ __all__: list[str] = [
     "HALT_REPORT_FILENAME",
     "LOG_FILENAME",
     "MAX_RETRIES",
+    "PYTHON_DIRNAME_PATTERN",
+    "PYTHON_FILENAME_PATTERN",
     "RUN_ID_DATETIME_FORMAT",
     "RUN_METADATA_FILENAME",
     "STORY_COPY_FILENAME",
@@ -77,6 +79,10 @@ EXIT_INTERNAL: int = 5
 
 MAX_RETRIES: int = 3
 BRANCH_PREFIX: str = "arcwright/"
+
+# Naming convention patterns
+PYTHON_FILENAME_PATTERN: str = r"^[a-z][a-z0-9_]*\.py$"
+PYTHON_DIRNAME_PATTERN: str = r"^[a-z][a-z0-9_]*$"
 
 # ---------------------------------------------------------------------------
 # Run ID and git templates

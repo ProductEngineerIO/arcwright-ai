@@ -210,6 +210,8 @@ def test_all_symbols_exported() -> None:
         "HALT_REPORT_FILENAME",
         "LOG_FILENAME",
         "MAX_RETRIES",
+        "PYTHON_DIRNAME_PATTERN",
+        "PYTHON_FILENAME_PATTERN",
         "RUN_ID_DATETIME_FORMAT",
         "RUN_METADATA_FILENAME",
         "STORY_COPY_FILENAME",
