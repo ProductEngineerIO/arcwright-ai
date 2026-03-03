@@ -235,6 +235,10 @@ async def _invoke_with_backoff(
     exponential backoff and jitter before retrying, up to
     ``_BACKOFF_MAX_RETRIES`` attempts.
 
+    When ``can_use_tool`` is set on options, the SDK requires the prompt
+    to be an ``AsyncIterable`` (streaming mode).  We wrap the plain string
+    into a single-message async iterable to satisfy this contract.
+
     Args:
         prompt: The prompt string to pass to the SDK.
         options: A ``ClaudeCodeOptions`` instance.
@@ -248,9 +252,20 @@ async def _invoke_with_backoff(
     from claude_code_sdk import query as sdk_query
     from claude_code_sdk._errors import ClaudeSDKError
 
+    # SDK requires AsyncIterable prompt when can_use_tool is configured
+    needs_streaming = getattr(options, "can_use_tool", None) is not None
+
     for attempt in range(_BACKOFF_MAX_RETRIES):
         try:
-            async for message in sdk_query(prompt=prompt, options=options):
+
+            async def _prompt_stream() -> AsyncGenerator[dict[str, Any], None]:
+                yield {
+                    "type": "user",
+                    "message": {"role": "user", "content": prompt},
+                }
+
+            sdk_prompt: str | AsyncGenerator[dict[str, Any], None] = _prompt_stream() if needs_streaming else prompt
+            async for message in sdk_query(prompt=sdk_prompt, options=options):
                 yield message
             return
         except ClaudeSDKError as exc:

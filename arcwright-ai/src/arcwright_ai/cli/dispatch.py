@@ -207,21 +207,28 @@ def _find_epic_stories(epic_spec: str, artifacts_dir: Path) -> list[tuple[Path, 
 
 
 def _discover_project_root() -> Path:
-    """Discover the project root from the current working directory.
+    """Discover the project root by walking up from the current working directory.
 
-    Searches cwd for .arcwright-ai/ or _spec/ markers.
+    Searches cwd and each parent for .arcwright-ai/ or _spec/ markers.
+    Stops at the filesystem root.
 
     Returns:
         Path to the project root.
 
     Raises:
-        ProjectError: If no project root markers are found in cwd.
+        ProjectError: If no project root markers are found in cwd or any parent.
     """
-    cwd = Path.cwd()
-    if (cwd / DIR_ARCWRIGHT).exists() or (cwd / "_spec").exists():
-        return cwd
+    candidate = Path.cwd().resolve()
+    while True:
+        if (candidate / DIR_ARCWRIGHT).exists() or (candidate / "_spec").exists():
+            return candidate
+        parent = candidate.parent
+        if parent == candidate:
+            break
+        candidate = parent
     raise ProjectError(
-        f"Could not find project root from {cwd}. Ensure .arcwright-ai/ or _spec/ exists in the current directory."
+        f"Could not find project root from {Path.cwd()}. "
+        "Ensure .arcwright-ai/ or _spec/ exists in the current directory or a parent directory."
     )
 
 
