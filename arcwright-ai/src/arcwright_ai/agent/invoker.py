@@ -30,9 +30,9 @@ logger = logging.getLogger(__name__)
 # Module-level constants
 # ---------------------------------------------------------------------------
 
-_BACKOFF_BASE: float = 1.0
-_BACKOFF_CAP: float = 60.0
-_BACKOFF_MAX_RETRIES: int = 5
+_BACKOFF_BASE: float = 2.0
+_BACKOFF_CAP: float = 120.0
+_BACKOFF_MAX_RETRIES: int = 7
 _RATE_LIMIT_RE: re.Pattern[str] = re.compile(r"rate.?limit|429|too many requests", re.IGNORECASE)
 _FILE_WRITE_TOOLS: frozenset[str] = frozenset({"CreateFile", "Edit", "MultiEdit", "Write"})
 
@@ -250,7 +250,7 @@ async def _invoke_with_backoff(
         AgentError: On non-rate-limit SDK errors or when max retries is exhausted.
     """
     from claude_code_sdk import query as sdk_query
-    from claude_code_sdk._errors import ClaudeSDKError
+    from claude_code_sdk._errors import ClaudeSDKError, MessageParseError
 
     # SDK requires AsyncIterable prompt when can_use_tool is configured
     needs_streaming = getattr(options, "can_use_tool", None) is not None
@@ -268,8 +268,32 @@ async def _invoke_with_backoff(
             async for message in sdk_query(prompt=sdk_prompt, options=options):
                 yield message
             return
+        except MessageParseError as exc:
+            # SDK v0.0.25 doesn't handle some streaming message types
+            # (e.g. rate_limit_event).  These are informational — log and
+            # retry so the agent can continue on the next attempt.
+            error_detail = str(exc)
+            logger.info(
+                "agent.sdk_parse_error",
+                extra={
+                    "data": {
+                        "attempt": attempt + 1,
+                        "error": error_detail,
+                    }
+                },
+            )
+            wait = min(
+                _BACKOFF_BASE * (2**attempt) + random.uniform(0, 0.5),
+                _BACKOFF_CAP,
+            )
+            await asyncio.sleep(wait)
         except ClaudeSDKError as exc:
-            if _RATE_LIMIT_RE.search(str(exc)):
+            error_detail: str = str(exc)
+            stderr: str | None = getattr(exc, "stderr", None)
+            exit_code: int | None = getattr(exc, "exit_code", None)
+            if stderr:
+                error_detail = f"{error_detail} | stderr={stderr}"
+            if _RATE_LIMIT_RE.search(error_detail):
                 wait = min(
                     _BACKOFF_BASE * (2**attempt) + random.uniform(0, 0.5),
                     _BACKOFF_CAP,
@@ -280,6 +304,8 @@ async def _invoke_with_backoff(
                         "data": {
                             "attempt": attempt + 1,
                             "wait_seconds": round(wait, 2),
+                            "error": error_detail,
+                            "exit_code": exit_code,
                         }
                     },
                 )
