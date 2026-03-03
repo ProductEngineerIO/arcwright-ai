@@ -362,11 +362,12 @@ async def _resolve_architecture_references(
     return resolved
 
 
-async def _load_project_conventions(project_root: Path) -> str:
+async def _load_project_conventions(project_root: Path, artifacts_path: str = DIR_SPEC) -> str:
     """Load project conventions content for context bundling if available.
 
     Args:
         project_root: Root directory of the project.
+        artifacts_path: Relative path to the artifacts directory (default ``_spec``).
 
     Returns:
         Project conventions markdown content, or an empty string when no
@@ -375,7 +376,7 @@ async def _load_project_conventions(project_root: Path) -> str:
     candidate_paths = [
         project_root / "project-context.md",
         project_root / "docs" / "project-context.md",
-        project_root / DIR_SPEC / "planning-artifacts" / "project-context.md",
+        project_root / artifacts_path / "planning-artifacts" / "project-context.md",
     ]
 
     for candidate_path in candidate_paths:
@@ -420,6 +421,7 @@ async def build_context_bundle(
     story_path: Path,
     project_root: Path,
     *,
+    artifacts_path: str = DIR_SPEC,
     prd_path: Path | None = None,
     architecture_path: Path | None = None,
 ) -> ContextBundle:
@@ -433,11 +435,14 @@ async def build_context_bundle(
     Args:
         story_path: Path to the BMAD story markdown file.
         project_root: Root directory of the project.
+        artifacts_path: Relative path from project root to the artifacts
+            directory (e.g. ``"_spec"`` or ``"_bmad-output"``).  Defaults to
+            ``_spec``.
         prd_path: Optional explicit path to PRD document.  If ``None``, derived
-            from ``project_root / _spec / planning-artifacts / prd.md``.
+            from ``project_root / artifacts_path / planning-artifacts / prd.md``.
         architecture_path: Optional explicit path to architecture document.  If
-            ``None``, derived from ``project_root / _spec / planning-artifacts /
-            architecture.md``.
+            ``None``, derived from ``project_root / artifacts_path /
+            planning-artifacts / architecture.md``.
 
     Returns:
         Assembled context bundle with resolved references.
@@ -445,7 +450,7 @@ async def build_context_bundle(
     Raises:
         ContextError: If story file is missing or unreadable.
     """
-    spec_dir = project_root / DIR_SPEC / "planning-artifacts"
+    spec_dir = project_root / artifacts_path / "planning-artifacts"
 
     effective_prd = prd_path if prd_path is not None else spec_dir / "prd.md"
     effective_arch = architecture_path if architecture_path is not None else spec_dir / "architecture.md"
@@ -456,7 +461,7 @@ async def build_context_bundle(
         _resolve_fr_references(parsed.fr_references, effective_prd),
         _resolve_nfr_references(parsed.nfr_references, effective_prd),
         _resolve_architecture_references(parsed.architecture_references, effective_arch),
-        _load_project_conventions(project_root),
+        _load_project_conventions(project_root, artifacts_path),
     )
 
     total_found = len(fr_results) + len(nfr_results) + len(arch_results)

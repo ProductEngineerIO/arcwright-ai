@@ -216,6 +216,7 @@ class RuleIndex:
         cls,
         project_root: Path,
         *,
+        artifacts_path: str = DIR_SPEC,
         doc_paths: list[Path] | None = None,
     ) -> RuleIndex:
         """Build a ``RuleIndex`` from BMAD project documents.
@@ -223,8 +224,8 @@ class RuleIndex:
         When *doc_paths* is not supplied, the method discovers documents from
         the conventional locations:
 
-        * ``{project_root}/_spec/planning-artifacts/architecture.md``
-        * ``{project_root}/_spec/planning-artifacts/prd.md``
+        * ``{project_root}/{artifacts_path}/planning-artifacts/architecture.md``
+        * ``{project_root}/{artifacts_path}/planning-artifacts/prd.md``
         * All ``*.md`` files directly under ``{project_root}/docs/`` (if the
           directory exists).
 
@@ -233,6 +234,9 @@ class RuleIndex:
 
         Args:
             project_root: Root directory of the Arcwright AI project.
+            artifacts_path: Relative path from project root to the artifacts
+                directory (e.g. ``"_spec"`` or ``"_bmad-output"``).  Defaults
+                to ``_spec``.
             doc_paths: Explicit list of document paths to index.  When
                 provided, auto-discovery is skipped entirely.
 
@@ -242,7 +246,7 @@ class RuleIndex:
         import asyncio
 
         if doc_paths is None:
-            spec_dir = project_root / DIR_SPEC / "planning-artifacts"
+            spec_dir = project_root / artifacts_path / "planning-artifacts"
             docs_dir = project_root / "docs"
 
             candidates: list[Path] = [

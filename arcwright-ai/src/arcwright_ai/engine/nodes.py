@@ -62,7 +62,11 @@ async def preflight_node(state: StoryState) -> StoryState:
     state = state.model_copy(update={"status": TaskState.PREFLIGHT})
 
     try:
-        bundle = await build_context_bundle(state.story_path, state.project_root)
+        bundle = await build_context_bundle(
+            state.story_path,
+            state.project_root,
+            artifacts_path=state.config.methodology.artifacts_path,
+        )
     except ContextError:
         logger.info(
             "context.error",

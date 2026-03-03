@@ -311,6 +311,41 @@ async def test_build_context_bundle_loads_project_conventions(story_file: Path, 
     assert "Use snake_case." in bundle.answerer_rules
 
 
+@pytest.mark.asyncio
+async def test_build_context_bundle_custom_artifacts_path(story_file: Path, tmp_path: Path) -> None:
+    """Custom artifacts_path resolves PRD/arch from alternate directory."""
+    custom = tmp_path / "_bmad-output" / "planning-artifacts"
+    custom.mkdir(parents=True)
+    (custom / "prd.md").write_text(SAMPLE_PRD_CONTENT, encoding="utf-8")
+    (custom / "architecture.md").write_text(SAMPLE_ARCHITECTURE_CONTENT, encoding="utf-8")
+
+    bundle = await build_context_bundle(story_file, tmp_path, artifacts_path="_bmad-output")
+
+    assert isinstance(bundle, ContextBundle)
+    assert bundle.story_content  # non-empty
+    assert "FR" in bundle.domain_requirements
+    assert "Decision" in bundle.architecture_sections
+
+
+@pytest.mark.asyncio
+async def test_build_context_bundle_custom_path_ignores_default_spec(story_file: Path, tmp_path: Path) -> None:
+    """When artifacts_path is specified, _spec is NOT searched."""
+    # Put files under _spec (should be ignored)
+    spec = tmp_path / "_spec" / "planning-artifacts"
+    spec.mkdir(parents=True)
+    (spec / "prd.md").write_text(SAMPLE_PRD_CONTENT, encoding="utf-8")
+
+    # Custom dir has no PRD
+    custom = tmp_path / "_bmad-output" / "planning-artifacts"
+    custom.mkdir(parents=True)
+    (custom / "architecture.md").write_text(SAMPLE_ARCHITECTURE_CONTENT, encoding="utf-8")
+
+    bundle = await build_context_bundle(story_file, tmp_path, artifacts_path="_bmad-output")
+
+    # PRD should NOT be found since we're looking in _bmad-output, not _spec
+    assert bundle.domain_requirements == ""
+
+
 # ---------------------------------------------------------------------------
 # Task 4 — Markdown serialisation tests (AC #8)
 # ---------------------------------------------------------------------------
