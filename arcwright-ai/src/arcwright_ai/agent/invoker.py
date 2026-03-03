@@ -36,6 +36,40 @@ _BACKOFF_MAX_RETRIES: int = 7
 _RATE_LIMIT_RE: re.Pattern[str] = re.compile(r"rate.?limit|429|too many requests", re.IGNORECASE)
 _FILE_WRITE_TOOLS: frozenset[str] = frozenset({"CreateFile", "Edit", "MultiEdit", "Write"})
 
+# Flag prevents double-patching across multiple invoke_agent calls.
+_SDK_PARSER_PATCHED: bool = False
+
+
+def _patch_sdk_parser() -> None:
+    """Monkeypatch the SDK message parser to skip unknown message types.
+
+    Claude Code SDK v0.0.25 raises ``MessageParseError`` for unrecognised
+    streaming message types (e.g. ``rate_limit_event``).  This patch wraps
+    ``parse_message`` so it returns ``None`` for unknown types instead of
+    raising, allowing the async generator in ``client.py`` to ``yield None``
+    which the invoker then filters out.
+    """
+    global _SDK_PARSER_PATCHED  # noqa: PLW0603
+    if _SDK_PARSER_PATCHED:
+        return
+
+    import claude_code_sdk._internal.client as _client_mod
+    import claude_code_sdk._internal.message_parser as _parser_mod
+
+    _original = _parser_mod.parse_message
+
+    def _safe_parse_message(data: Any) -> Any:
+        try:
+            return _original(data)
+        except Exception:
+            msg_type = data.get("type", "<unknown>") if isinstance(data, dict) else "<invalid>"
+            logger.debug("Skipping unrecognised SDK message type: %s", msg_type)
+            return None
+
+    # Patch the name *in the client module* (where it was imported).
+    _client_mod.parse_message = _safe_parse_message
+    _SDK_PARSER_PATCHED = True
+
 
 # ---------------------------------------------------------------------------
 # InvocationResult dataclass
@@ -252,6 +286,10 @@ async def _invoke_with_backoff(
     from claude_code_sdk import query as sdk_query
     from claude_code_sdk._errors import ClaudeSDKError, MessageParseError
 
+    # Ensure the SDK parser tolerates unknown message types (e.g.
+    # rate_limit_event in v0.0.25) before we start streaming.
+    _patch_sdk_parser()
+
     # SDK requires AsyncIterable prompt when can_use_tool is configured
     needs_streaming = getattr(options, "can_use_tool", None) is not None
 
@@ -266,6 +304,10 @@ async def _invoke_with_backoff(
 
             sdk_prompt: str | AsyncGenerator[dict[str, Any], None] = _prompt_stream() if needs_streaming else prompt
             async for message in sdk_query(prompt=sdk_prompt, options=options):
+                if message is None:
+                    # Patched parse_message returned None for an unknown
+                    # message type — skip silently.
+                    continue
                 yield message
             return
         except MessageParseError as exc:

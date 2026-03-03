@@ -12,7 +12,7 @@ import pytest
 from claude_code_sdk._errors import ClaudeSDKError
 from tests.fixtures.mock_sdk import MockSDKClient
 
-from arcwright_ai.agent.invoker import InvocationResult, invoke_agent
+from arcwright_ai.agent.invoker import InvocationResult, _patch_sdk_parser, invoke_agent
 from arcwright_ai.agent.sandbox import validate_path
 from arcwright_ai.core.exceptions import AgentError, SandboxViolation
 
@@ -303,3 +303,83 @@ async def test_invoke_agent_stateless(
     assert result_a.output_text == "Result A"
     assert result_b.output_text == "Result B"
     assert result_a.tokens_input != result_b.tokens_input
+
+
+# ---------------------------------------------------------------------------
+# Tests: SDK parser monkeypatch (rate_limit_event handling)
+# ---------------------------------------------------------------------------
+
+
+def test_patch_sdk_parser_wraps_parse_message(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_patch_sdk_parser replaces parse_message in the client module with a safe wrapper."""
+    import arcwright_ai.agent.invoker as _invoker_mod
+    import claude_code_sdk._internal.client as _client_mod
+    import claude_code_sdk._internal.message_parser as _parser_mod
+
+    # Reset global flag so patch runs fresh
+    monkeypatch.setattr(_invoker_mod, "_SDK_PARSER_PATCHED", False)
+    original_fn = _parser_mod.parse_message
+
+    _patch_sdk_parser()
+
+    # The client module's parse_message should now be the wrapper, not the original
+    assert _client_mod.parse_message is not original_fn
+    # Calling the wrapper with valid data should still work
+    from claude_code_sdk.types import SystemMessage
+
+    result = _client_mod.parse_message({"type": "system", "subtype": "init", "data": {}})
+    assert isinstance(result, SystemMessage)
+
+    # Calling with an unknown type should return None instead of raising
+    result = _client_mod.parse_message({"type": "rate_limit_event", "data": {}})
+    assert result is None
+
+    # Restore original to avoid polluting other tests
+    _client_mod.parse_message = original_fn
+    monkeypatch.setattr(_invoker_mod, "_SDK_PARSER_PATCHED", False)
+
+
+async def test_invoke_agent_skips_none_messages_from_patched_parser(
+    project_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When SDK yields None messages (from patched parser), they are silently skipped."""
+    import claude_code_sdk
+    from claude_code_sdk.types import AssistantMessage, ResultMessage, TextBlock
+
+    messages = [
+        None,  # rate_limit_event (patched → None)
+        AssistantMessage(
+            content=[TextBlock(text="Hello")],
+            model="mock-model",
+            parent_tool_use_id=None,
+        ),
+        None,  # another unknown type
+        ResultMessage(
+            subtype="success",
+            duration_ms=50,
+            duration_api_ms=40,
+            is_error=False,
+            num_turns=1,
+            session_id="null-test-session",
+            total_cost_usd=0.01,
+            usage={"input_tokens": 10, "output_tokens": 5},
+            result="Hello",
+        ),
+    ]
+
+    async def mock_query(*, prompt: Any, options: Any = None, **kwargs: Any) -> Any:
+        for msg in messages:
+            yield msg
+
+    monkeypatch.setattr(claude_code_sdk, "query", mock_query)
+
+    result = await invoke_agent(
+        prompt="test",
+        model="claude-test",
+        cwd=project_root,
+        sandbox=validate_path,
+    )
+
+    assert result.output_text == "Hello"
+    assert result.session_id == "null-test-session"
