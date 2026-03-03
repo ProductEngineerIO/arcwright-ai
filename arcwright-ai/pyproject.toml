@@ -60,5 +60,21 @@ markers = [
     "slow: marks tests that use real git operations (deselect with '-m \"not slow\"')",
 ]
 
+[tool.hatch.envs.default]
+dependencies = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "pre-commit>=4.0",
+    "types-PyYAML>=6.0",
+]
+
+[tool.hatch.envs.default.scripts]
+lint = ["ruff check src/ tests/", "ruff format --check src/ tests/", "mypy --strict src/"]
+fix = ["ruff check --fix src/ tests/", "ruff format src/ tests/"]
+test = ["pytest {args}"]
+check = ["lint", "test"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/arcwright_ai"]

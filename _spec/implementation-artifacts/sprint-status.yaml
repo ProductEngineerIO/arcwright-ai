@@ -50,15 +50,15 @@ development_status:
   epic-1-retrospective: done
 
   # Epic 2: Orchestration Engine & Agent Invocation (7 stories, 37 pts)
-  epic-2: in-progress
+  epic-2: done
   2-1-langgraph-state-models-and-graph-skeleton: done
   2-2-context-injector-bmad-artifact-reader-and-reference-resolver: done
   2-3-context-answerer-static-rule-lookup-engine: done
   2-4-agent-sandbox-path-validation-layer: done
   2-5-agent-invoker-claude-code-sdk-integration: done
   2-6-preflight-node-context-assembly-and-dispatch-preparation: done
-  2-7-agent-dispatch-node-and-single-story-cli-command: review
-  epic-2-retrospective: optional
+  2-7-agent-dispatch-node-and-single-story-cli-command: done
+  epic-2-retrospective: done
 
   # Epic 3: Validation & Retry Pipeline (4 stories, 23 pts)
   epic-3: backlog
