@@ -2,6 +2,13 @@
 
 from __future__ import annotations
 
+from arcwright_ai.validation.v3_reflexion import (
+    ACResult,
+    ReflexionFeedback,
+    V3ReflexionResult,
+    ValidationResult,
+    run_v3_reflexion,
+)
 from arcwright_ai.validation.v6_invariant import (
     V6CheckResult,
     V6ValidationResult,
@@ -9,11 +16,14 @@ from arcwright_ai.validation.v6_invariant import (
     run_v6_validation,
 )
 
-# Planned public API — symbols implemented in future stories:
-#   validate_story_output  (validation/pipeline.py — Story 3.3)
 __all__: list[str] = [
+    "ACResult",
+    "ReflexionFeedback",
+    "V3ReflexionResult",
     "V6CheckResult",
     "V6ValidationResult",
+    "ValidationResult",
     "register_v6_check",
+    "run_v3_reflexion",
     "run_v6_validation",
 ]

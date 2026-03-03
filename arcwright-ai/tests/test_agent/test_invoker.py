@@ -312,9 +312,10 @@ async def test_invoke_agent_stateless(
 
 def test_patch_sdk_parser_wraps_parse_message(monkeypatch: pytest.MonkeyPatch) -> None:
     """_patch_sdk_parser replaces parse_message in the client module with a safe wrapper."""
-    import arcwright_ai.agent.invoker as _invoker_mod
     import claude_code_sdk._internal.client as _client_mod
     import claude_code_sdk._internal.message_parser as _parser_mod
+
+    import arcwright_ai.agent.invoker as _invoker_mod
 
     # Reset global flag so patch runs fresh
     monkeypatch.setattr(_invoker_mod, "_SDK_PARSER_PATCHED", False)

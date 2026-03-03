@@ -49,7 +49,7 @@ def _patch_sdk_parser() -> None:
     raising, allowing the async generator in ``client.py`` to ``yield None``
     which the invoker then filters out.
     """
-    global _SDK_PARSER_PATCHED  # noqa: PLW0603
+    global _SDK_PARSER_PATCHED
     if _SDK_PARSER_PATCHED:
         return
 
@@ -67,7 +67,7 @@ def _patch_sdk_parser() -> None:
             return None
 
     # Patch the name *in the client module* (where it was imported).
-    _client_mod.parse_message = _safe_parse_message
+    _client_mod.parse_message = _safe_parse_message  # type: ignore[attr-defined]
     _SDK_PARSER_PATCHED = True
 
 
@@ -330,12 +330,12 @@ async def _invoke_with_backoff(
             )
             await asyncio.sleep(wait)
         except ClaudeSDKError as exc:
-            error_detail: str = str(exc)
+            sdk_error_detail: str = str(exc)
             stderr: str | None = getattr(exc, "stderr", None)
             exit_code: int | None = getattr(exc, "exit_code", None)
             if stderr:
-                error_detail = f"{error_detail} | stderr={stderr}"
-            if _RATE_LIMIT_RE.search(error_detail):
+                sdk_error_detail = f"{sdk_error_detail} | stderr={stderr}"
+            if _RATE_LIMIT_RE.search(sdk_error_detail):
                 wait = min(
                     _BACKOFF_BASE * (2**attempt) + random.uniform(0, 0.5),
                     _BACKOFF_CAP,
@@ -346,7 +346,7 @@ async def _invoke_with_backoff(
                         "data": {
                             "attempt": attempt + 1,
                             "wait_seconds": round(wait, 2),
-                            "error": error_detail,
+                            "error": sdk_error_detail,
                             "exit_code": exit_code,
                         }
                     },
