@@ -202,12 +202,13 @@ def _validate_tool_use(block: Any, sandbox: PathValidator, cwd: Path) -> None:
             temp_dir = (cwd / DIR_ARCWRIGHT / DIR_TMP).resolve()
             candidate_path = file_path if file_path.is_absolute() else cwd.resolve() / file_path
 
-            # Exempt Claude's own internal meta-directory (~/.claude/) from the
-            # project sandbox.  The Claude Code CLI writes planning / thinking
-            # artefacts there; blocking them aborts the session unnecessarily.
+            # Silently deny writes to ~/.claude/ (Claude's session-resume
+            # scratchpad).  Arcwright never uses CLI resume, so the checkpoint
+            # is worthless and we don't want files accumulating in $HOME.
+            # Returning without raising lets the session continue normally.
             if candidate_path.resolve().is_relative_to(_claude_meta_dir()):
                 logger.debug(
-                    "agent.sandbox.allow_claude_meta",
+                    "agent.sandbox.deny_claude_meta",
                     extra={"data": {"tool": block.name, "path": str(file_path)}},
                 )
                 return
@@ -282,14 +283,18 @@ def _make_tool_validator(
                 temp_dir = (cwd / DIR_ARCWRIGHT / DIR_TMP).resolve()
                 candidate_path = file_path if file_path.is_absolute() else cwd.resolve() / file_path
 
-                # Exempt Claude's own internal meta-directory (~/.claude/) from
-                # the project sandbox (planning/thinking artefacts live here).
+                # Silently deny writes to ~/.claude/ (Claude's session-resume
+                # scratchpad).  Arcwright never uses CLI resume, so the plan
+                # checkpoint is worthless and we don't want files accumulating
+                # outside the project.  Deny is silent — the session continues.
                 if candidate_path.resolve().is_relative_to(_claude_meta_dir()):
                     logger.debug(
-                        "agent.sandbox.allow_claude_meta",
+                        "agent.sandbox.deny_claude_meta",
                         extra={"data": {"tool": tool_name, "path": file_path_str}},
                     )
-                    return PermissionResultAllow()
+                    return PermissionResultDeny(
+                        message="~/.claude/ writes are not permitted; Arcwright does not use Claude session-resume."
+                    )
 
                 if candidate_path.resolve().is_relative_to(temp_dir):
                     temp_dir.mkdir(parents=True, exist_ok=True)

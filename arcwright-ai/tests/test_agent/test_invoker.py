@@ -240,11 +240,13 @@ async def test_invoke_agent_sandbox_violation(
         await _invoke(mock, project_root, monkeypatch)
 
 
-async def test_invoke_agent_claude_meta_dir_allowed(
+async def test_invoke_agent_claude_meta_dir_silent_deny(
     project_root: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """ToolUseBlock targeting ~/.claude/ is exempted from sandbox and allowed."""
+    """ToolUseBlock targeting ~/.claude/ is silently denied — no SandboxViolation,
+    session completes normally.  Arcwright does not use Claude session-resume so
+    plan checkpoints in $HOME are unwanted."""
     from pathlib import Path as _Path
 
     claude_plans_path = str(_Path.home() / ".claude" / "plans" / "my-plan.md")
