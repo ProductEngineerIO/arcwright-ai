@@ -11,7 +11,12 @@ from typing import TYPE_CHECKING, Any
 import pytest
 from claude_code_sdk._errors import ClaudeSDKError
 
-from arcwright_ai.agent.invoker import InvocationResult, _patch_sdk_parser, invoke_agent
+from arcwright_ai.agent.invoker import (
+    InvocationResult,
+    _patch_sdk_parser,
+    _suppress_bg_cancel_scope_errors,
+    invoke_agent,
+)
 from arcwright_ai.agent.sandbox import validate_path
 from arcwright_ai.core.exceptions import AgentError, SandboxViolation
 from tests.fixtures.mock_sdk import MockSDKClient
@@ -235,6 +240,25 @@ async def test_invoke_agent_sandbox_violation(
         await _invoke(mock, project_root, monkeypatch)
 
 
+async def test_invoke_agent_claude_meta_dir_allowed(
+    project_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ToolUseBlock targeting ~/.claude/ is exempted from sandbox and allowed."""
+    from pathlib import Path as _Path
+
+    claude_plans_path = str(_Path.home() / ".claude" / "plans" / "my-plan.md")
+    mock = MockSDKClient(
+        output_text="Plan written.",
+        tool_use_calls=[
+            {"id": "t1", "name": "Write", "input": {"file_path": claude_plans_path}},
+        ],
+    )
+    result = await _invoke(mock, project_root, monkeypatch)
+    assert result.output_text == "Plan written."
+    assert result.is_error is False
+
+
 async def test_invoke_agent_tool_use_within_project(
     project_root: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -384,3 +408,48 @@ async def test_invoke_agent_skips_none_messages_from_patched_parser(
 
     assert result.output_text == "Hello"
     assert result.session_id == "null-test-session"
+
+
+# ---------------------------------------------------------------------------
+# Tests: asyncio background-task exception handler
+# ---------------------------------------------------------------------------
+
+
+async def test_suppress_bg_cancel_scope_errors_installs_handler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_suppress_bg_cancel_scope_errors installs an asyncio handler that silently
+    discards cancel-scope RuntimeErrors and forwards everything else."""
+    import asyncio
+
+    import arcwright_ai.agent.invoker as _invoker_mod
+
+    # Reset flag so the function installs fresh each time.
+    monkeypatch.setattr(_invoker_mod, "_BG_HANDLER_INSTALLED", False)
+
+    loop = asyncio.get_running_loop()
+    original_handler = loop.get_exception_handler()
+
+    try:
+        _suppress_bg_cancel_scope_errors()
+
+        assert _invoker_mod._BG_HANDLER_INSTALLED is True
+        installed_handler = loop.get_exception_handler()
+        assert installed_handler is not original_handler
+
+        # Cancel-scope RuntimeErrors must be silently swallowed (no propagation).
+        installed_handler(  # type: ignore[misc]
+            loop,
+            {
+                "exception": RuntimeError(
+                    "Attempted to exit cancel scope in a different task than it was entered in"
+                )
+            },
+        )
+
+        # Calling a second time must be idempotent (flag guard).
+        _suppress_bg_cancel_scope_errors()
+        assert loop.get_exception_handler() is installed_handler
+    finally:
+        loop.set_exception_handler(original_handler)
+        monkeypatch.setattr(_invoker_mod, "_BG_HANDLER_INSTALLED", False)

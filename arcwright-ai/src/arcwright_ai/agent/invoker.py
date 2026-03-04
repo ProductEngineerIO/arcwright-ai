@@ -39,6 +39,54 @@ _FILE_WRITE_TOOLS: frozenset[str] = frozenset({"CreateFile", "Edit", "MultiEdit"
 # Flag prevents double-patching across multiple invoke_agent calls.
 _SDK_PARSER_PATCHED: bool = False
 
+# Flag prevents registering the asyncio exception handler more than once.
+_BG_HANDLER_INSTALLED: bool = False
+
+
+def _claude_meta_dir() -> "Path":
+    """Return the resolved ``~/.claude`` directory path (lazy, no import-time side-effects)."""
+    from pathlib import Path as _Path
+
+    return (_Path.home() / ".claude").resolve()
+
+
+def _suppress_bg_cancel_scope_errors() -> None:
+    """Install a one-shot asyncio exception handler to silence Python 3.14 / anyio
+    ``RuntimeError: Attempted to exit cancel scope in a different task`` noise.
+
+    Python 3.14 tightened ``asyncio`` so that ``anyio`` cancel scopes cannot be
+    exited from a different task than they were entered in.  The
+    ``claude_code_sdk`` internal async generator cleanup path hits this edge
+    case when the iterator is abandoned (e.g. after a denied tool-use).  The
+    resulting ``RuntimeError`` is surfaced only as a background
+    "Task exception was never retrieved" warning and has no effect on
+    correctness, so we suppress it here.
+    """
+    global _BG_HANDLER_INSTALLED
+    if _BG_HANDLER_INSTALLED:
+        return
+
+    import asyncio
+
+    loop = asyncio.get_running_loop()
+    original_handler = loop.get_exception_handler()
+
+    def _handler(lp: asyncio.AbstractEventLoop, context: dict) -> None:  # type: ignore[type-arg]
+        exc = context.get("exception")
+        if isinstance(exc, RuntimeError) and "cancel scope" in str(exc).lower():
+            logger.debug(
+                "agent.bg_cancel_scope_suppressed",
+                extra={"data": {"error": str(exc)}},
+            )
+            return
+        if original_handler is not None:
+            original_handler(lp, context)
+        else:
+            lp.default_exception_handler(context)
+
+    loop.set_exception_handler(_handler)
+    _BG_HANDLER_INSTALLED = True
+
 
 def _patch_sdk_parser() -> None:
     """Monkeypatch the SDK message parser to skip unknown message types.
@@ -154,6 +202,16 @@ def _validate_tool_use(block: Any, sandbox: PathValidator, cwd: Path) -> None:
             temp_dir = (cwd / DIR_ARCWRIGHT / DIR_TMP).resolve()
             candidate_path = file_path if file_path.is_absolute() else cwd.resolve() / file_path
 
+            # Exempt Claude's own internal meta-directory (~/.claude/) from the
+            # project sandbox.  The Claude Code CLI writes planning / thinking
+            # artefacts there; blocking them aborts the session unnecessarily.
+            if candidate_path.resolve().is_relative_to(_claude_meta_dir()):
+                logger.debug(
+                    "agent.sandbox.allow_claude_meta",
+                    extra={"data": {"tool": block.name, "path": str(file_path)}},
+                )
+                return
+
             if candidate_path.resolve().is_relative_to(temp_dir):
                 temp_dir.mkdir(parents=True, exist_ok=True)
 
@@ -223,6 +281,16 @@ def _make_tool_validator(
                 file_path = _Path(file_path_str)
                 temp_dir = (cwd / DIR_ARCWRIGHT / DIR_TMP).resolve()
                 candidate_path = file_path if file_path.is_absolute() else cwd.resolve() / file_path
+
+                # Exempt Claude's own internal meta-directory (~/.claude/) from
+                # the project sandbox (planning/thinking artefacts live here).
+                if candidate_path.resolve().is_relative_to(_claude_meta_dir()):
+                    logger.debug(
+                        "agent.sandbox.allow_claude_meta",
+                        extra={"data": {"tool": tool_name, "path": file_path_str}},
+                    )
+                    return PermissionResultAllow()
+
                 if candidate_path.resolve().is_relative_to(temp_dir):
                     temp_dir.mkdir(parents=True, exist_ok=True)
 
@@ -404,6 +472,10 @@ async def invoke_agent(
     """
     from claude_code_sdk import ClaudeCodeOptions, query  # noqa: F401
     from claude_code_sdk.types import AssistantMessage, ResultMessage, TextBlock, ToolUseBlock
+
+    # Suppress Python 3.14 / anyio cancel-scope RuntimeErrors emitted as
+    # unhandled background-task warnings during async generator cleanup.
+    _suppress_bg_cancel_scope_errors()
 
     options = ClaudeCodeOptions(
         model=model,
