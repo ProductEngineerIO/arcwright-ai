@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+from arcwright_ai.validation.pipeline import (
+    PipelineOutcome,
+    PipelineResult,
+    run_validation_pipeline,
+)
 from arcwright_ai.validation.v3_reflexion import (
     ACResult,
     ReflexionFeedback,
@@ -18,6 +23,8 @@ from arcwright_ai.validation.v6_invariant import (
 
 __all__: list[str] = [
     "ACResult",
+    "PipelineOutcome",
+    "PipelineResult",
     "ReflexionFeedback",
     "V3ReflexionResult",
     "V6CheckResult",
@@ -26,4 +33,5 @@ __all__: list[str] = [
     "register_v6_check",
     "run_v3_reflexion",
     "run_v6_validation",
+    "run_validation_pipeline",
 ]

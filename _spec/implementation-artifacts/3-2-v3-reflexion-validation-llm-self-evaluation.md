@@ -1,6 +1,6 @@
 # Story 3.2: V3 Reflexion Validation — LLM Self-Evaluation
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -614,6 +614,7 @@ No debug issues encountered. Implementation followed the established V6 patterns
 - 2026-03-03: Implemented Story 3.2 — V3 reflexion validation LLM self-evaluation. Created `validation/v3_reflexion.py` with complete implementation (data models, AC extraction, prompt construction, response parsing, orchestrator). Updated `validation/__init__.py` exports. Added 15 unit tests. All quality gates pass.
 - 2026-03-03: Senior Developer Review (AI) completed. Outcome: Changes Requested. Added 2 HIGH + 3 MEDIUM review follow-ups, set story status to `in-progress`, and synced sprint tracking.
 - 2026-03-03: Addressed all review follow-ups. Fixed lint/type issues, improved V3 parser rationale fallback and start-event telemetry, validated quality gates, and moved status back to `review`.
+- 2026-03-04: Normalized story/sprint tracking state by setting Story 3.2 status to `done` to match `sprint-status.yaml`.
 
 ## Senior Developer Review (AI)
 

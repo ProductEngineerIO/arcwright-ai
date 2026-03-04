@@ -10,11 +10,11 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 from claude_code_sdk._errors import ClaudeSDKError
-from tests.fixtures.mock_sdk import MockSDKClient
 
 from arcwright_ai.agent.invoker import InvocationResult, _patch_sdk_parser, invoke_agent
 from arcwright_ai.agent.sandbox import validate_path
 from arcwright_ai.core.exceptions import AgentError, SandboxViolation
+from tests.fixtures.mock_sdk import MockSDKClient
 
 if TYPE_CHECKING:
     from pathlib import Path
