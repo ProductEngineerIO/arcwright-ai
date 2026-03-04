@@ -442,11 +442,7 @@ async def test_suppress_bg_cancel_scope_errors_installs_handler(
         # Cancel-scope RuntimeErrors must be silently swallowed (no propagation).
         installed_handler(  # type: ignore[misc]
             loop,
-            {
-                "exception": RuntimeError(
-                    "Attempted to exit cancel scope in a different task than it was entered in"
-                )
-            },
+            {"exception": RuntimeError("Attempted to exit cancel scope in a different task than it was entered in")},
         )
 
         # Calling a second time must be idempotent (flag guard).

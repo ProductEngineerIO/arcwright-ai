@@ -61,12 +61,12 @@ development_status:
   epic-2-retrospective: done
 
   # Epic 3: Validation & Retry Pipeline (4 stories, 23 pts)
-  epic-3: in-progress
+  epic-3: done
   3-1-v6-invariant-validation-deterministic-rule-checks: done
   3-2-v3-reflexion-validation-llm-self-evaluation: done
   3-3-validation-pipeline-artifact-specific-routing: done
   3-4-validate-node-and-retry-loop-integration: done
-  epic-3-retrospective: optional
+  epic-3-retrospective: done
 
   # Epic 4: Decision Provenance & Run Artifacts (4 stories, 20 pts)
   epic-4: backlog

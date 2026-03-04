@@ -43,7 +43,7 @@ _SDK_PARSER_PATCHED: bool = False
 _BG_HANDLER_INSTALLED: bool = False
 
 
-def _claude_meta_dir() -> "Path":
+def _claude_meta_dir() -> Path:
     """Return the resolved ``~/.claude`` directory path (lazy, no import-time side-effects)."""
     from pathlib import Path as _Path
 
