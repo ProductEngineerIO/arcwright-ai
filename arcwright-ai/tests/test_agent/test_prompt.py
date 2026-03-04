@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from arcwright_ai.agent.prompt import build_prompt
 from arcwright_ai.core.types import ContextBundle
+from arcwright_ai.validation.v3_reflexion import ReflexionFeedback
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -92,3 +93,39 @@ def test_build_prompt_sections_separated_by_blank_lines() -> None:
     )
     prompt = build_prompt(bundle)
     assert "\n\n" in prompt
+
+
+def test_build_prompt_without_feedback_has_no_feedback_section() -> None:
+    """build_prompt with feedback=None produces no feedback section."""
+    bundle = _make_bundle(story_content="Story text.")
+    prompt = build_prompt(bundle, feedback=None)
+    assert "Previous Validation Feedback" not in prompt
+
+
+def test_build_prompt_with_failed_feedback_includes_feedback_section() -> None:
+    """build_prompt with failed ReflexionFeedback appends feedback section."""
+    bundle = _make_bundle(story_content="Story text.")
+    feedback = ReflexionFeedback(
+        passed=False,
+        unmet_criteria=["2"],
+        feedback_per_criterion={"2": "Missing X implementation"},
+        attempt_number=1,
+    )
+    prompt = build_prompt(bundle, feedback=feedback)
+    assert "## Previous Validation Feedback" in prompt
+    assert "AC 2" in prompt
+    assert "Missing X implementation" in prompt
+    assert "Attempt 1 failed" in prompt
+
+
+def test_build_prompt_with_passed_feedback_has_no_feedback_section() -> None:
+    """build_prompt with passed=True ReflexionFeedback does not append feedback section."""
+    bundle = _make_bundle(story_content="Story text.")
+    feedback = ReflexionFeedback(
+        passed=True,
+        unmet_criteria=[],
+        feedback_per_criterion={},
+        attempt_number=1,
+    )
+    prompt = build_prompt(bundle, feedback=feedback)
+    assert "Previous Validation Feedback" not in prompt

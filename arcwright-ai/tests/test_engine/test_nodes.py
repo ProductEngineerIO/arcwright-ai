@@ -9,15 +9,17 @@ from pathlib import Path
 import pytest
 
 from arcwright_ai.agent.invoker import InvocationResult
-from arcwright_ai.core.config import ApiConfig, RunConfig
+from arcwright_ai.core.config import ApiConfig, LimitsConfig, RunConfig
 from arcwright_ai.core.constants import (
     AGENT_OUTPUT_FILENAME,
     CONTEXT_BUNDLE_FILENAME,
     DIR_ARCWRIGHT,
     DIR_RUNS,
     DIR_STORIES,
+    HALT_REPORT_FILENAME,
+    VALIDATION_FILENAME,
 )
-from arcwright_ai.core.exceptions import AgentError, ContextError
+from arcwright_ai.core.exceptions import AgentError, ContextError, ValidationError
 from arcwright_ai.core.lifecycle import TaskState
 from arcwright_ai.core.types import BudgetState, ContextBundle, EpicId, RunId, StoryId
 from arcwright_ai.engine.nodes import (
@@ -30,11 +32,22 @@ from arcwright_ai.engine.nodes import (
     validate_node,
 )
 from arcwright_ai.engine.state import StoryState
+from arcwright_ai.validation.pipeline import PipelineOutcome, PipelineResult
+from arcwright_ai.validation.v3_reflexion import (
+    ACResult,
+    ReflexionFeedback,
+    V3ReflexionResult,
+    ValidationResult,
+)
+from arcwright_ai.validation.v6_invariant import V6CheckResult, V6ValidationResult
 
 
-def make_run_config() -> RunConfig:
+def make_run_config(retry_budget: int = 3) -> RunConfig:
     """Build a minimal RunConfig suitable for tests."""
-    return RunConfig(api=ApiConfig(claude_api_key="test-key-not-real"))
+    return RunConfig(
+        api=ApiConfig(claude_api_key="test-key-not-real"),
+        limits=LimitsConfig(retry_budget=retry_budget),
+    )
 
 
 @pytest.fixture
@@ -73,6 +86,131 @@ def story_state_with_project(tmp_path: Path) -> StoryState:
         project_root=tmp_path,
         config=make_run_config(),
     )
+
+
+@pytest.fixture
+def validate_ready_state(tmp_path: Path) -> StoryState:
+    """StoryState ready for validate_node — VALIDATING status with tmp_path project_root."""
+    return StoryState(
+        story_id=StoryId("3-4-validate-node"),
+        epic_id=EpicId("epic-3"),
+        run_id=RunId("20260302-143052-a7f3"),
+        story_path=tmp_path / "_spec" / "3-4.md",
+        project_root=tmp_path,
+        status=TaskState.VALIDATING,
+        agent_output="Mock implementation output",
+        config=make_run_config(),
+    )
+
+
+def _make_pass_result() -> PipelineResult:
+    """Create a PASS PipelineResult for test fixtures."""
+    v6 = V6ValidationResult(
+        passed=True,
+        results=[V6CheckResult(check_name="file_existence", passed=True)],
+    )
+    return PipelineResult(
+        passed=True,
+        outcome=PipelineOutcome.PASS,
+        v6_result=v6,
+        tokens_used=300,
+        cost=Decimal("0.005"),
+    )
+
+
+def _make_fail_v3_result() -> PipelineResult:
+    """Create a FAIL_V3 PipelineResult with feedback for test fixtures."""
+    v6 = V6ValidationResult(
+        passed=True,
+        results=[V6CheckResult(check_name="file_existence", passed=True)],
+    )
+    feedback = ReflexionFeedback(
+        passed=False,
+        unmet_criteria=["2", "3"],
+        feedback_per_criterion={
+            "2": "Missing X implementation",
+            "3": "Test not passing",
+        },
+        attempt_number=1,
+    )
+    v3 = V3ReflexionResult(
+        validation_result=ValidationResult(
+            passed=False,
+            ac_results=[
+                ACResult(ac_id="2", passed=False, rationale="Missing X"),
+                ACResult(ac_id="3", passed=False, rationale="Test failure"),
+            ],
+        ),
+        feedback=feedback,
+        tokens_used=500,
+        cost=Decimal("0.01"),
+    )
+    return PipelineResult(
+        passed=False,
+        outcome=PipelineOutcome.FAIL_V3,
+        v6_result=v6,
+        v3_result=v3,
+        feedback=feedback,
+        tokens_used=500,
+        cost=Decimal("0.01"),
+    )
+
+
+def _make_fail_v6_result() -> PipelineResult:
+    """Create a FAIL_V6 PipelineResult for test fixtures."""
+    v6 = V6ValidationResult(
+        passed=False,
+        results=[
+            V6CheckResult(
+                check_name="file_existence",
+                passed=False,
+                failure_detail="Required file src/module.py missing",
+            )
+        ],
+    )
+    return PipelineResult(
+        passed=False,
+        outcome=PipelineOutcome.FAIL_V6,
+        v6_result=v6,
+        tokens_used=0,
+        cost=Decimal("0"),
+    )
+
+
+@pytest.fixture
+def mock_pipeline_pass(monkeypatch: pytest.MonkeyPatch) -> PipelineResult:
+    """Monkeypatch run_validation_pipeline to return PASS result."""
+    result = _make_pass_result()
+
+    async def _mock(*args: object, **kwargs: object) -> PipelineResult:
+        return result
+
+    monkeypatch.setattr("arcwright_ai.engine.nodes.run_validation_pipeline", _mock)
+    return result
+
+
+@pytest.fixture
+def mock_pipeline_fail_v3(monkeypatch: pytest.MonkeyPatch) -> PipelineResult:
+    """Monkeypatch run_validation_pipeline to return FAIL_V3 result."""
+    result = _make_fail_v3_result()
+
+    async def _mock(*args: object, **kwargs: object) -> PipelineResult:
+        return result
+
+    monkeypatch.setattr("arcwright_ai.engine.nodes.run_validation_pipeline", _mock)
+    return result
+
+
+@pytest.fixture
+def mock_pipeline_fail_v6(monkeypatch: pytest.MonkeyPatch) -> PipelineResult:
+    """Monkeypatch run_validation_pipeline to return FAIL_V6 result."""
+    result = _make_fail_v6_result()
+
+    async def _mock(*args: object, **kwargs: object) -> PipelineResult:
+        return result
+
+    monkeypatch.setattr("arcwright_ai.engine.nodes.run_validation_pipeline", _mock)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -116,10 +254,14 @@ async def test_agent_dispatch_node_raises_context_error_when_bundle_missing(make
 
 
 @pytest.mark.asyncio
-async def test_validate_node_transitions_to_success(make_story_state: StoryState) -> None:
-    state = make_story_state.model_copy(update={"status": TaskState.VALIDATING})
-    result = await validate_node(state)
+async def test_validate_node_transitions_to_success(
+    validate_ready_state: StoryState,
+    mock_pipeline_pass: PipelineResult,
+) -> None:
+    result = await validate_node(validate_ready_state)
     assert result.status == TaskState.SUCCESS
+    assert result.validation_result is not None
+    assert result.validation_result.passed is True
 
 
 @pytest.mark.asyncio
@@ -193,6 +335,239 @@ def test_route_validation_returns_retry(make_story_state: StoryState) -> None:
 def test_route_validation_returns_escalated(make_story_state: StoryState) -> None:
     state = make_story_state.model_copy(update={"status": TaskState.ESCALATED})
     assert route_validation(state) == "escalated"
+
+
+# ---------------------------------------------------------------------------
+# validate_node — real implementation unit tests (Task 5)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_validate_node_v3_fail_within_retry_budget_transitions_to_retry(
+    validate_ready_state: StoryState,
+    mock_pipeline_fail_v3: PipelineResult,
+) -> None:
+    """FAIL_V3 with retry_count=0 and retry_budget=3 → RETRY, retry_count becomes 1."""
+    state = validate_ready_state.model_copy(update={"retry_count": 0})
+    result = await validate_node(state)
+    assert result.status == TaskState.RETRY
+    assert result.retry_count == 1
+
+
+@pytest.mark.asyncio
+async def test_validate_node_v3_fail_at_retry_limit_transitions_to_escalated(
+    validate_ready_state: StoryState,
+    mock_pipeline_fail_v3: PipelineResult,
+) -> None:
+    """FAIL_V3 with retry_count=3 and retry_budget=3 → ESCALATED, halt report written."""
+    state = validate_ready_state.model_copy(
+        update={
+            "retry_count": 3,
+            "config": make_run_config(retry_budget=3),
+        }
+    )
+    result = await validate_node(state)
+    assert result.status == TaskState.ESCALATED
+    assert result.retry_count == 4
+
+    halt_path = (
+        validate_ready_state.project_root
+        / DIR_ARCWRIGHT
+        / DIR_RUNS
+        / str(validate_ready_state.run_id)
+        / DIR_STORIES
+        / str(validate_ready_state.story_id)
+        / HALT_REPORT_FILENAME
+    )
+    assert halt_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_validate_node_v6_fail_transitions_to_escalated_immediately(
+    validate_ready_state: StoryState,
+    mock_pipeline_fail_v6: PipelineResult,
+) -> None:
+    """FAIL_V6 → ESCALATED immediately regardless of retry_count, halt report written."""
+    state = validate_ready_state.model_copy(update={"retry_count": 0})
+    result = await validate_node(state)
+    assert result.status == TaskState.ESCALATED
+    # retry_count NOT incremented on V6 failure
+    assert result.retry_count == 0
+
+    halt_path = (
+        validate_ready_state.project_root
+        / DIR_ARCWRIGHT
+        / DIR_RUNS
+        / str(validate_ready_state.run_id)
+        / DIR_STORIES
+        / str(validate_ready_state.story_id)
+        / HALT_REPORT_FILENAME
+    )
+    assert halt_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_validate_node_updates_budget_with_pipeline_costs(
+    validate_ready_state: StoryState,
+    mock_pipeline_pass: PipelineResult,
+) -> None:
+    """budget.total_tokens and budget.estimated_cost include pipeline costs."""
+    result = await validate_node(validate_ready_state)
+    assert result.budget.total_tokens == mock_pipeline_pass.tokens_used
+    assert result.budget.estimated_cost == mock_pipeline_pass.cost
+
+
+@pytest.mark.asyncio
+async def test_validate_node_accumulates_retry_history(
+    validate_ready_state: StoryState,
+    mock_pipeline_pass: PipelineResult,
+) -> None:
+    """After validate_node runs, retry_history grows by one entry."""
+    result = await validate_node(validate_ready_state)
+    assert len(result.retry_history) == 1
+    assert result.retry_history[0] is mock_pipeline_pass
+
+
+@pytest.mark.asyncio
+async def test_validate_node_writes_validation_checkpoint(
+    validate_ready_state: StoryState,
+    mock_pipeline_pass: PipelineResult,
+) -> None:
+    """validation.md is written at expected path after validate_node runs."""
+    await validate_node(validate_ready_state)
+
+    checkpoint_path = (
+        validate_ready_state.project_root
+        / DIR_ARCWRIGHT
+        / DIR_RUNS
+        / str(validate_ready_state.run_id)
+        / DIR_STORIES
+        / str(validate_ready_state.story_id)
+        / VALIDATION_FILENAME
+    )
+    assert checkpoint_path.exists()
+    content = checkpoint_path.read_text(encoding="utf-8")
+    assert "# Validation Result" in content
+    assert "Outcome" in content
+
+
+@pytest.mark.asyncio
+async def test_validate_node_writes_halt_report_on_v3_escalation(
+    validate_ready_state: StoryState,
+    mock_pipeline_fail_v3: PipelineResult,
+) -> None:
+    """halt-report.md is written with expected content on V3 MAX_RETRIES escalation."""
+    state = validate_ready_state.model_copy(
+        update={
+            "retry_count": 3,
+            "config": make_run_config(retry_budget=3),
+        }
+    )
+    await validate_node(state)
+
+    halt_path = (
+        validate_ready_state.project_root
+        / DIR_ARCWRIGHT
+        / DIR_RUNS
+        / str(validate_ready_state.run_id)
+        / DIR_STORIES
+        / str(validate_ready_state.story_id)
+        / HALT_REPORT_FILENAME
+    )
+    assert halt_path.exists()
+    content = halt_path.read_text(encoding="utf-8")
+    assert "# Halt Report" in content
+    assert "max_retries_exhausted" in content
+    assert "Retry History" in content
+    assert "**Retry Count**: 4" in content
+
+
+@pytest.mark.asyncio
+async def test_validate_node_writes_halt_report_on_v6_failure(
+    validate_ready_state: StoryState,
+    mock_pipeline_fail_v6: PipelineResult,
+) -> None:
+    """halt-report.md is written with V6 failure content on FAIL_V6 escalation."""
+    await validate_node(validate_ready_state)
+
+    halt_path = (
+        validate_ready_state.project_root
+        / DIR_ARCWRIGHT
+        / DIR_RUNS
+        / str(validate_ready_state.run_id)
+        / DIR_STORIES
+        / str(validate_ready_state.story_id)
+        / HALT_REPORT_FILENAME
+    )
+    assert halt_path.exists()
+    content = halt_path.read_text(encoding="utf-8")
+    assert "# Halt Report" in content
+    assert "v6_invariant_failure" in content
+    assert "V6 Invariant Failures" in content
+
+
+@pytest.mark.asyncio
+async def test_validate_node_raises_validation_error_when_agent_output_missing(
+    validate_ready_state: StoryState,
+    mock_pipeline_pass: PipelineResult,
+) -> None:
+    """ValidationError raised immediately when agent_output is None."""
+    state = validate_ready_state.model_copy(update={"agent_output": None})
+    with pytest.raises(ValidationError, match="validate_node requires agent_output"):
+        await validate_node(state)
+
+
+@pytest.mark.asyncio
+async def test_validate_node_emits_validation_pass_log_event(
+    validate_ready_state: StoryState,
+    mock_pipeline_pass: PipelineResult,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """validation.pass log event is emitted with expected data on success."""
+    with caplog.at_level(logging.INFO):
+        await validate_node(validate_ready_state)
+
+    pass_records = [r for r in caplog.records if r.message == "validation.pass"]
+    assert len(pass_records) == 1
+    assert pass_records[0].data["story"] == str(validate_ready_state.story_id)  # type: ignore[attr-defined]
+    assert pass_records[0].data["attempt"] == 1  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_validate_node_emits_validation_fail_and_halt_log_events(
+    validate_ready_state: StoryState,
+    mock_pipeline_fail_v3: PipelineResult,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """validation.fail + run.halt are emitted on V3 exhausted escalation."""
+    state = validate_ready_state.model_copy(
+        update={
+            "retry_count": 3,
+            "config": make_run_config(retry_budget=3),
+        }
+    )
+    with caplog.at_level(logging.INFO):
+        await validate_node(state)
+
+    fail_records = [r for r in caplog.records if r.message == "validation.fail"]
+    halt_records = [r for r in caplog.records if r.message == "run.halt"]
+    assert len(fail_records) == 1
+    assert fail_records[0].data["outcome"] == "escalated"  # type: ignore[attr-defined]
+    assert len(halt_records) == 1
+    assert halt_records[0].data["reason"] == "max_retries_exhausted"  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_validate_node_retry_includes_feedback_in_validation_result(
+    validate_ready_state: StoryState,
+    mock_pipeline_fail_v3: PipelineResult,
+) -> None:
+    """After RETRY, state.validation_result.feedback is populated with unmet_criteria."""
+    result = await validate_node(validate_ready_state)
+    assert result.status == TaskState.RETRY
+    assert result.validation_result is not None
+    assert result.validation_result.feedback is not None
+    assert len(result.validation_result.feedback.unmet_criteria) > 0
 
 
 # ---------------------------------------------------------------------------

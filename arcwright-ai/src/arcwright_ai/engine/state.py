@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 from pathlib import Path  # noqa: TC003
-from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from arcwright_ai.core.config import RunConfig  # noqa: TC001
 from arcwright_ai.core.lifecycle import TaskState
 from arcwright_ai.core.types import BudgetState, ContextBundle, EpicId, RunId, StoryId
+from arcwright_ai.validation.pipeline import PipelineResult  # noqa: TC001
 
 __all__: list[str] = [
     "ProjectState",
@@ -32,8 +32,8 @@ class StoryState(BaseModel):
         status: Current lifecycle state (queued → ... → success/escalated).
         context_bundle: Assembled context from preflight (None until preflight runs).
         agent_output: Raw agent response text (None until agent runs).
-        validation_result: Validation results (None until validation runs; typed as
-            dict for now — will become ValidationResult model in Epic 3).
+        validation_result: Last validation pipeline result (None until validation runs).
+        retry_history: Accumulated validation results across retry attempts.
         retry_count: Number of retry attempts so far.
         budget: Token/cost consumption tracker.
         config: Run-level configuration reference.
@@ -49,7 +49,8 @@ class StoryState(BaseModel):
     status: TaskState = TaskState.QUEUED
     context_bundle: ContextBundle | None = None
     agent_output: str | None = None
-    validation_result: dict[str, Any] | None = None
+    validation_result: PipelineResult | None = None
+    retry_history: list[PipelineResult] = Field(default_factory=list)
     retry_count: int = 0
     budget: BudgetState = Field(default_factory=BudgetState)
     config: RunConfig

@@ -17,11 +17,14 @@ from arcwright_ai.core.constants import (
     DIR_ARCWRIGHT,
     DIR_RUNS,
     DIR_STORIES,
+    HALT_REPORT_FILENAME,
+    VALIDATION_FILENAME,
 )
-from arcwright_ai.core.exceptions import AgentError, ContextError
+from arcwright_ai.core.exceptions import AgentError, ContextError, ValidationError
 from arcwright_ai.core.io import write_text_async
 from arcwright_ai.core.lifecycle import TaskState
 from arcwright_ai.engine.state import StoryState  # noqa: TC001
+from arcwright_ai.validation.pipeline import PipelineOutcome, PipelineResult, run_validation_pipeline
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -156,7 +159,8 @@ async def agent_dispatch_node(state: StoryState) -> StoryState:
     if state.context_bundle is None:
         raise ContextError("agent_dispatch_node requires context_bundle from preflight")
 
-    prompt = build_prompt(state.context_bundle)
+    feedback = state.validation_result.feedback if state.validation_result is not None else None
+    prompt = build_prompt(state.context_bundle, feedback=feedback)
     logger.info(
         "agent.dispatch",
         extra={
@@ -164,6 +168,8 @@ async def agent_dispatch_node(state: StoryState) -> StoryState:
                 "story": str(state.story_id),
                 "model": state.config.model.version,
                 "prompt_length": len(prompt),
+                "retry_count": state.retry_count,
+                "has_feedback": feedback is not None,
             }
         },
     )
@@ -218,23 +224,367 @@ async def agent_dispatch_node(state: StoryState) -> StoryState:
     return updated
 
 
-async def validate_node(state: StoryState) -> StoryState:
-    """Placeholder validate node — transitions VALIDATING → SUCCESS.
-
-    Placeholder implementation always succeeds (no real validation logic).
-    Real validation is implemented in Epic 3.
+def _serialize_validation_checkpoint(result: PipelineResult, attempt_number: int) -> str:
+    """Serialize a PipelineResult to markdown for the validation checkpoint.
 
     Args:
-        state: Current story execution state.
+        result: The pipeline result to serialize.
+        attempt_number: Current attempt number (1-based).
 
     Returns:
-        Updated state with status set to SUCCESS.
+        Markdown string for the validation checkpoint file.
     """
-    logger.info("engine.node.enter", extra={"data": {"node": "validate", "story": str(state.story_id)}})
-    updated = state.model_copy(update={"status": TaskState.SUCCESS})
+    lines: list[str] = [
+        "# Validation Result",
+        "",
+        f"- **Outcome**: {result.outcome.value}",
+        f"- **Passed**: {result.passed}",
+        f"- **Attempt**: {attempt_number}",
+        f"- **Tokens Used**: {result.tokens_used}",
+        f"- **Cost**: ${result.cost}",
+        "",
+        "## V6 Invariant Checks",
+        "",
+    ]
+    for check in result.v6_result.results:
+        status = "PASS" if check.passed else "FAIL"
+        line = f"- [{status}] {check.check_name}"
+        if not check.passed and check.failure_detail:
+            line += f": {check.failure_detail}"
+        lines.append(line)
+
+    if result.v3_result is not None:
+        lines.extend(["", "## V3 Reflexion Results", ""])
+        for ac in result.v3_result.validation_result.ac_results:
+            status = "PASS" if ac.passed else "FAIL"
+            lines.append(f"- [{status}] AC {ac.ac_id}: {ac.rationale}")
+
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _generate_halt_report(
+    state: StoryState,
+    last_result: PipelineResult,
+    retry_history: list[PipelineResult],
+    *,
+    reason: str,
+) -> str:
+    """Generate a structured halt report for escalated stories per FR11.
+
+    Args:
+        state: Current story execution state at halt time.
+        last_result: The final validation pipeline result that caused escalation.
+        retry_history: All accumulated validation results across attempts.
+        reason: Halt reason string (e.g. "max_retries_exhausted", "v6_invariant_failure").
+
+    Returns:
+        Markdown string for the halt report file.
+    """
+    lines: list[str] = [
+        f"# Halt Report: Story {state.story_id}",
+        "",
+        "## Summary",
+        "",
+        f"- **Story**: {state.story_id}",
+        f"- **Epic**: {state.epic_id}",
+        f"- **Run**: {state.run_id}",
+        "- **Status**: ESCALATED",
+        f"- **Reason**: {reason}",
+        f"- **Total Attempts**: {len(retry_history)}",
+        f"- **Retry Count**: {state.retry_count}",
+        "",
+    ]
+
+    # Failing criteria
+    if last_result.feedback is not None and last_result.feedback.unmet_criteria:
+        lines.extend(["## Failing Acceptance Criteria", ""])
+        for ac_id in last_result.feedback.unmet_criteria:
+            detail = last_result.feedback.feedback_per_criterion.get(ac_id, "")
+            lines.append(f"- **AC {ac_id}**: {detail}")
+        lines.append("")
+    elif last_result.outcome == PipelineOutcome.FAIL_V6:
+        lines.extend(["## V6 Invariant Failures", ""])
+        for check in last_result.v6_result.failures:
+            lines.append(f"- **{check.check_name}**: {check.failure_detail or 'Failed'}")
+        lines.append("")
+
+    # Retry history table
+    lines.extend(
+        [
+            "## Retry History",
+            "",
+            "| Attempt | Outcome | Failures |",
+            "|---------|---------|----------|",
+        ]
+    )
+    for i, result in enumerate(retry_history, 1):
+        failure_summary = ""
+        if result.outcome == PipelineOutcome.FAIL_V6:
+            failure_summary = f"V6: {len(result.v6_result.failures)} checks failed"
+        elif result.feedback is not None:
+            failure_summary = f"V3: ACs {', '.join(result.feedback.unmet_criteria)}"
+        lines.append(f"| {i} | {result.outcome.value} | {failure_summary} |")
+    lines.append("")
+
+    # Last agent output (truncated)
+    lines.extend(["## Last Agent Output (Truncated)", ""])
+    if state.agent_output:
+        truncated = state.agent_output[-2000:] if len(state.agent_output) > 2000 else state.agent_output
+        if len(state.agent_output) > 2000:
+            lines.append(f"*... truncated ({len(state.agent_output)} chars total) ...*")
+            lines.append("")
+        lines.append("```")
+        lines.append(truncated)
+        lines.append("```")
+    else:
+        lines.append("*No agent output available*")
+    lines.append("")
+
+    # Suggested fix
+    lines.extend(["## Suggested Fix", ""])
+    if last_result.feedback is not None and last_result.feedback.feedback_per_criterion:
+        for ac_id, detail in last_result.feedback.feedback_per_criterion.items():
+            lines.append(f"- **AC {ac_id}**: {detail}")
+    elif last_result.outcome == PipelineOutcome.FAIL_V6:
+        lines.append("Fix the V6 invariant rule violations listed above and re-run the story.")
+    else:
+        lines.append("Review the validation failures and address underlying issues.")
+    lines.append("")
+
+    # Resume command
+    lines.extend(
+        [
+            "## Resume Command",
+            "",
+            "```bash",
+            f"arcwright-ai resume {state.run_id}",
+            "```",
+            "",
+        ]
+    )
+
+    return "\n".join(lines)
+
+
+async def validate_node(state: StoryState) -> StoryState:
+    """Validate node — runs validation pipeline and determines routing outcome.
+
+    Invokes the validation pipeline (V6 → V3) against the agent's output,
+    updates budget with validation costs, accumulates retry history, and
+    sets the appropriate lifecycle state based on the pipeline outcome:
+    PASS → SUCCESS, FAIL_V3 (within budget) → RETRY, FAIL_V3 (exhausted) or
+    FAIL_V6 → ESCALATED with halt report.
+
+    Args:
+        state: Current story execution state (expected status: VALIDATING,
+            agent_output populated by agent_dispatch).
+
+    Returns:
+        Updated state with validation_result, retry_history, budget, and
+        status set to SUCCESS, RETRY, or ESCALATED.
+
+    Raises:
+        ValidationError: If agent_output is None (agent_dispatch did not run)
+            or if the validation pipeline raises an unexpected internal error.
+    """
+    logger.info(
+        "engine.node.enter",
+        extra={"data": {"node": "validate", "story": str(state.story_id)}},
+    )
+
+    if state.agent_output is None:
+        raise ValidationError("validate_node requires agent_output from agent_dispatch")
+
+    pipeline_result = await run_validation_pipeline(
+        agent_output=state.agent_output,
+        story_path=state.story_path,
+        project_root=state.project_root,
+        model=state.config.model.version,
+        cwd=state.project_root,
+        sandbox=validate_path,
+        attempt_number=state.retry_count + 1,
+    )
+
+    # Update budget with validation costs
+    new_budget = state.budget.model_copy(
+        update={
+            "total_tokens": state.budget.total_tokens + pipeline_result.tokens_used,
+            "estimated_cost": state.budget.estimated_cost + pipeline_result.cost,
+        }
+    )
+
+    # Accumulate retry history
+    new_retry_history = [*state.retry_history, pipeline_result]
+
+    # Write validation checkpoint
+    checkpoint_dir: Path = (
+        state.project_root / DIR_ARCWRIGHT / DIR_RUNS / str(state.run_id) / DIR_STORIES / str(state.story_id)
+    )
+    await asyncio.to_thread(checkpoint_dir.mkdir, parents=True, exist_ok=True)
+    await write_text_async(
+        checkpoint_dir / VALIDATION_FILENAME,
+        _serialize_validation_checkpoint(pipeline_result, state.retry_count + 1),
+    )
+
+    # Route based on pipeline outcome
+    if pipeline_result.outcome == PipelineOutcome.PASS:
+        updated = state.model_copy(
+            update={
+                "status": TaskState.SUCCESS,
+                "validation_result": pipeline_result,
+                "retry_history": new_retry_history,
+                "budget": new_budget,
+            }
+        )
+        logger.info(
+            "validation.pass",
+            extra={
+                "data": {
+                    "story": str(state.story_id),
+                    "attempt": state.retry_count + 1,
+                    "tokens_used": pipeline_result.tokens_used,
+                }
+            },
+        )
+        logger.info(
+            "engine.node.exit",
+            extra={
+                "data": {
+                    "node": "validate",
+                    "story": str(state.story_id),
+                    "status": str(updated.status),
+                }
+            },
+        )
+        return updated
+
+    if pipeline_result.outcome == PipelineOutcome.FAIL_V6:
+        halt_report = _generate_halt_report(state, pipeline_result, new_retry_history, reason="v6_invariant_failure")
+        await write_text_async(checkpoint_dir / HALT_REPORT_FILENAME, halt_report)
+
+        updated = state.model_copy(
+            update={
+                "status": TaskState.ESCALATED,
+                "validation_result": pipeline_result,
+                "retry_history": new_retry_history,
+                "budget": new_budget,
+            }
+        )
+        logger.info(
+            "validation.fail",
+            extra={
+                "data": {
+                    "story": str(state.story_id),
+                    "outcome": "fail_v6",
+                    "retry_count": state.retry_count,
+                }
+            },
+        )
+        logger.info(
+            "run.halt",
+            extra={
+                "data": {
+                    "story": str(state.story_id),
+                    "reason": "v6_invariant_failure",
+                }
+            },
+        )
+        logger.info(
+            "engine.node.exit",
+            extra={
+                "data": {
+                    "node": "validate",
+                    "story": str(state.story_id),
+                    "status": str(updated.status),
+                }
+            },
+        )
+        return updated
+
+    # FAIL_V3 — check retry budget
+    new_retry_count = state.retry_count + 1
+    if state.retry_count >= state.config.limits.retry_budget:
+        # Retries exhausted → ESCALATED
+        halt_report_state = state.model_copy(update={"retry_count": new_retry_count})
+        halt_report = _generate_halt_report(
+            halt_report_state,
+            pipeline_result,
+            new_retry_history,
+            reason="max_retries_exhausted",
+        )
+        await write_text_async(checkpoint_dir / HALT_REPORT_FILENAME, halt_report)
+
+        updated = state.model_copy(
+            update={
+                "status": TaskState.ESCALATED,
+                "validation_result": pipeline_result,
+                "retry_history": new_retry_history,
+                "retry_count": new_retry_count,
+                "budget": new_budget,
+            }
+        )
+        logger.info(
+            "validation.fail",
+            extra={
+                "data": {
+                    "story": str(state.story_id),
+                    "outcome": "escalated",
+                    "retry_count": new_retry_count,
+                }
+            },
+        )
+        logger.info(
+            "run.halt",
+            extra={
+                "data": {
+                    "story": str(state.story_id),
+                    "reason": "max_retries_exhausted",
+                    "retry_count": new_retry_count,
+                }
+            },
+        )
+        logger.info(
+            "engine.node.exit",
+            extra={
+                "data": {
+                    "node": "validate",
+                    "story": str(state.story_id),
+                    "status": str(updated.status),
+                }
+            },
+        )
+        return updated
+
+    # Retry available
+    updated = state.model_copy(
+        update={
+            "status": TaskState.RETRY,
+            "validation_result": pipeline_result,
+            "retry_history": new_retry_history,
+            "retry_count": new_retry_count,
+            "budget": new_budget,
+        }
+    )
+    logger.info(
+        "validation.fail",
+        extra={
+            "data": {
+                "story": str(state.story_id),
+                "outcome": "retry",
+                "retry_count": new_retry_count,
+            }
+        },
+    )
     logger.info(
         "engine.node.exit",
-        extra={"data": {"node": "validate", "story": str(state.story_id), "status": str(updated.status)}},
+        extra={
+            "data": {
+                "node": "validate",
+                "story": str(state.story_id),
+                "status": str(updated.status),
+            }
+        },
     )
     return updated
 
