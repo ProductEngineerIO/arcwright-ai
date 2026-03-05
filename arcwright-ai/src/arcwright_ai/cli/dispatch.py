@@ -5,30 +5,45 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import uuid
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Annotated
 
 import typer
 
-from arcwright_ai.core.config import load_config
+from arcwright_ai.core.config import RunConfig, load_config
 from arcwright_ai.core.constants import (
     DIR_ARCWRIGHT,
     DIR_RUNS,
     EXIT_AGENT,
     EXIT_CONFIG,
     EXIT_INTERNAL,
+    EXIT_SCM,
     EXIT_SUCCESS,
     EXIT_VALIDATION,
     LOG_FILENAME,
-    RUN_ID_DATETIME_FORMAT,
 )
-from arcwright_ai.core.exceptions import AgentError, ArcwrightError, ConfigError, ContextError, ProjectError
+from arcwright_ai.core.exceptions import (
+    AgentError,
+    ArcwrightError,
+    ConfigError,
+    ContextError,
+    ProjectError,
+    ScmError,
+    ValidationError,
+)
 from arcwright_ai.core.lifecycle import TaskState
-from arcwright_ai.core.types import EpicId, RunId, StoryId
+from arcwright_ai.core.types import BudgetState, EpicId, StoryId
 from arcwright_ai.engine.graph import build_story_graph
-from arcwright_ai.engine.state import StoryState
+from arcwright_ai.engine.state import ProjectState, StoryState
+from arcwright_ai.output.run_manager import (
+    RunStatusValue,
+    create_run,
+    generate_run_id,
+    update_run_status,
+    update_story_status,
+)
 
 __all__: list[str] = ["dispatch_command"]
 
@@ -125,17 +140,24 @@ def _exit_code_for_terminal_status(status: TaskState | None) -> int:
     return EXIT_INTERNAL
 
 
-def _generate_run_id() -> RunId:
-    """Generate a unique run identifier.
+def _halt_reason_from_exit_code(exit_code: int) -> str:
+    """Map an exit code to a human-readable halt reason string.
 
-    Format: YYYYMMDD-HHMMSS-<short-uuid> (e.g., 20260302-143052-a7f3).
+    Args:
+        exit_code: CLI exit code from dispatch execution.
 
     Returns:
-        A unique RunId with datetime and short UUID suffix.
+        Human-readable halt reason.
     """
-    dt = datetime.now(UTC).strftime(RUN_ID_DATETIME_FORMAT)
-    short_uuid = uuid.uuid4().hex[:4]
-    return RunId(f"{dt}-{short_uuid}")
+    if exit_code == EXIT_VALIDATION:
+        return "validation failure"
+    if exit_code == EXIT_AGENT:
+        return "agent/budget failure"
+    if exit_code == EXIT_CONFIG:
+        return "config/context failure"
+    if exit_code == EXIT_SCM:
+        return "SCM failure"
+    return "internal failure"
 
 
 def _find_story_file(story_spec: str, artifacts_dir: Path) -> tuple[Path, StoryId, EpicId]:
@@ -232,6 +254,46 @@ def _discover_project_root() -> Path:
     )
 
 
+def _show_dispatch_confirmation(
+    epic_spec: str,
+    stories: list[tuple[Path, StoryId, EpicId]],
+    config: RunConfig,
+    *,
+    skip_confirm: bool = False,
+) -> None:
+    """Display a pre-dispatch summary and prompt the user to confirm.
+
+    Shows story count, execution order, configured budget ceilings, and an
+    estimated cost range.  Calls :func:`typer.confirm` with ``abort=True`` so
+    that a rejection raises :exc:`typer.Abort` at the call site.
+
+    Args:
+        epic_spec: Epic identifier string used in the confirmation header.
+        stories: Ordered list of ``(story_path, StoryId, EpicId)`` tuples.
+        config: Fully-loaded run configuration for budget ceiling display.
+        skip_confirm: When ``True`` the function returns immediately without
+            prompting (equivalent to passing ``--yes``).
+    """
+    if skip_confirm:
+        return
+
+    story_count = len(stories)
+    typer.echo(f"\n\U0001f4cb Epic Dispatch Plan \u2014 {epic_spec}", err=True)
+    typer.echo(f"   Stories to dispatch: {story_count}", err=True)
+    typer.echo("   Execution order:", err=True)
+    for _, story_id, _ in stories:
+        typer.echo(f"     \u2022 {story_id}", err=True)
+    typer.echo("\n   Budget ceilings:", err=True)
+    typer.echo(f"     cost_per_run:     ${config.limits.cost_per_run}", err=True)
+    typer.echo(f"     tokens_per_story: {config.limits.tokens_per_story:,}", err=True)
+    typer.echo(f"     retry_budget:     {config.limits.retry_budget}", err=True)
+    typer.echo(
+        "\n   Estimated cost range: $?.?? - $?.?? (no historical data available)",
+        err=True,
+    )
+    typer.confirm("\nProceed with dispatch?", abort=True)
+
+
 async def _dispatch_story_async(story_spec: str) -> int:
     """Dispatch a single story for agent execution.
 
@@ -265,7 +327,7 @@ async def _dispatch_story_async(story_spec: str) -> int:
         typer.echo(f"Error: {exc}", err=True)
         return EXIT_CONFIG
 
-    run_id = _generate_run_id()
+    run_id = generate_run_id()
     run_dir = project_root / DIR_ARCWRIGHT / DIR_RUNS / str(run_id)
     run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -324,17 +386,24 @@ async def _dispatch_story_async(story_spec: str) -> int:
         handler.close()
 
 
-async def _dispatch_epic_async(epic_spec: str) -> int:
-    """Dispatch all stories in an epic sequentially in dependency order.
+async def _dispatch_epic_async(epic_spec: str, *, skip_confirm: bool = False) -> int:
+    """Dispatch all stories in an epic sequentially with full run lifecycle management.
 
-    Finds all stories for the epic, generates a shared run ID, and dispatches
-    each story sorted by story number.
+    Validates the epic scope, shows a pre-dispatch confirmation (unless
+    ``skip_confirm`` is set), creates a run directory via
+    :func:`~arcwright_ai.output.run_manager.create_run`, then dispatches each
+    story in dependency order.  Budget state is accumulated across stories so
+    run-level cost ceilings are enforced by the ``budget_check`` node.  On any
+    non-SUCCESS terminal status the loop halts and the run is marked HALTED.
 
     Args:
         epic_spec: Epic identifier string (e.g., "2" or "epic-2").
+        skip_confirm: When ``True`` the pre-dispatch confirmation prompt is
+            skipped entirely (equivalent to the ``--yes`` CLI flag).
 
     Returns:
-        Exit code (0 for all success, non-zero on first failure).
+        Exit code (0 for all stories succeeded, non-zero on first failure or
+        user cancellation).
     """
     try:
         project_root = _discover_project_root()
@@ -356,9 +425,28 @@ async def _dispatch_epic_async(epic_spec: str) -> int:
         typer.echo(f"Error: {exc}", err=True)
         return EXIT_CONFIG
 
-    run_id = _generate_run_id()
-    run_dir = project_root / DIR_ARCWRIGHT / DIR_RUNS / str(run_id)
-    run_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        _show_dispatch_confirmation(epic_spec, stories, config, skip_confirm=skip_confirm)
+    except typer.Abort:
+        typer.echo("\nDispatch cancelled by user.", err=True)
+        return EXIT_SUCCESS
+
+    run_id = generate_run_id()
+    story_slugs = [str(story_id) for _, story_id, _ in stories]
+
+    try:
+        run_dir = await create_run(project_root, run_id, config, story_slugs)
+    except Exception as exc:
+        typer.echo(f"✗ Failed to create run: {exc}", err=True)
+        return EXIT_CONFIG
+
+    try:
+        await update_run_status(project_root, str(run_id), status=RunStatusValue.RUNNING)
+    except Exception:
+        logger.warning(
+            "run_manager.write_error",
+            extra={"data": {"operation": "update_run_status", "status": "RUNNING"}},
+        )
 
     handler, previous_level = _setup_run_logging(run_dir)
     try:
@@ -368,46 +456,275 @@ async def _dispatch_epic_async(epic_spec: str) -> int:
         typer.echo(f"▶ Dispatching {len(stories)} stories from epic {epic_spec}...", err=True)
         typer.echo(f"  Run: {run_id}", err=True)
 
-        for story_path, story_id, epic_id in stories:
-            root_logger.info("story.start", extra={"data": {"story": str(story_id), "epic": str(epic_id)}})
-            typer.echo(f"\n▶ Dispatching story {story_id}...", err=True)
-
-            initial_state = StoryState(
+        initial_story_states = [
+            StoryState(
                 story_id=story_id,
                 epic_id=epic_id,
                 run_id=run_id,
                 story_path=story_path,
                 project_root=project_root,
+                status=TaskState.QUEUED,
                 config=config,
+                budget=BudgetState(
+                    max_invocations=0,
+                    max_cost=Decimal(str(config.limits.cost_per_run)),
+                ),
             )
+            for story_path, story_id, epic_id in stories
+        ]
+        project_state = ProjectState(
+            epic_id=initial_story_states[0].epic_id,
+            run_id=run_id,
+            stories=initial_story_states,
+            config=config,
+        )
+        accumulated_budget = project_state.stories[0].budget
+        last_completed: str | None = None
+        completed_stories: list[str] = []
 
-            graph = build_story_graph()
+        for idx, story_state in enumerate(project_state.stories):
+            project_state.current_story_index = idx
+            story_id = story_state.story_id
+            epic_id = story_state.epic_id
+            story_slug = str(story_id)
+
             try:
+                await update_story_status(
+                    project_root,
+                    str(run_id),
+                    story_slug,
+                    status="running",
+                    started_at=datetime.now(tz=UTC).isoformat(),
+                )
+            except Exception:
+                logger.warning(
+                    "run_manager.write_error",
+                    extra={"data": {"operation": "update_story_status", "story": story_slug}},
+                )
+
+            root_logger.info("story.start", extra={"data": {"story": story_slug, "epic": str(epic_id)}})
+            typer.echo(f"\n▶ [{idx + 1}/{len(stories)}] Dispatching story {story_id}...", err=True)
+
+            initial_state = story_state.model_copy(update={"budget": accumulated_budget})
+
+            try:
+                graph = build_story_graph()
                 result = await graph.ainvoke(initial_state)
+
                 raw_status = result.get("status") if isinstance(result, dict) else result.status
                 final_status = _coerce_task_state(raw_status)
-                budget = result.get("budget") if isinstance(result, dict) else result.budget
-                typer.echo(f"✓ Story {story_id} completed (status: {final_status})", err=True)
-                if budget is not None:
-                    typer.echo(f"  💰 Cost: ${budget.estimated_cost} | Tokens: {budget.total_tokens}", err=True)
+                result_budget = result.get("budget") if isinstance(result, dict) else result.budget
+                if result_budget is not None:
+                    accumulated_budget = result_budget
+                project_state.stories[idx] = initial_state.model_copy(
+                    update={"status": final_status or TaskState.ESCALATED, "budget": accumulated_budget}
+                )
+
                 exit_code = _exit_code_for_terminal_status(final_status)
+
+                typer.echo(f"  ✓ Story {story_id} completed (status: {final_status})", err=True)
+                typer.echo(
+                    f"  💰 Cost: ${accumulated_budget.estimated_cost} | Tokens: {accumulated_budget.total_tokens}",
+                    err=True,
+                )
+
                 if exit_code != EXIT_SUCCESS:
-                    typer.echo(f"✗ Story {story_id} ended non-successfully (status: {final_status})", err=True)
+                    halt_reason = _halt_reason_from_exit_code(exit_code)
+                    typer.echo(
+                        f"✗ Story {story_id} ended non-successfully (status: {final_status})",
+                        err=True,
+                    )
+                    try:
+                        await update_run_status(
+                            project_root,
+                            str(run_id),
+                            status=RunStatusValue.HALTED,
+                            last_completed_story=last_completed,
+                            budget=accumulated_budget,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "run_manager.write_error",
+                            extra={"data": {"operation": "update_run_status", "status": "HALTED"}},
+                        )
+                    root_logger.info(
+                        "run.halt",
+                        extra={"data": {"halted_story": story_slug, "reason": halt_reason}},
+                    )
+                    typer.echo(f"\n✗ Epic {epic_spec} halted at story {story_id}.", err=True)
+                    typer.echo(f"  Stories completed ({len(completed_stories)}): {completed_stories}", err=True)
+                    typer.echo(f"  Halt reason: {halt_reason}", err=True)
+                    typer.echo(
+                        f"  💰 Total cost: ${accumulated_budget.estimated_cost}"
+                        f" | Total tokens: {accumulated_budget.total_tokens}",
+                        err=True,
+                    )
+                    typer.echo(
+                        f"  🔁 Resume with: arcwright-ai dispatch --epic {epic_spec} --resume",
+                        err=True,
+                    )
                     return exit_code
+
+                last_completed = story_slug
+                completed_stories.append(story_slug)
+                project_state.completed_stories = len(completed_stories)
+
+            except ScmError as exc:
+                typer.echo(f"✗ Story {story_id} failed (SCM error): {exc}", err=True)
+                try:
+                    await update_run_status(
+                        project_root,
+                        str(run_id),
+                        status=RunStatusValue.HALTED,
+                        last_completed_story=last_completed,
+                        budget=accumulated_budget,
+                    )
+                except Exception:
+                    logger.warning(
+                        "run_manager.write_error",
+                        extra={"data": {"operation": "update_run_status"}},
+                    )
+                root_logger.info(
+                    "run.halt",
+                    extra={"data": {"halted_story": story_slug, "reason": str(exc)}},
+                )
+                return EXIT_SCM
+
+            except ValidationError as exc:
+                typer.echo(f"✗ Story {story_id} failed (validation error): {exc}", err=True)
+                try:
+                    await update_run_status(
+                        project_root,
+                        str(run_id),
+                        status=RunStatusValue.HALTED,
+                        last_completed_story=last_completed,
+                        budget=accumulated_budget,
+                    )
+                except Exception:
+                    logger.warning(
+                        "run_manager.write_error",
+                        extra={"data": {"operation": "update_run_status"}},
+                    )
+                root_logger.info(
+                    "run.halt",
+                    extra={"data": {"halted_story": story_slug, "reason": str(exc)}},
+                )
+                return EXIT_VALIDATION
+
             except AgentError as exc:
                 typer.echo(f"✗ Story {story_id} failed (agent error): {exc}", err=True)
+                try:
+                    await update_run_status(
+                        project_root,
+                        str(run_id),
+                        status=RunStatusValue.HALTED,
+                        last_completed_story=last_completed,
+                        budget=accumulated_budget,
+                    )
+                except Exception:
+                    logger.warning(
+                        "run_manager.write_error",
+                        extra={"data": {"operation": "update_run_status"}},
+                    )
+                root_logger.info(
+                    "run.halt",
+                    extra={"data": {"halted_story": story_slug, "reason": str(exc)}},
+                )
                 return EXIT_AGENT
-            except (ContextError, ConfigError) as exc:
+
+            except (ContextError, ConfigError, ProjectError) as exc:
                 typer.echo(f"✗ Story {story_id} failed (config/context error): {exc}", err=True)
+                try:
+                    await update_run_status(
+                        project_root,
+                        str(run_id),
+                        status=RunStatusValue.HALTED,
+                        last_completed_story=last_completed,
+                        budget=accumulated_budget,
+                    )
+                except Exception:
+                    logger.warning(
+                        "run_manager.write_error",
+                        extra={"data": {"operation": "update_run_status"}},
+                    )
+                root_logger.info(
+                    "run.halt",
+                    extra={"data": {"halted_story": story_slug, "reason": str(exc)}},
+                )
                 return EXIT_CONFIG
+
             except ArcwrightError as exc:
                 typer.echo(f"✗ Story {story_id} failed (internal error): {exc}", err=True)
-                return EXIT_INTERNAL
-            except Exception as exc:
-                typer.echo(f"✗ Story {story_id} failed (unexpected): {exc}", err=True)
+                try:
+                    await update_run_status(
+                        project_root,
+                        str(run_id),
+                        status=RunStatusValue.HALTED,
+                        last_completed_story=last_completed,
+                        budget=accumulated_budget,
+                    )
+                except Exception:
+                    logger.warning(
+                        "run_manager.write_error",
+                        extra={"data": {"operation": "update_run_status"}},
+                    )
+                root_logger.info(
+                    "run.halt",
+                    extra={"data": {"halted_story": story_slug, "reason": str(exc)}},
+                )
                 return EXIT_INTERNAL
 
+            except Exception as exc:
+                typer.echo(f"✗ Story {story_id} failed (unexpected): {exc}", err=True)
+                try:
+                    await update_run_status(
+                        project_root,
+                        str(run_id),
+                        status=RunStatusValue.HALTED,
+                        last_completed_story=last_completed,
+                        budget=accumulated_budget,
+                    )
+                except Exception:
+                    logger.warning(
+                        "run_manager.write_error",
+                        extra={"data": {"operation": "update_run_status"}},
+                    )
+                root_logger.info(
+                    "run.halt",
+                    extra={"data": {"halted_story": story_slug, "reason": str(exc)}},
+                )
+                return EXIT_INTERNAL
+
+        # All stories completed successfully
+        try:
+            await update_run_status(
+                project_root,
+                str(run_id),
+                status=RunStatusValue.COMPLETED,
+                last_completed_story=last_completed,
+                budget=accumulated_budget,
+            )
+        except Exception:
+            logger.warning(
+                "run_manager.write_error",
+                extra={"data": {"operation": "update_run_status", "status": "COMPLETED"}},
+            )
+
+        root_logger.info(
+            "run.complete",
+            extra={
+                "data": {
+                    "story_count": len(stories),
+                    "total_cost": str(accumulated_budget.estimated_cost),
+                }
+            },
+        )
+
         typer.echo(f"\n✓ Epic {epic_spec} complete — {len(stories)} stories dispatched.", err=True)
+        typer.echo(
+            f"  💰 Total cost: ${accumulated_budget.estimated_cost} | Total tokens: {accumulated_budget.total_tokens}",
+            err=True,
+        )
         typer.echo(f"  📁 Run: {run_dir}", err=True)
         return EXIT_SUCCESS
 
@@ -421,12 +738,15 @@ async def _dispatch_epic_async(epic_spec: str) -> int:
 def dispatch_command(
     story: Annotated[str | None, typer.Option("--story", help="Story identifier (e.g., 2.7 or 2-7)")] = None,
     epic: Annotated[str | None, typer.Option("--epic", help="Epic identifier (e.g., 2 or epic-2)")] = None,
+    yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip pre-dispatch confirmation")] = False,
 ) -> None:
     """Dispatch a story or epic for AI agent execution.
 
     Args:
         story: Story identifier (e.g., 2.7 or 2-7).
         epic: Epic identifier (e.g., 2 or epic-2).
+        yes: When set, skip the pre-dispatch confirmation prompt for epic
+            dispatch.
     """
     if story and epic:
         typer.echo("Error: specify --story or --epic, not both.", err=True)
@@ -438,5 +758,5 @@ def dispatch_command(
         code = asyncio.run(_dispatch_story_async(story))
     else:
         assert epic is not None  # narrowing: validated above
-        code = asyncio.run(_dispatch_epic_async(epic))
+        code = asyncio.run(_dispatch_epic_async(epic, skip_confirm=yes))
     raise typer.Exit(code=code)
