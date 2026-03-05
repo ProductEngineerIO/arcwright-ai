@@ -260,10 +260,17 @@ The project targets Python 3.11+ and is developed against 3.14. The `.venv-studi
 
 **`ModuleNotFoundError: No module named 'arcwright_ai'`**
 
-The venv's editable install link may be stale. Re-install:
+The venv's editable install link may be stale or was not processed correctly on Python 3.14. Re-install:
 
 ```bash
-.venv/bin/pip install -e ".[dev]"
+cd arcwright-ai/
+.venv/bin/pip install -e .
+```
+
+This rewrites the `.pth` file. Verify with:
+
+```bash
+.venv/bin/python -c "import arcwright_ai; print(arcwright_ai.__file__)"
 ```
 
 **`langgraph dev` fails with `Required package 'langgraph-api' is not installed`**
