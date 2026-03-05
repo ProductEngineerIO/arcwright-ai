@@ -71,7 +71,7 @@ development_status:
   # Epic 4: Decision Provenance & Run Artifacts (4 stories, 20 pts)
   epic-4: in-progress
   4-1-provenance-recorder-decision-logging-during-execution: done
-  4-2-run-manager-run-directory-lifecycle-and-state-tracking: backlog
+  4-2-run-manager-run-directory-lifecycle-and-state-tracking: done
   4-3-run-summary-and-halt-report-generation: backlog
   4-4-provenance-and-summary-integration-with-engine-nodes: backlog
   epic-4-retrospective: optional
