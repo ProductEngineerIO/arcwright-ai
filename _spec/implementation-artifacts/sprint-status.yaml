@@ -69,12 +69,12 @@ development_status:
   epic-3-retrospective: done
 
   # Epic 4: Decision Provenance & Run Artifacts (4 stories, 20 pts)
-  epic-4: in-progress
+  epic-4: done
   4-1-provenance-recorder-decision-logging-during-execution: done
   4-2-run-manager-run-directory-lifecycle-and-state-tracking: done
   4-3-run-summary-and-halt-report-generation: done
   4-4-provenance-and-summary-integration-with-engine-nodes: done
-  epic-4-retrospective: optional
+  epic-4-retrospective: done
 
   # Epic 5: Halt, Resume & Epic Dispatch (5 stories, 21 pts)
   epic-5: backlog
