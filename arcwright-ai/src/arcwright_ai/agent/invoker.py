@@ -493,8 +493,9 @@ async def invoke_agent(
     output_parts: list[str] = []
     result_message: ResultMessage | None = None
 
+    stream = _invoke_with_backoff(prompt, options)
     try:
-        async for message in _invoke_with_backoff(prompt, options):
+        async for message in stream:
             if isinstance(message, AssistantMessage):
                 for block in message.content:
                     if isinstance(block, TextBlock):
@@ -507,6 +508,8 @@ async def invoke_agent(
         raise
     except Exception as exc:
         raise _wrap_sdk_error(exc) from exc
+    finally:
+        await stream.aclose()
 
     if result_message is None:
         raise AgentError(
