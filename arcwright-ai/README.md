@@ -284,3 +284,9 @@ You're using the main `.venv` (Python 3.14). Use `.venv-studio` instead:
 **Story dispatched but files don't match what validation expected**
 
 Check `.arcwright-ai/config.yaml` in the target project. The `methodology.artifacts_path` must point to the directory containing your BMAD planning artifacts (PRD, architecture, epics). Default is `_bmad-output`; adjust if your project uses `_spec/planning-artifacts` or another path.
+
+**Dev agent File List is consistently incomplete or doesn't match `git diff` output after a BMAD update**
+
+The dev-story workflow in this project includes a custom git diff audit step (Step 9 of `instructions.xml`) that was added to address a systemic issue where 67% of stories had File List discrepancies. This customization lives in `_bmad/mmm/workflows/4-implementation/dev-story/` — a directory that is gitignored and gets overwritten by BMAD framework updates.
+
+If you have recently run a BMAD update and agent File Lists are again going unaudited, the customization was likely overwritten. See the **BMAD Workflow Customizations** section in the root [`README.md`](../README.md#bmad-workflow-customizations) for the exact changes to re-apply.
