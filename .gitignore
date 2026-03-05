@@ -207,6 +207,9 @@ _bmad/
 .github/prompts/bmad-*
 .github/prompts/bmad_*
 
+# LangGraph Studio (local runtime state — checkpoints, ops log, vector store)
+.langgraph_api/
+
 # Marimo
 marimo/_static/
 marimo/_lsp/
