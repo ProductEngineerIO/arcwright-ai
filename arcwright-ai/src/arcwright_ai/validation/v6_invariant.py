@@ -159,7 +159,7 @@ def _extract_file_paths(agent_output: str) -> list[str]:
     paths: list[str] = []
     for pattern in (_HEADER_PATTERN, _FENCE_PATTERN, _LIST_PATTERN):
         for match in pattern.finditer(agent_output):
-            candidate = match.group(1).strip()
+            candidate = match.group(1).strip().strip("`")
             if candidate:
                 paths.append(candidate)
 

@@ -100,6 +100,19 @@ def test_extract_file_paths_deduplicates() -> None:
     assert paths.count("src/main.py") == 1
 
 
+def test_extract_file_paths_strips_backticks() -> None:
+    """_extract_file_paths strips leading/trailing backticks from captured paths.
+
+    Regression test: agent output uses inline code in headers like
+    '### `backend/app/routers/admin.py` — description', where the backtick
+    is captured by \\S+ and must be stripped before path resolution.
+    """
+    output = "### `backend/app/routers/admin.py` — New endpoints\n"
+    paths = _extract_file_paths(output)
+    assert "backend/app/routers/admin.py" in paths
+    assert not any(p.startswith("`") for p in paths)
+
+
 # ---------------------------------------------------------------------------
 # Task 8.1 — all-pass scenario
 # ---------------------------------------------------------------------------
