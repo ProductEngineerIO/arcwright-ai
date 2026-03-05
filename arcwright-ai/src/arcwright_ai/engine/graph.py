@@ -13,6 +13,7 @@ from arcwright_ai.engine.nodes import (
     agent_dispatch_node,
     budget_check_node,
     commit_node,
+    finalize_node,
     preflight_node,
     route_budget_check,
     route_validation,
@@ -28,15 +29,16 @@ __all__: list[str] = [
 def build_story_graph() -> CompiledStateGraph[StoryState, Any, Any, Any]:
     """Build and compile the LangGraph StateGraph for single-story execution.
 
-    Constructs a graph with five placeholder nodes (preflight, budget_check,
-    agent_dispatch, validate, commit) and conditional routing based on budget
-    limits and validation outcomes.
+    Constructs a graph with six nodes (preflight, budget_check, agent_dispatch,
+    validate, commit, finalize) and conditional routing based on budget limits
+    and validation outcomes. All terminal paths route through finalize_node
+    before END so that run-level summaries are always written.
 
     Graph shape::
 
-        START → preflight → budget_check →(ok)→ agent_dispatch → validate →(success)→ commit → END
-                                         ↓(exceeded)                        ↓(retry)→ budget_check
-                                         END                                ↓(escalated)→ END
+        START → preflight → budget_check →(ok)→ agent_dispatch → validate →(success)→ commit → finalize → END
+                                         ↓(exceeded)→ finalize → END        ↓(retry)→ budget_check
+                                                                             ↓(escalated)→ finalize → END
 
     Returns:
         A compiled LangGraph ``CompiledStateGraph`` ready for invocation via
@@ -49,20 +51,22 @@ def build_story_graph() -> CompiledStateGraph[StoryState, Any, Any, Any]:
     graph.add_node("agent_dispatch", agent_dispatch_node)
     graph.add_node("validate", validate_node)
     graph.add_node("commit", commit_node)
+    graph.add_node("finalize", finalize_node)
 
     graph.add_edge(START, "preflight")
     graph.add_edge("preflight", "budget_check")
     graph.add_conditional_edges(
         "budget_check",
         route_budget_check,
-        {"ok": "agent_dispatch", "exceeded": END},
+        {"ok": "agent_dispatch", "exceeded": "finalize"},
     )
     graph.add_edge("agent_dispatch", "validate")
     graph.add_conditional_edges(
         "validate",
         route_validation,
-        {"success": "commit", "retry": "budget_check", "escalated": END},
+        {"success": "commit", "retry": "budget_check", "escalated": "finalize"},
     )
-    graph.add_edge("commit", END)
+    graph.add_edge("commit", "finalize")
+    graph.add_edge("finalize", END)
 
     return graph.compile()

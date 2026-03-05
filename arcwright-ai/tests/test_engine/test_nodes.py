@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from decimal import Decimal
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -23,9 +24,12 @@ from arcwright_ai.core.exceptions import AgentError, ContextError, ValidationErr
 from arcwright_ai.core.lifecycle import TaskState
 from arcwright_ai.core.types import BudgetState, ContextBundle, EpicId, RunId, StoryId
 from arcwright_ai.engine.nodes import (
+    _build_validation_history_dicts,
+    _derive_halt_reason,
     agent_dispatch_node,
     budget_check_node,
     commit_node,
+    finalize_node,
     preflight_node,
     route_budget_check,
     route_validation,
@@ -48,6 +52,16 @@ def make_run_config(retry_budget: int = 3) -> RunConfig:
         api=ApiConfig(claude_api_key="test-key-not-real"),
         limits=LimitsConfig(retry_budget=retry_budget),
     )
+
+
+@pytest.fixture(autouse=True)
+def _mock_output_functions(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Patch output functions called by engine nodes to prevent real I/O."""
+    monkeypatch.setattr("arcwright_ai.engine.nodes.append_entry", AsyncMock())
+    monkeypatch.setattr("arcwright_ai.engine.nodes.update_story_status", AsyncMock())
+    monkeypatch.setattr("arcwright_ai.engine.nodes.update_run_status", AsyncMock())
+    monkeypatch.setattr("arcwright_ai.engine.nodes.write_success_summary", AsyncMock())
+    monkeypatch.setattr("arcwright_ai.engine.nodes.write_halt_report", AsyncMock())
 
 
 @pytest.fixture
@@ -834,3 +848,311 @@ async def test_agent_dispatch_node_emits_structured_log_events(
     assert "engine.node.enter" in messages
     assert "agent.dispatch" in messages
     assert "engine.node.exit" in messages
+
+
+# ---------------------------------------------------------------------------
+# Task 10: agent_dispatch_node provenance wiring tests (AC: #10a-d)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_agent_dispatch_node_calls_append_entry_with_provenance_entry(
+    dispatch_ready_state: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """agent_dispatch_node calls append_entry with a ProvenanceEntry after successful invocation."""
+    mock_append = AsyncMock()
+    monkeypatch.setattr("arcwright_ai.engine.nodes.append_entry", mock_append)
+
+    await agent_dispatch_node(dispatch_ready_state)
+
+    assert mock_append.call_count == 1
+    call_args = mock_append.call_args
+    # Second positional arg is the ProvenanceEntry
+    entry = call_args[0][1]
+    assert str(dispatch_ready_state.story_id) in entry.decision
+    assert dispatch_ready_state.config.model.version in entry.alternatives
+    assert "Prompt length:" in entry.rationale
+    assert "retry_count:" in entry.rationale
+    assert entry.timestamp != ""
+
+
+@pytest.mark.asyncio
+async def test_agent_dispatch_node_provenance_failure_does_not_raise(
+    dispatch_ready_state: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """agent_dispatch_node completes successfully when append_entry raises OSError."""
+    monkeypatch.setattr(
+        "arcwright_ai.engine.nodes.append_entry",
+        AsyncMock(side_effect=OSError("disk full")),
+    )
+
+    result = await agent_dispatch_node(dispatch_ready_state)
+    assert result.status == TaskState.VALIDATING
+
+
+@pytest.mark.asyncio
+async def test_validate_node_calls_append_entry_with_provenance_entry(
+    validate_ready_state: StoryState,
+    mock_pipeline_pass: PipelineResult,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """validate_node calls append_entry with correct ProvenanceEntry after validation."""
+    mock_append = AsyncMock()
+    monkeypatch.setattr("arcwright_ai.engine.nodes.append_entry", mock_append)
+
+    await validate_node(validate_ready_state)
+
+    assert mock_append.call_count == 1
+    call_args = mock_append.call_args
+    entry = call_args[0][1]
+    assert "Validation attempt 1" in entry.decision
+    assert PipelineOutcome.PASS.value in entry.decision
+    assert entry.timestamp != ""
+
+
+@pytest.mark.asyncio
+async def test_validate_node_provenance_entry_includes_failed_acs_for_fail_v3(
+    validate_ready_state: StoryState,
+    mock_pipeline_fail_v3: PipelineResult,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """validate_node provenance entry ac_references contains unmet_criteria for FAIL_V3."""
+    mock_append = AsyncMock()
+    monkeypatch.setattr("arcwright_ai.engine.nodes.append_entry", mock_append)
+
+    await validate_node(validate_ready_state)
+
+    call_args = mock_append.call_args
+    entry = call_args[0][1]
+    assert "2" in entry.ac_references
+    assert "3" in entry.ac_references
+
+
+@pytest.mark.asyncio
+async def test_validate_node_provenance_failure_does_not_raise(
+    validate_ready_state: StoryState,
+    mock_pipeline_pass: PipelineResult,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """validate_node completes successfully when append_entry raises OSError."""
+    monkeypatch.setattr(
+        "arcwright_ai.engine.nodes.append_entry",
+        AsyncMock(side_effect=OSError("disk full")),
+    )
+
+    result = await validate_node(validate_ready_state)
+    assert result.status == TaskState.SUCCESS
+
+
+# ---------------------------------------------------------------------------
+# Task 11: commit_node run_manager wiring tests (AC: #10e-g)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_commit_node_calls_update_story_status_with_success(
+    make_story_state: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """commit_node calls update_story_status with status='success' and non-None completed_at."""
+    mock_update_story = AsyncMock()
+    monkeypatch.setattr("arcwright_ai.engine.nodes.update_story_status", mock_update_story)
+    monkeypatch.setattr("arcwright_ai.engine.nodes.update_run_status", AsyncMock())
+
+    state = make_story_state.model_copy(update={"status": TaskState.SUCCESS})
+    await commit_node(state)
+
+    assert mock_update_story.call_count == 1
+    call_kwargs = mock_update_story.call_args[1]
+    assert call_kwargs["status"] == "success"
+    assert call_kwargs["completed_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_commit_node_calls_update_run_status_with_last_completed_story_and_budget(
+    make_story_state: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """commit_node calls update_run_status with last_completed_story and budget from state."""
+    mock_update_run = AsyncMock()
+    monkeypatch.setattr("arcwright_ai.engine.nodes.update_story_status", AsyncMock())
+    monkeypatch.setattr("arcwright_ai.engine.nodes.update_run_status", mock_update_run)
+
+    state = make_story_state.model_copy(update={"status": TaskState.SUCCESS})
+    await commit_node(state)
+
+    assert mock_update_run.call_count == 1
+    call_kwargs = mock_update_run.call_args[1]
+    assert call_kwargs["last_completed_story"] == str(state.story_id)
+    assert call_kwargs["budget"] == state.budget
+
+
+@pytest.mark.asyncio
+async def test_commit_node_continues_when_update_story_status_raises(
+    make_story_state: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """commit_node logs warning but does not raise when update_story_status raises RunError."""
+    from arcwright_ai.core.exceptions import RunError
+
+    monkeypatch.setattr(
+        "arcwright_ai.engine.nodes.update_story_status",
+        AsyncMock(side_effect=RunError("run not found")),
+    )
+    monkeypatch.setattr("arcwright_ai.engine.nodes.update_run_status", AsyncMock())
+
+    state = make_story_state.model_copy(update={"status": TaskState.SUCCESS})
+    result = await commit_node(state)
+    assert result.status == TaskState.SUCCESS
+
+
+# ---------------------------------------------------------------------------
+# Task 12: finalize_node tests (AC: #10h-m)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def finalize_state_success(make_story_state: StoryState) -> StoryState:
+    """StoryState in SUCCESS terminal status for finalize_node tests."""
+    return make_story_state.model_copy(update={"status": TaskState.SUCCESS})
+
+
+@pytest.fixture
+def finalize_state_escalated(make_story_state: StoryState) -> StoryState:
+    """StoryState in ESCALATED terminal status with retry history for finalize_node tests."""
+    fail_v3_result = _make_fail_v3_result()
+    return make_story_state.model_copy(
+        update={
+            "status": TaskState.ESCALATED,
+            "retry_history": [fail_v3_result],
+            "retry_count": 3,
+            "agent_output": "Agent output text",
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_finalize_node_calls_write_success_summary_on_success(
+    finalize_state_success: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """finalize_node calls write_success_summary when state.status is SUCCESS."""
+    mock_success = AsyncMock()
+    monkeypatch.setattr("arcwright_ai.engine.nodes.write_success_summary", mock_success)
+
+    await finalize_node(finalize_state_success)
+
+    assert mock_success.call_count == 1
+    args = mock_success.call_args[0]
+    assert args[0] == finalize_state_success.project_root
+    assert args[1] == str(finalize_state_success.run_id)
+
+
+@pytest.mark.asyncio
+async def test_finalize_node_calls_write_halt_report_on_escalated(
+    finalize_state_escalated: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """finalize_node calls write_halt_report when state.status is ESCALATED."""
+    mock_halt = AsyncMock()
+    monkeypatch.setattr("arcwright_ai.engine.nodes.write_halt_report", mock_halt)
+
+    await finalize_node(finalize_state_escalated)
+
+    assert mock_halt.call_count == 1
+    call_kwargs = mock_halt.call_args[1]
+    assert call_kwargs["halted_story"] == str(finalize_state_escalated.story_id)
+    assert call_kwargs["halt_reason"] == "max_retries_exhausted"
+    assert isinstance(call_kwargs["validation_history"], list)
+    assert call_kwargs["last_agent_output"] == "Agent output text"
+    assert isinstance(call_kwargs["suggested_fix"], str)
+
+
+@pytest.mark.asyncio
+async def test_finalize_node_returns_state_unchanged(
+    finalize_state_success: StoryState,
+) -> None:
+    """finalize_node returns state unchanged regardless of summary write outcome."""
+    result = await finalize_node(finalize_state_success)
+    assert result.status == finalize_state_success.status
+    assert result.story_id == finalize_state_success.story_id
+
+
+@pytest.mark.asyncio
+async def test_finalize_node_continues_when_write_success_summary_raises(
+    finalize_state_success: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """finalize_node completes successfully when write_success_summary raises."""
+    monkeypatch.setattr(
+        "arcwright_ai.engine.nodes.write_success_summary",
+        AsyncMock(side_effect=OSError("disk full")),
+    )
+
+    result = await finalize_node(finalize_state_success)
+    assert result.status == TaskState.SUCCESS
+
+
+@pytest.mark.asyncio
+async def test_finalize_node_escalated_with_empty_retry_history_uses_budget_exceeded(
+    make_story_state: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """finalize_node with ESCALATED + empty retry_history → halt_reason='budget_exceeded', history=[]."""
+    mock_halt = AsyncMock()
+    monkeypatch.setattr("arcwright_ai.engine.nodes.write_halt_report", mock_halt)
+
+    state = make_story_state.model_copy(update={"status": TaskState.ESCALATED, "retry_history": [], "retry_count": 0})
+    await finalize_node(state)
+
+    assert mock_halt.call_count == 1
+    call_kwargs = mock_halt.call_args[1]
+    assert call_kwargs["halt_reason"] == "budget_exceeded"
+    assert call_kwargs["validation_history"] == []
+
+
+def test_derive_halt_reason_returns_v6_invariant_failure_for_fail_v6(
+    make_story_state: StoryState,
+) -> None:
+    """_derive_halt_reason returns 'v6_invariant_failure' when last result is FAIL_V6."""
+    fail_v6 = _make_fail_v6_result()
+    state = make_story_state.model_copy(
+        update={"status": TaskState.ESCALATED, "retry_history": [fail_v6], "retry_count": 1}
+    )
+    assert _derive_halt_reason(state) == "v6_invariant_failure"
+
+
+def test_derive_halt_reason_returns_max_retries_when_budget_exhausted(
+    make_story_state: StoryState,
+) -> None:
+    """_derive_halt_reason returns 'max_retries_exhausted' when retry_count >= retry_budget."""
+    fail_v3 = _make_fail_v3_result()
+    state = make_story_state.model_copy(
+        update={
+            "status": TaskState.ESCALATED,
+            "retry_history": [fail_v3],
+            "retry_count": 3,  # >= retry_budget=3
+            "config": make_run_config(retry_budget=3),
+        }
+    )
+    assert _derive_halt_reason(state) == "max_retries_exhausted"
+
+
+def test_build_validation_history_dicts_converts_pipeline_results(
+    make_story_state: StoryState,
+) -> None:
+    """_build_validation_history_dicts returns correct dict format for each PipelineResult."""
+    fail_v3 = _make_fail_v3_result()
+    pass_result = _make_pass_result()
+    state = make_story_state.model_copy(update={"retry_history": [fail_v3, pass_result]})
+    history = _build_validation_history_dicts(state)
+
+    assert len(history) == 2
+    assert history[0]["attempt"] == 1
+    assert history[0]["outcome"] == PipelineOutcome.FAIL_V3.value
+    assert "V3" in history[0]["failures"]
+    assert history[1]["attempt"] == 2
+    assert history[1]["outcome"] == PipelineOutcome.PASS.value
+    assert history[1]["failures"] == ""

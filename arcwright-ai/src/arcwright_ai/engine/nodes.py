@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
+from datetime import UTC, datetime
 from decimal import Decimal
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from arcwright_ai.agent.invoker import invoke_agent
 from arcwright_ai.agent.prompt import build_prompt
@@ -23,7 +25,11 @@ from arcwright_ai.core.constants import (
 from arcwright_ai.core.exceptions import AgentError, ContextError, ValidationError
 from arcwright_ai.core.io import write_text_async
 from arcwright_ai.core.lifecycle import TaskState
+from arcwright_ai.core.types import ProvenanceEntry
 from arcwright_ai.engine.state import StoryState  # noqa: TC001
+from arcwright_ai.output.provenance import append_entry, render_validation_row
+from arcwright_ai.output.run_manager import update_run_status, update_story_status
+from arcwright_ai.output.summary import write_halt_report, write_success_summary
 from arcwright_ai.validation.pipeline import PipelineOutcome, PipelineResult, run_validation_pipeline
 
 if TYPE_CHECKING:
@@ -33,6 +39,7 @@ __all__: list[str] = [
     "agent_dispatch_node",
     "budget_check_node",
     "commit_node",
+    "finalize_node",
     "preflight_node",
     "route_budget_check",
     "route_validation",
@@ -207,6 +214,35 @@ async def agent_dispatch_node(state: StoryState) -> StoryState:
     )
     await asyncio.to_thread(checkpoint_dir.mkdir, parents=True, exist_ok=True)
     await write_text_async(checkpoint_dir / AGENT_OUTPUT_FILENAME, result.output_text)
+
+    # Provenance: record agent invocation decision (best-effort)
+    try:
+        refs: list[str] = []
+        if state.context_bundle is not None and state.context_bundle.domain_requirements:
+            refs = re.findall(r"(?:FR|NFR)-?\d+", state.context_bundle.domain_requirements)
+        provenance_entry = ProvenanceEntry(
+            decision=f"Agent invoked for story {state.story_id} (attempt {state.retry_count + 1})",
+            alternatives=[state.config.model.version],
+            rationale=(
+                f"Prompt length: {len(prompt)} chars, retry_count: {state.retry_count},"
+                f" has_feedback: {feedback is not None}"
+            ),
+            ac_references=refs,
+            timestamp=datetime.now(tz=UTC).isoformat(),
+        )
+        provenance_path = checkpoint_dir / VALIDATION_FILENAME
+        await append_entry(provenance_path, provenance_entry)
+    except Exception as exc:
+        logger.warning(
+            "provenance.write_error",
+            extra={
+                "data": {
+                    "node": "agent_dispatch",
+                    "story": str(state.story_id),
+                    "error": str(exc),
+                }
+            },
+        )
 
     # Transition: RUNNING → VALIDATING
     updated = state.model_copy(
@@ -427,6 +463,55 @@ async def validate_node(state: StoryState) -> StoryState:
         _serialize_validation_checkpoint(pipeline_result, state.retry_count + 1),
     )
 
+    # Provenance: record validation decision (best-effort)
+    try:
+        attempt_number = state.retry_count + 1
+        outcome_str = pipeline_result.outcome.value
+
+        # Build rationale based on outcome
+        if pipeline_result.outcome == PipelineOutcome.PASS:
+            v6_count = len(pipeline_result.v6_result.results)
+            v3_info = ""
+            if pipeline_result.v3_result is not None:
+                v3_passed = sum(1 for ac in pipeline_result.v3_result.validation_result.ac_results if ac.passed)
+                v3_total = len(pipeline_result.v3_result.validation_result.ac_results)
+                v3_info = f", V3: {v3_passed}/{v3_total} ACs"
+            rationale = f"All checks passed (V6: {v6_count} checks{v3_info})"
+        elif pipeline_result.outcome == PipelineOutcome.FAIL_V6:
+            rationale = f"V6 invariant failures: {len(pipeline_result.v6_result.failures)}"
+        else:
+            unmet = pipeline_result.feedback.unmet_criteria if pipeline_result.feedback else []
+            rationale = f"V3 reflexion failures: ACs {', '.join(unmet)}" if unmet else "V3 validation failed"
+
+        validation_row = render_validation_row(
+            attempt_number,
+            outcome_str,
+            rationale,
+        )
+        rationale = f"{rationale}\nValidation row: {validation_row}"
+
+        failed_acs = list(pipeline_result.feedback.unmet_criteria) if pipeline_result.feedback else []
+
+        validation_provenance_entry = ProvenanceEntry(
+            decision=f"Validation attempt {attempt_number}: {outcome_str}",
+            alternatives=[],
+            rationale=rationale,
+            ac_references=failed_acs,
+            timestamp=datetime.now(tz=UTC).isoformat(),
+        )
+        await append_entry(checkpoint_dir / VALIDATION_FILENAME, validation_provenance_entry)
+    except Exception as exc:
+        logger.warning(
+            "provenance.write_error",
+            extra={
+                "data": {
+                    "node": "validate",
+                    "story": str(state.story_id),
+                    "error": str(exc),
+                }
+            },
+        )
+
     # Route based on pipeline outcome
     if pipeline_result.outcome == PipelineOutcome.PASS:
         updated = state.model_copy(
@@ -462,6 +547,28 @@ async def validate_node(state: StoryState) -> StoryState:
     if pipeline_result.outcome == PipelineOutcome.FAIL_V6:
         halt_report = _generate_halt_report(state, pipeline_result, new_retry_history, reason="v6_invariant_failure")
         await write_text_async(checkpoint_dir / HALT_REPORT_FILENAME, halt_report)
+
+        # Provenance: record escalation decision (best-effort)
+        try:
+            escalation_entry = ProvenanceEntry(
+                decision=f"Escalation decision for attempt {state.retry_count + 1}: v6_invariant_failure",
+                alternatives=[],
+                rationale="Validation escalated due to V6 invariant failure.",
+                ac_references=[],
+                timestamp=datetime.now(tz=UTC).isoformat(),
+            )
+            await append_entry(checkpoint_dir / VALIDATION_FILENAME, escalation_entry)
+        except Exception as exc:
+            logger.warning(
+                "provenance.write_error",
+                extra={
+                    "data": {
+                        "node": "validate",
+                        "story": str(state.story_id),
+                        "error": str(exc),
+                    }
+                },
+            )
 
         updated = state.model_copy(
             update={
@@ -514,6 +621,29 @@ async def validate_node(state: StoryState) -> StoryState:
             reason="max_retries_exhausted",
         )
         await write_text_async(checkpoint_dir / HALT_REPORT_FILENAME, halt_report)
+
+        # Provenance: record escalation decision (best-effort)
+        try:
+            failed_acs = list(pipeline_result.feedback.unmet_criteria) if pipeline_result.feedback else []
+            escalation_entry = ProvenanceEntry(
+                decision=f"Escalation decision for attempt {new_retry_count}: max_retries_exhausted",
+                alternatives=[],
+                rationale="Validation escalated because retry budget was exhausted.",
+                ac_references=failed_acs,
+                timestamp=datetime.now(tz=UTC).isoformat(),
+            )
+            await append_entry(checkpoint_dir / VALIDATION_FILENAME, escalation_entry)
+        except Exception as exc:
+            logger.warning(
+                "provenance.write_error",
+                extra={
+                    "data": {
+                        "node": "validate",
+                        "story": str(state.story_id),
+                        "error": str(exc),
+                    }
+                },
+            )
 
         updated = state.model_copy(
             update={
@@ -590,7 +720,12 @@ async def validate_node(state: StoryState) -> StoryState:
 
 
 async def commit_node(state: StoryState) -> StoryState:
-    """Placeholder commit node — passes SUCCESS state through unchanged.
+    """Commit node — updates run.yaml with story completion and budget.
+
+    Calls run_manager to update story status to "success" with completion
+    timestamp, and updates the run-level last_completed_story pointer and
+    budget snapshot. All writes are best-effort — failures are logged but
+    do not halt execution.
 
     Args:
         state: Current story execution state (expected SUCCESS).
@@ -599,9 +734,189 @@ async def commit_node(state: StoryState) -> StoryState:
         State unchanged.
     """
     logger.info("engine.node.enter", extra={"data": {"node": "commit", "story": str(state.story_id)}})
+
+    story_slug = str(state.story_id)
+    project_root = state.project_root
+    run_id = str(state.run_id)
+
+    # Update story status in run.yaml (best-effort)
+    try:
+        await update_story_status(
+            project_root,
+            run_id,
+            story_slug,
+            status="success",
+            completed_at=datetime.now(tz=UTC).isoformat(),
+        )
+    except Exception as exc:
+        logger.warning(
+            "run_manager.write_error",
+            extra={
+                "data": {
+                    "node": "commit",
+                    "story": story_slug,
+                    "operation": "update_story_status",
+                    "error": str(exc),
+                }
+            },
+        )
+
+    # Update run-level state (best-effort)
+    try:
+        await update_run_status(
+            project_root,
+            run_id,
+            last_completed_story=story_slug,
+            budget=state.budget,
+        )
+    except Exception as exc:
+        logger.warning(
+            "run_manager.write_error",
+            extra={
+                "data": {
+                    "node": "commit",
+                    "story": story_slug,
+                    "operation": "update_run_status",
+                    "error": str(exc),
+                }
+            },
+        )
+
     logger.info(
         "engine.node.exit",
         extra={"data": {"node": "commit", "story": str(state.story_id), "status": str(state.status)}},
+    )
+    return state
+
+
+def _derive_halt_reason(state: StoryState) -> str:
+    """Derive the halt reason string from the terminal state.
+
+    Args:
+        state: Story execution state in ESCALATED terminal status.
+
+    Returns:
+        Halt reason string: "budget_exceeded", "v6_invariant_failure",
+        "max_retries_exhausted", or "validation_failure".
+    """
+    if not state.retry_history:
+        return "budget_exceeded"
+    last = state.retry_history[-1]
+    if last.outcome == PipelineOutcome.FAIL_V6:
+        return "v6_invariant_failure"
+    if state.retry_count >= state.config.limits.retry_budget:
+        return "max_retries_exhausted"
+    return "validation_failure"
+
+
+def _summarize_failures(result: PipelineResult) -> str:
+    """Summarize validation failures for a single PipelineResult.
+
+    Args:
+        result: The pipeline result to summarize.
+
+    Returns:
+        Human-readable failure summary string, or empty string for PASS.
+    """
+    if result.outcome == PipelineOutcome.FAIL_V6:
+        return f"V6: {len(result.v6_result.failures)} checks failed"
+    if result.feedback is not None and result.feedback.unmet_criteria:
+        return f"V3: ACs {', '.join(result.feedback.unmet_criteria)}"
+    return ""
+
+
+def _build_validation_history_dicts(state: StoryState) -> list[dict[str, Any]]:
+    """Build a list of validation history dicts from state retry history.
+
+    Args:
+        state: Story execution state containing retry_history.
+
+    Returns:
+        List of dicts with keys "attempt", "outcome", "failures".
+    """
+    return [
+        {
+            "attempt": i + 1,
+            "outcome": result.outcome.value,
+            "failures": _summarize_failures(result),
+        }
+        for i, result in enumerate(state.retry_history)
+    ]
+
+
+def _derive_suggested_fix(state: StoryState) -> str:
+    """Derive a suggested fix message from the terminal state.
+
+    Args:
+        state: Story execution state in ESCALATED terminal status.
+
+    Returns:
+        Human-readable suggested fix string.
+    """
+    if not state.retry_history:
+        return "Review the validation failures and address underlying issues."
+    last = state.retry_history[-1]
+    if last.outcome == PipelineOutcome.FAIL_V6:
+        return "Fix the V6 invariant rule violations and re-run the story."
+    if last.feedback is not None and last.feedback.feedback_per_criterion:
+        parts = [f"AC {ac_id}: {detail}" for ac_id, detail in last.feedback.feedback_per_criterion.items()]
+        return "\n".join(parts)
+    return "Review the validation failures and address underlying issues."
+
+
+async def finalize_node(state: StoryState) -> StoryState:
+    """Finalize node — writes run-level summary at graph termination.
+
+    Examines the terminal state (SUCCESS or ESCALATED) and writes the
+    appropriate run-level summary via output/summary. All writes are
+    best-effort — failures are logged but do not affect the returned state.
+
+    Args:
+        state: Current story execution state in a terminal status.
+
+    Returns:
+        State unchanged.
+    """
+    logger.info("engine.node.enter", extra={"data": {"node": "finalize", "story": str(state.story_id)}})
+
+    project_root = state.project_root
+    run_id = str(state.run_id)
+    story_slug = str(state.story_id)
+
+    try:
+        if state.status == TaskState.SUCCESS:
+            await write_success_summary(project_root, run_id)
+        elif state.status == TaskState.ESCALATED:
+            halt_reason = _derive_halt_reason(state)
+            validation_history_dicts = _build_validation_history_dicts(state)
+            last_agent_output = state.agent_output or ""
+            suggested_fix = _derive_suggested_fix(state)
+
+            await write_halt_report(
+                project_root,
+                run_id,
+                halted_story=story_slug,
+                halt_reason=halt_reason,
+                validation_history=validation_history_dicts,
+                last_agent_output=last_agent_output,
+                suggested_fix=suggested_fix,
+            )
+    except Exception as exc:
+        logger.warning(
+            "summary.write_error",
+            extra={
+                "data": {
+                    "node": "finalize",
+                    "story": story_slug,
+                    "status": str(state.status),
+                    "error": str(exc),
+                }
+            },
+        )
+
+    logger.info(
+        "engine.node.exit",
+        extra={"data": {"node": "finalize", "story": str(state.story_id), "status": str(state.status)}},
     )
     return state
 
