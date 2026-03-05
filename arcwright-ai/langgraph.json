@@ -1,0 +1,6 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "story_graph": "./src/arcwright_ai/engine/graph.py:build_story_graph"
+  }
+}
