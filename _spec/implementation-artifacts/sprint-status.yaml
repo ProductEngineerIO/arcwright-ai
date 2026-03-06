@@ -79,7 +79,7 @@ development_status:
   # Epic 5: Halt, Resume & Epic Dispatch (5 stories, 21 pts)
   epic-5: in-progress
   5-1-epic-dispatch-cli-to-engine-pipeline: done
-  5-2-halt-controller-graceful-halt-on-unrecoverable-failure: backlog
+  5-2-halt-controller-graceful-halt-on-unrecoverable-failure: review
   5-3-resume-controller-resume-halted-epic-from-failure-point: backlog
   5-4-halt-and-resume-integration-with-run-artifacts: backlog
   5-5-run-status-command-live-and-historical-run-visibility: backlog

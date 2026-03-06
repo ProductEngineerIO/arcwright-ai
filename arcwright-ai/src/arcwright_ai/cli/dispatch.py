@@ -12,6 +12,7 @@ from typing import Annotated
 
 import typer
 
+from arcwright_ai.cli.halt import HaltController
 from arcwright_ai.core.config import RunConfig, load_config
 from arcwright_ai.core.constants import (
     DIR_ARCWRIGHT,
@@ -19,7 +20,6 @@ from arcwright_ai.core.constants import (
     EXIT_AGENT,
     EXIT_CONFIG,
     EXIT_INTERNAL,
-    EXIT_SCM,
     EXIT_SUCCESS,
     EXIT_VALIDATION,
     LOG_FILENAME,
@@ -30,8 +30,6 @@ from arcwright_ai.core.exceptions import (
     ConfigError,
     ContextError,
     ProjectError,
-    ScmError,
-    ValidationError,
 )
 from arcwright_ai.core.lifecycle import TaskState
 from arcwright_ai.core.types import BudgetState, EpicId, StoryId
@@ -48,6 +46,27 @@ from arcwright_ai.output.run_manager import (
 __all__: list[str] = ["dispatch_command"]
 
 logger = logging.getLogger(__name__)
+
+
+def _sdk_error_types() -> tuple[type[BaseException], ...]:
+    """Return exception types treated as SDK communication/response errors.
+
+    Returns:
+        Tuple of exception classes that should be wrapped into ``AgentError``
+        with SDK context before routing through ``HaltController``.
+    """
+    error_types: tuple[type[BaseException], ...] = (
+        TimeoutError,
+        ConnectionError,
+        json.JSONDecodeError,
+    )
+    try:
+        import httpx
+
+        error_types = (*error_types, httpx.HTTPStatusError)
+    except ImportError:
+        pass
+    return error_types
 
 
 class _JsonlFileHandler(logging.FileHandler):
@@ -138,26 +157,6 @@ def _exit_code_for_terminal_status(status: TaskState | None) -> int:
     if status == TaskState.RETRY:
         return EXIT_VALIDATION
     return EXIT_INTERNAL
-
-
-def _halt_reason_from_exit_code(exit_code: int) -> str:
-    """Map an exit code to a human-readable halt reason string.
-
-    Args:
-        exit_code: CLI exit code from dispatch execution.
-
-    Returns:
-        Human-readable halt reason.
-    """
-    if exit_code == EXIT_VALIDATION:
-        return "validation failure"
-    if exit_code == EXIT_AGENT:
-        return "agent/budget failure"
-    if exit_code == EXIT_CONFIG:
-        return "config/context failure"
-    if exit_code == EXIT_SCM:
-        return "SCM failure"
-    return "internal failure"
 
 
 def _find_story_file(story_spec: str, artifacts_dir: Path) -> tuple[Path, StoryId, EpicId]:
@@ -440,6 +439,12 @@ async def _dispatch_epic_async(epic_spec: str, *, skip_confirm: bool = False) ->
         typer.echo(f"✗ Failed to create run: {exc}", err=True)
         return EXIT_CONFIG
 
+    halt_controller = HaltController(
+        project_root=project_root,
+        run_id=str(run_id),
+        epic_spec=epic_spec,
+    )
+
     try:
         await update_run_status(project_root, str(run_id), status=RunStatusValue.RUNNING)
     except Exception:
@@ -509,16 +514,56 @@ async def _dispatch_epic_async(epic_spec: str, *, skip_confirm: bool = False) ->
 
             try:
                 graph = build_story_graph()
-                result = await graph.ainvoke(initial_state)
+                # NFR3: Wrap SDK-level communication failures as AgentError so they
+                # route through the halt controller, not the OS exception handler.
+                try:
+                    result = await graph.ainvoke(initial_state)
+                except _sdk_error_types() as nfr3_exc:
+                    logger.debug(
+                        "SDK communication failure, wrapping as AgentError",
+                        exc_info=True,
+                        extra={
+                            "data": {
+                                "original_error": type(nfr3_exc).__name__,
+                                "story": str(story_id),
+                                "retry_count": initial_state.retry_count,
+                                "budget_invocations": initial_state.budget.invocation_count,
+                                "budget_tokens": initial_state.budget.total_tokens,
+                                "budget_cost": str(initial_state.budget.estimated_cost),
+                            }
+                        },
+                    )
+                    raise AgentError(
+                        f"SDK communication failure: {nfr3_exc}",
+                        details={
+                            "error_category": "sdk",
+                            "original_error": type(nfr3_exc).__name__,
+                            "story": str(story_id),
+                            "retry_count": initial_state.retry_count,
+                            "budget": {
+                                "invocation_count": initial_state.budget.invocation_count,
+                                "total_tokens": initial_state.budget.total_tokens,
+                                "estimated_cost": str(initial_state.budget.estimated_cost),
+                            },
+                        },
+                    ) from nfr3_exc
 
                 raw_status = result.get("status") if isinstance(result, dict) else result.status
                 final_status = _coerce_task_state(raw_status)
                 result_budget = result.get("budget") if isinstance(result, dict) else result.budget
                 if result_budget is not None:
                     accumulated_budget = result_budget
-                project_state.stories[idx] = initial_state.model_copy(
-                    update={"status": final_status or TaskState.ESCALATED, "budget": accumulated_budget}
-                )
+
+                # Build final story state, extracting richer context for halt handling.
+                if isinstance(result, StoryState):
+                    final_story_state = result.model_copy(
+                        update={"status": final_status or TaskState.ESCALATED, "budget": accumulated_budget}
+                    )
+                else:
+                    final_story_state = initial_state.model_copy(
+                        update={"status": final_status or TaskState.ESCALATED, "budget": accumulated_budget}
+                    )
+                project_state.stories[idx] = final_story_state
 
                 exit_code = _exit_code_for_terminal_status(final_status)
 
@@ -529,39 +574,15 @@ async def _dispatch_epic_async(epic_spec: str, *, skip_confirm: bool = False) ->
                 )
 
                 if exit_code != EXIT_SUCCESS:
-                    halt_reason = _halt_reason_from_exit_code(exit_code)
                     typer.echo(
                         f"✗ Story {story_id} ended non-successfully (status: {final_status})",
                         err=True,
                     )
-                    try:
-                        await update_run_status(
-                            project_root,
-                            str(run_id),
-                            status=RunStatusValue.HALTED,
-                            last_completed_story=last_completed,
-                            budget=accumulated_budget,
-                        )
-                    except Exception:
-                        logger.warning(
-                            "run_manager.write_error",
-                            extra={"data": {"operation": "update_run_status", "status": "HALTED"}},
-                        )
-                    root_logger.info(
-                        "run.halt",
-                        extra={"data": {"halted_story": story_slug, "reason": halt_reason}},
-                    )
-                    typer.echo(f"\n✗ Epic {epic_spec} halted at story {story_id}.", err=True)
-                    typer.echo(f"  Stories completed ({len(completed_stories)}): {completed_stories}", err=True)
-                    typer.echo(f"  Halt reason: {halt_reason}", err=True)
-                    typer.echo(
-                        f"  💰 Total cost: ${accumulated_budget.estimated_cost}"
-                        f" | Total tokens: {accumulated_budget.total_tokens}",
-                        err=True,
-                    )
-                    typer.echo(
-                        f"  🔁 Resume with: arcwright-ai dispatch --epic {epic_spec} --resume",
-                        err=True,
+                    exit_code = await halt_controller.handle_graph_halt(
+                        story_state=project_state.stories[idx],
+                        accumulated_budget=accumulated_budget,
+                        completed_stories=completed_stories,
+                        last_completed=last_completed,
                     )
                     return exit_code
 
@@ -569,131 +590,15 @@ async def _dispatch_epic_async(epic_spec: str, *, skip_confirm: bool = False) ->
                 completed_stories.append(story_slug)
                 project_state.completed_stories = len(completed_stories)
 
-            except ScmError as exc:
-                typer.echo(f"✗ Story {story_id} failed (SCM error): {exc}", err=True)
-                try:
-                    await update_run_status(
-                        project_root,
-                        str(run_id),
-                        status=RunStatusValue.HALTED,
-                        last_completed_story=last_completed,
-                        budget=accumulated_budget,
-                    )
-                except Exception:
-                    logger.warning(
-                        "run_manager.write_error",
-                        extra={"data": {"operation": "update_run_status"}},
-                    )
-                root_logger.info(
-                    "run.halt",
-                    extra={"data": {"halted_story": story_slug, "reason": str(exc)}},
-                )
-                return EXIT_SCM
-
-            except ValidationError as exc:
-                typer.echo(f"✗ Story {story_id} failed (validation error): {exc}", err=True)
-                try:
-                    await update_run_status(
-                        project_root,
-                        str(run_id),
-                        status=RunStatusValue.HALTED,
-                        last_completed_story=last_completed,
-                        budget=accumulated_budget,
-                    )
-                except Exception:
-                    logger.warning(
-                        "run_manager.write_error",
-                        extra={"data": {"operation": "update_run_status"}},
-                    )
-                root_logger.info(
-                    "run.halt",
-                    extra={"data": {"halted_story": story_slug, "reason": str(exc)}},
-                )
-                return EXIT_VALIDATION
-
-            except AgentError as exc:
-                typer.echo(f"✗ Story {story_id} failed (agent error): {exc}", err=True)
-                try:
-                    await update_run_status(
-                        project_root,
-                        str(run_id),
-                        status=RunStatusValue.HALTED,
-                        last_completed_story=last_completed,
-                        budget=accumulated_budget,
-                    )
-                except Exception:
-                    logger.warning(
-                        "run_manager.write_error",
-                        extra={"data": {"operation": "update_run_status"}},
-                    )
-                root_logger.info(
-                    "run.halt",
-                    extra={"data": {"halted_story": story_slug, "reason": str(exc)}},
-                )
-                return EXIT_AGENT
-
-            except (ContextError, ConfigError, ProjectError) as exc:
-                typer.echo(f"✗ Story {story_id} failed (config/context error): {exc}", err=True)
-                try:
-                    await update_run_status(
-                        project_root,
-                        str(run_id),
-                        status=RunStatusValue.HALTED,
-                        last_completed_story=last_completed,
-                        budget=accumulated_budget,
-                    )
-                except Exception:
-                    logger.warning(
-                        "run_manager.write_error",
-                        extra={"data": {"operation": "update_run_status"}},
-                    )
-                root_logger.info(
-                    "run.halt",
-                    extra={"data": {"halted_story": story_slug, "reason": str(exc)}},
-                )
-                return EXIT_CONFIG
-
-            except ArcwrightError as exc:
-                typer.echo(f"✗ Story {story_id} failed (internal error): {exc}", err=True)
-                try:
-                    await update_run_status(
-                        project_root,
-                        str(run_id),
-                        status=RunStatusValue.HALTED,
-                        last_completed_story=last_completed,
-                        budget=accumulated_budget,
-                    )
-                except Exception:
-                    logger.warning(
-                        "run_manager.write_error",
-                        extra={"data": {"operation": "update_run_status"}},
-                    )
-                root_logger.info(
-                    "run.halt",
-                    extra={"data": {"halted_story": story_slug, "reason": str(exc)}},
-                )
-                return EXIT_INTERNAL
-
             except Exception as exc:
-                typer.echo(f"✗ Story {story_id} failed (unexpected): {exc}", err=True)
-                try:
-                    await update_run_status(
-                        project_root,
-                        str(run_id),
-                        status=RunStatusValue.HALTED,
-                        last_completed_story=last_completed,
-                        budget=accumulated_budget,
-                    )
-                except Exception:
-                    logger.warning(
-                        "run_manager.write_error",
-                        extra={"data": {"operation": "update_run_status"}},
-                    )
-                root_logger.info(
-                    "run.halt",
-                    extra={"data": {"halted_story": story_slug, "reason": str(exc)}},
+                exit_code = await halt_controller.handle_halt(
+                    story_id=story_id,
+                    exception=exc,
+                    accumulated_budget=accumulated_budget,
+                    completed_stories=completed_stories,
+                    last_completed=last_completed,
                 )
-                return EXIT_INTERNAL
+                return exit_code
 
         # All stories completed successfully
         try:

@@ -371,6 +371,17 @@ def _make_story_result(
     return result
 
 
+async def _noop_write_halt_report(*a: object, **k: object) -> object:
+    """No-op stub for write_halt_report used in epic dispatch tests."""
+    from unittest.mock import MagicMock
+
+    return MagicMock()
+
+
+async def _noop_append_entry(*a: object, **k: object) -> None:
+    """No-op stub for append_entry used in epic dispatch tests."""
+
+
 def _patch_epic_deps(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -444,6 +455,12 @@ def _patch_epic_deps(
         call_log["update_run_calls"].append({"status": str(status), "last_completed": last_completed_story})
 
     monkeypatch.setattr("arcwright_ai.cli.dispatch.update_run_status", _update_run_status)
+    # Also patch halt.py callsite so halt-path update_run_status calls are captured.
+    monkeypatch.setattr("arcwright_ai.cli.halt.update_run_status", _update_run_status)
+    # Prevent halt.py's write_halt_report from failing (no run.yaml in test env).
+    monkeypatch.setattr("arcwright_ai.cli.halt.write_halt_report", _noop_write_halt_report)
+    # Prevent halt.py's append_entry from failing (no provenance dir in test env).
+    monkeypatch.setattr("arcwright_ai.cli.halt.append_entry", _noop_append_entry)
 
     async def _update_story_status(
         project_root: Path,
