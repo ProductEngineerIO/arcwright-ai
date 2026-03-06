@@ -8,7 +8,7 @@ import logging
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 
@@ -36,9 +36,12 @@ from arcwright_ai.core.types import BudgetState, EpicId, StoryId
 from arcwright_ai.engine.graph import build_story_graph
 from arcwright_ai.engine.state import ProjectState, StoryState
 from arcwright_ai.output.run_manager import (
+    RunStatus,
     RunStatusValue,
     create_run,
     generate_run_id,
+    get_run_status,
+    list_runs,
     update_run_status,
     update_story_status,
 )
@@ -293,6 +296,133 @@ def _show_dispatch_confirmation(
     typer.confirm("\nProceed with dispatch?", abort=True)
 
 
+async def _find_latest_run_for_epic(
+    project_root: Path,
+    epic_spec: str,
+) -> tuple[str, RunStatus] | None:
+    """Find the most recent run for the specified epic by scanning run directories.
+
+    Iterates all runs sorted by start_time descending (most recent first) and
+    returns the first run whose story slugs contain entries prefixed with the
+    epic number.  Skips runs that cannot be loaded.
+
+    Args:
+        project_root: Absolute path to the project root.
+        epic_spec: Epic identifier string (e.g., "5" or "epic-5").
+
+    Returns:
+        Tuple of ``(run_id, RunStatus)`` for the most recent matching run,
+        or ``None`` if no matching run is found.
+    """
+    epic_num = epic_spec[5:] if epic_spec.startswith("epic-") else epic_spec
+    prefix = f"{epic_num}-"
+    runs = await list_runs(project_root)
+    for run_summary in runs:
+        try:
+            run_status = await get_run_status(project_root, run_summary.run_id)
+        except Exception:
+            logger.debug(
+                "resume.skip_run",
+                extra={"data": {"run_id": run_summary.run_id, "reason": "get_run_status failed"}},
+            )
+            continue
+        if any(slug.startswith(prefix) for slug in run_status.stories):
+            return run_summary.run_id, run_status
+    return None
+
+
+def _reconstruct_budget_from_dict(
+    budget_dict: dict[str, Any],
+    config: RunConfig,
+) -> BudgetState:
+    """Reconstruct a BudgetState from the serialized budget dict in run.yaml.
+
+    The budget dict from run.yaml stores Decimal fields as strings.  This
+    function deserializes them back to proper Decimal values, applying sane
+    defaults for missing or malformed fields.  On any error, returns a fresh
+    BudgetState with a warning log.
+
+    Args:
+        budget_dict: Raw budget dict from ``RunStatus.budget`` (may have
+            string-encoded Decimal values for ``estimated_cost`` and ``max_cost``).
+        config: RunConfig used to set the ``max_cost`` ceiling.
+
+    Returns:
+        Reconstructed ``BudgetState`` with accumulated fields from the prior run
+        and ``max_cost`` from current config.
+    """
+    try:
+        return BudgetState(
+            invocation_count=budget_dict.get("invocation_count", 0),
+            total_tokens=budget_dict.get("total_tokens", 0),
+            estimated_cost=Decimal(str(budget_dict.get("estimated_cost", "0"))),
+            max_invocations=0,
+            max_cost=Decimal(str(config.limits.cost_per_run)),
+        )
+    except Exception:
+        logger.warning(
+            "resume.budget_reconstruction_failed",
+            extra={"data": {"budget_dict_keys": list(budget_dict.keys()) if budget_dict else []}},
+        )
+        return BudgetState(
+            max_invocations=0,
+            max_cost=Decimal(str(config.limits.cost_per_run)),
+        )
+
+
+def _show_resume_confirmation(
+    epic_spec: str,
+    original_run_id: str,
+    completed_slugs: list[str],
+    remaining_stories: list[tuple[Path, StoryId, EpicId]],
+    carried_budget: BudgetState,
+    config: RunConfig,
+    *,
+    skip_confirm: bool = False,
+) -> None:
+    """Display a resume-specific pre-dispatch summary and prompt the user to confirm.
+
+    Shows the original halted run ID, list of already-completed stories to be
+    skipped, list of remaining stories to dispatch, carried-forward budget, and
+    configured budget ceilings.  Calls :func:`typer.confirm` with ``abort=True``
+    so that a rejection raises :exc:`typer.Abort` at the call site.
+
+    Args:
+        epic_spec: Epic identifier string used in the resume header.
+        original_run_id: Run ID of the original halted run.
+        completed_slugs: Story slugs already completed (to be skipped).
+        remaining_stories: Ordered list of ``(story_path, StoryId, EpicId)``
+            tuples for stories that still need to be dispatched.
+        carried_budget: ``BudgetState`` reconstructed from the prior run.
+        config: Fully-loaded run configuration for budget ceiling display.
+        skip_confirm: When ``True`` the function returns immediately without
+            prompting (equivalent to passing ``--yes``).
+    """
+    if skip_confirm:
+        return
+
+    typer.echo(f"\n\u23ef\ufe0f  Epic Resume Plan \u2014 {epic_spec}", err=True)
+    typer.echo(f"   Resuming from halted run: {original_run_id}", err=True)
+    if completed_slugs:
+        typer.echo(f"   Skipping completed stories: {len(completed_slugs)}", err=True)
+        for slug in completed_slugs:
+            typer.echo(f"     \u2713 {slug}", err=True)
+    remaining_count = len(remaining_stories)
+    typer.echo(f"   Dispatching remaining stories: {remaining_count}", err=True)
+    for _, story_id, _ in remaining_stories:
+        typer.echo(f"     \u2022 {story_id}", err=True)
+    typer.echo(
+        f"\n   Carried-forward budget: ${carried_budget.estimated_cost} | "
+        f"{carried_budget.total_tokens} tokens | {carried_budget.invocation_count} invocations",
+        err=True,
+    )
+    typer.echo("\n   Budget ceilings:", err=True)
+    typer.echo(f"     cost_per_run:     ${config.limits.cost_per_run}", err=True)
+    typer.echo(f"     tokens_per_story: {config.limits.tokens_per_story:,}", err=True)
+    typer.echo(f"     retry_budget:     {config.limits.retry_budget}", err=True)
+    typer.confirm("\nProceed with resume?", abort=True)
+
+
 async def _dispatch_story_async(story_spec: str) -> int:
     """Dispatch a single story for agent execution.
 
@@ -385,7 +515,7 @@ async def _dispatch_story_async(story_spec: str) -> int:
         handler.close()
 
 
-async def _dispatch_epic_async(epic_spec: str, *, skip_confirm: bool = False) -> int:
+async def _dispatch_epic_async(epic_spec: str, *, skip_confirm: bool = False, resume: bool = False) -> int:
     """Dispatch all stories in an epic sequentially with full run lifecycle management.
 
     Validates the epic scope, shows a pre-dispatch confirmation (unless
@@ -399,6 +529,10 @@ async def _dispatch_epic_async(epic_spec: str, *, skip_confirm: bool = False) ->
         epic_spec: Epic identifier string (e.g., "2" or "epic-2").
         skip_confirm: When ``True`` the pre-dispatch confirmation prompt is
             skipped entirely (equivalent to the ``--yes`` CLI flag).
+        resume: When ``True`` the controller finds the most recent halted run
+            for the epic, filters out already-completed stories, carries the
+            accumulated budget forward, and dispatches only the remaining
+            stories in a new run.
 
     Returns:
         Exit code (0 for all stories succeeded, non-zero on first failure or
@@ -419,16 +553,80 @@ async def _dispatch_epic_async(epic_spec: str, *, skip_confirm: bool = False) ->
     artifacts_dir = project_root / config.methodology.artifacts_path / "implementation-artifacts"
 
     try:
-        stories = _find_epic_stories(epic_spec, artifacts_dir)
+        all_stories = _find_epic_stories(epic_spec, artifacts_dir)
     except ProjectError as exc:
         typer.echo(f"Error: {exc}", err=True)
         return EXIT_CONFIG
 
-    try:
-        _show_dispatch_confirmation(epic_spec, stories, config, skip_confirm=skip_confirm)
-    except typer.Abort:
-        typer.echo("\nDispatch cancelled by user.", err=True)
-        return EXIT_SUCCESS
+    # --- Resume branch ---
+    stories: list[tuple[Path, StoryId, EpicId]]
+    accumulated_budget_init: BudgetState
+    if resume:
+        prior_run = await _find_latest_run_for_epic(project_root, epic_spec)
+        if prior_run is None:
+            epic_num = epic_spec[5:] if epic_spec.startswith("epic-") else epic_spec
+            typer.echo(
+                f"No previous run found for epic {epic_spec}. "
+                f"Use `arcwright-ai dispatch --epic {epic_num}` without --resume.",
+                err=True,
+            )
+            return EXIT_CONFIG
+
+        original_run_id_str, prior_status = prior_run
+
+        if prior_status.status == RunStatusValue.COMPLETED:
+            typer.echo(
+                f"Run {original_run_id_str} for epic {epic_spec} already completed. All stories passed.",
+                err=True,
+            )
+            return EXIT_SUCCESS
+
+        if prior_status.status != RunStatusValue.HALTED:
+            typer.echo(
+                f"Run {original_run_id_str} for epic {epic_spec} is {prior_status.status.value}, not halted. "
+                "Only halted runs can be resumed.",
+                err=True,
+            )
+            return EXIT_CONFIG
+
+        completed_slugs = [slug for slug, entry in prior_status.stories.items() if entry.status == "success"]
+        completed_set = set(completed_slugs)
+        stories = [(p, sid, eid) for p, sid, eid in all_stories if str(sid) not in completed_set]
+
+        if not stories:
+            typer.echo(
+                f"Run {original_run_id_str} for epic {epic_spec} already completed. All stories passed.",
+                err=True,
+            )
+            return EXIT_SUCCESS
+
+        accumulated_budget_init = _reconstruct_budget_from_dict(prior_status.budget, config)
+
+        try:
+            _show_resume_confirmation(
+                epic_spec=epic_spec,
+                original_run_id=original_run_id_str,
+                completed_slugs=completed_slugs,
+                remaining_stories=stories,
+                carried_budget=accumulated_budget_init,
+                config=config,
+                skip_confirm=skip_confirm,
+            )
+        except typer.Abort:
+            typer.echo("\nResume cancelled by user.", err=True)
+            return EXIT_SUCCESS
+    else:
+        # --- Normal dispatch branch ---
+        stories = all_stories
+        try:
+            _show_dispatch_confirmation(epic_spec, stories, config, skip_confirm=skip_confirm)
+        except typer.Abort:
+            typer.echo("\nDispatch cancelled by user.", err=True)
+            return EXIT_SUCCESS
+        accumulated_budget_init = BudgetState(
+            max_invocations=0,
+            max_cost=Decimal(str(config.limits.cost_per_run)),
+        )
 
     run_id = generate_run_id()
     story_slugs = [str(story_id) for _, story_id, _ in stories]
@@ -483,7 +681,7 @@ async def _dispatch_epic_async(epic_spec: str, *, skip_confirm: bool = False) ->
             stories=initial_story_states,
             config=config,
         )
-        accumulated_budget = project_state.stories[0].budget
+        accumulated_budget = accumulated_budget_init
         last_completed: str | None = None
         completed_stories: list[str] = []
 
@@ -644,6 +842,9 @@ def dispatch_command(
     story: Annotated[str | None, typer.Option("--story", help="Story identifier (e.g., 2.7 or 2-7)")] = None,
     epic: Annotated[str | None, typer.Option("--epic", help="Epic identifier (e.g., 2 or epic-2)")] = None,
     yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip pre-dispatch confirmation")] = False,
+    resume: Annotated[
+        bool, typer.Option("--resume", help="Resume a halted epic dispatch from the failure point")
+    ] = False,
 ) -> None:
     """Dispatch a story or epic for AI agent execution.
 
@@ -652,6 +853,8 @@ def dispatch_command(
         epic: Epic identifier (e.g., 2 or epic-2).
         yes: When set, skip the pre-dispatch confirmation prompt for epic
             dispatch.
+        resume: When set, resume a halted epic dispatch from the failure point.
+            Can only be used with ``--epic``, not ``--story``.
     """
     if story and epic:
         typer.echo("Error: specify --story or --epic, not both.", err=True)
@@ -659,9 +862,12 @@ def dispatch_command(
     if not story and not epic:
         typer.echo("Error: specify --story or --epic.", err=True)
         raise typer.Exit(code=1)
+    if resume and story is not None:
+        typer.echo("Error: --resume can only be used with --epic, not --story.", err=True)
+        raise typer.Exit(code=1)
     if story:
         code = asyncio.run(_dispatch_story_async(story))
     else:
         assert epic is not None  # narrowing: validated above
-        code = asyncio.run(_dispatch_epic_async(epic, skip_confirm=yes))
+        code = asyncio.run(_dispatch_epic_async(epic, skip_confirm=yes, resume=resume))
     raise typer.Exit(code=code)
