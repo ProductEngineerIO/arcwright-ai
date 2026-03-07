@@ -77,13 +77,13 @@ development_status:
   epic-4-retrospective: done
 
   # Epic 5: Halt, Resume & Epic Dispatch (5 stories, 21 pts)
-  epic-5: in-progress
+  epic-5: done
   5-1-epic-dispatch-cli-to-engine-pipeline: done
   5-2-halt-controller-graceful-halt-on-unrecoverable-failure: done
   5-3-resume-controller-resume-halted-epic-from-failure-point: done
   5-4-halt-and-resume-integration-with-run-artifacts: done
-  5-5-run-status-command-live-and-historical-run-visibility: review
-  epic-5-retrospective: optional
+  5-5-run-status-command-live-and-historical-run-visibility: done
+  epic-5-retrospective: done
 
   # Epic 6: SCM Integration & PR Generation (6 stories, 29 pts)
   epic-6: backlog

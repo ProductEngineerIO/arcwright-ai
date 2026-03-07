@@ -1,6 +1,6 @@
 # Story 5.5: Run Status Command — Live & Historical Run Visibility
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -392,3 +392,20 @@ Changes Requested
 5. **[MEDIUM] Story/git file-list discrepancy**  
   Git shows `_spec/implementation-artifacts/sprint-status.yaml` modified, but Dev Agent Record File List only documents three code/test files.  
   Evidence: `git diff --name-only` vs story `### File List` section.
+
+### Re-Review (AI) — 2026-03-06
+
+#### Outcome
+
+Approved
+
+#### Resolution Summary
+
+- Re-ran adversarial checks after follow-up fixes; no remaining HIGH or MEDIUM issues.
+- Verified no story/git discrepancies in current working tree.
+- Confirmed all prior findings are resolved in code/tests and documented as completed in Review Follow-ups.
+- Validation rerun passed: `pytest tests/test_cli/test_status.py` (13 passed), `ruff check .`, `ruff format --check .`, `mypy --strict src/`, and full suite `pytest` (585 passed).
+
+#### Final Decision
+
+Story 5.5 is accepted and moved to `done`.
