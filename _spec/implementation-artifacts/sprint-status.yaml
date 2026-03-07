@@ -88,7 +88,7 @@ development_status:
   # Epic 6: SCM Integration & PR Generation (6 stories, 29 pts)
   epic-6: in-progress
   6-1-git-subprocess-wrapper-safe-shell-out-foundation: done
-  6-2-worktree-manager-atomic-create-delete-with-recovery: backlog
+  6-2-worktree-manager-atomic-create-delete-with-recovery: done
   6-3-branch-manager-and-commit-strategy: backlog
   6-4-pr-body-generator-with-provenance-embedding: backlog
   6-5-worktree-cleanup-command: backlog
