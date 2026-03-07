@@ -1426,9 +1426,18 @@ def test_resume_halt_controller_uses_new_run_id(
 
     original_init = RealHaltController.__init__
 
-    def _spy_init(self: object, *, project_root: object, run_id: str, epic_spec: object) -> None:
+    def _spy_init(
+        self: object,
+        *,
+        project_root: object,
+        run_id: str,
+        epic_spec: object,
+        previous_run_id: object = None,
+    ) -> None:
         halt_controller_run_ids.append(run_id)
-        original_init(self, project_root=project_root, run_id=run_id, epic_spec=epic_spec)  # type: ignore[arg-type]
+        original_init(
+            self, project_root=project_root, run_id=run_id, epic_spec=epic_spec, previous_run_id=previous_run_id
+        )  # type: ignore[arg-type]
 
     monkeypatch.setattr(dispatch_module.HaltController, "__init__", _spy_init)
     monkeypatch.setattr("arcwright_ai.cli.dispatch.generate_run_id", lambda: new_run_id)
@@ -1445,3 +1454,153 @@ def test_resume_halt_controller_uses_new_run_id(
         f"HaltController should use new run_id {str(new_run_id)!r}, got {used_run_id!r}"
     )
     assert used_run_id != original_run_id, "HaltController must NOT use the original halted run_id"
+
+
+# ---------------------------------------------------------------------------
+# Task 8.1-8.3 / AC#14 — previous_run_id threading through dispatch (Story 5.4)
+# ---------------------------------------------------------------------------
+
+
+def test_resume_success_calls_write_success_summary_with_previous_run_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(8.1 / AC#14a) Resume dispatch success path → write_success_summary() called
+    with previous_run_id matching the original halted run ID."""
+    from arcwright_ai.core.types import RunId
+
+    original_run_id = "20260301-100000-src111"
+    new_run_id = RunId("20260306-120000-new222")
+
+    _make_epic_project(tmp_path, epic_num="5", story_count=3)
+    run_summary, run_status = _build_run_status_halted(original_run_id, "5", 3, 1)
+    _patch_resume_run_manager(monkeypatch, [run_summary], {original_run_id: run_status})
+
+    captured_write_summary: dict[str, object] = {}
+
+    async def _mock_write_success_summary(
+        project_root: object,
+        run_id: str,
+        *,
+        previous_run_id: object = None,
+    ) -> object:
+        captured_write_summary["run_id"] = run_id
+        captured_write_summary["previous_run_id"] = previous_run_id
+        from unittest.mock import MagicMock
+
+        return MagicMock()
+
+    monkeypatch.setattr("arcwright_ai.cli.dispatch.write_success_summary", _mock_write_success_summary)
+    monkeypatch.setattr("arcwright_ai.cli.dispatch.generate_run_id", lambda: new_run_id)
+
+    results = [_make_story_result("success") for _ in range(2)]
+    _patch_epic_deps(monkeypatch, tmp_path, results)
+
+    result = runner.invoke(app, ["dispatch", "--epic", "5", "--yes", "--resume"])
+
+    assert result.exit_code == 0, f"Unexpected exit {result.exit_code}:\n{result.output}"
+    assert captured_write_summary.get("previous_run_id") == original_run_id, (
+        f"write_success_summary should be called with previous_run_id={original_run_id!r}, "
+        f"got {captured_write_summary.get('previous_run_id')!r}"
+    )
+    assert captured_write_summary.get("run_id") == str(new_run_id)
+
+
+def test_resume_halt_halt_controller_receives_previous_run_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(8.2 / AC#14b) Resume dispatch halt path → HaltController constructed with
+    previous_run_id matching the original halted run ID."""
+    from arcwright_ai.core.types import RunId
+
+    original_run_id = "20260301-100000-src333"
+    new_run_id = RunId("20260306-120000-new444")
+
+    _make_epic_project(tmp_path, epic_num="5", story_count=3)
+    run_summary, run_status = _build_run_status_halted(original_run_id, "5", 3, 1)
+    _patch_resume_run_manager(monkeypatch, [run_summary], {original_run_id: run_status})
+
+    import arcwright_ai.cli.dispatch as dispatch_module
+    from arcwright_ai.cli.halt import HaltController as RealHaltController
+
+    captured_controller_kwargs: dict[str, object] = {}
+    original_init = RealHaltController.__init__
+
+    def _spy_init(
+        self: object,
+        *,
+        project_root: object,
+        run_id: str,
+        epic_spec: object,
+        previous_run_id: object = None,
+    ) -> None:
+        captured_controller_kwargs["previous_run_id"] = previous_run_id
+        captured_controller_kwargs["run_id"] = run_id
+        original_init(
+            self,
+            project_root=project_root,
+            run_id=run_id,
+            epic_spec=epic_spec,
+            previous_run_id=previous_run_id,
+        )  # type: ignore[arg-type]
+
+    monkeypatch.setattr(dispatch_module.HaltController, "__init__", _spy_init)
+    monkeypatch.setattr("arcwright_ai.cli.dispatch.generate_run_id", lambda: new_run_id)
+
+    # Second story fails → halt path
+    results = [_make_story_result("success"), _make_story_result("escalated")]
+    _patch_epic_deps(monkeypatch, tmp_path, results)
+    monkeypatch.setattr("arcwright_ai.cli.dispatch.write_stop_report", lambda *a, **k: None, raising=False)
+
+    runner.invoke(app, ["dispatch", "--epic", "5", "--yes", "--resume"])
+
+    # May exit non-zero (halt) but HaltController must have been constructed
+    assert captured_controller_kwargs.get("previous_run_id") == original_run_id, (
+        f"HaltController should receive previous_run_id={original_run_id!r}, "
+        f"got {captured_controller_kwargs.get('previous_run_id')!r}"
+    )
+
+
+def test_normal_dispatch_halt_controller_gets_none_previous_run_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(8.3 / AC#14c) Non-resume dispatch path → HaltController gets previous_run_id=None."""
+    _make_epic_project(tmp_path, epic_num="5", story_count=2)
+
+    import arcwright_ai.cli.dispatch as dispatch_module
+    from arcwright_ai.cli.halt import HaltController as RealHaltController
+
+    captured_controller_kwargs: dict[str, object] = {"previous_run_id": "NOT_SET"}
+    original_init = RealHaltController.__init__
+
+    def _spy_init(
+        self: object,
+        *,
+        project_root: object,
+        run_id: str,
+        epic_spec: object,
+        previous_run_id: object = None,
+    ) -> None:
+        captured_controller_kwargs["previous_run_id"] = previous_run_id
+        original_init(
+            self,
+            project_root=project_root,
+            run_id=run_id,
+            epic_spec=epic_spec,
+            previous_run_id=previous_run_id,
+        )  # type: ignore[arg-type]
+
+    monkeypatch.setattr(dispatch_module.HaltController, "__init__", _spy_init)
+
+    results = [_make_story_result("success"), _make_story_result("success")]
+    _patch_epic_deps(monkeypatch, tmp_path, results)
+
+    result = runner.invoke(app, ["dispatch", "--epic", "5", "--yes"])
+
+    assert result.exit_code == 0, f"Unexpected exit {result.exit_code}:\n{result.output}"
+    assert captured_controller_kwargs.get("previous_run_id") is None, (
+        f"Non-resume dispatch: HaltController.previous_run_id should be None, "
+        f"got {captured_controller_kwargs.get('previous_run_id')!r}"
+    )

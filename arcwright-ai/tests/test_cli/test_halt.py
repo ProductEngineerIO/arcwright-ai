@@ -898,3 +898,204 @@ class TestResumeCommand:
         cmd = c._build_resume_command()
         assert "EPIC-5" in cmd
         assert "--resume" in cmd
+
+
+# ---------------------------------------------------------------------------
+# Task 7.1-7.4 / AC#15 — HaltController previous_run_id threading (Story 5.4)
+# ---------------------------------------------------------------------------
+
+
+async def test_halt_controller_previous_run_id_passed_to_write_halt_report(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(7.1 / AC#15a) HaltController with previous_run_id passes it to write_halt_report()."""
+    captured_kwargs: dict[str, object] = {}
+
+    async def _mock_write_halt_report(*args: object, **kwargs: object) -> Path:
+        captured_kwargs.update(kwargs)
+        return tmp_path / "summary.md"
+
+    monkeypatch.setattr("arcwright_ai.cli.halt.write_halt_report", _mock_write_halt_report)
+    monkeypatch.setattr("arcwright_ai.cli.halt.update_run_status", AsyncMock())
+    monkeypatch.setattr("arcwright_ai.cli.halt.append_entry", AsyncMock())
+
+    controller = HaltController(
+        project_root=tmp_path,
+        run_id="20260306-120000-abc123",
+        epic_spec="5",
+        previous_run_id="20260301-100000-orig01",
+    )
+    budget = _make_budget()
+    await controller.handle_halt(
+        story_id=StoryId("5-4-halt-resume"),
+        exception=AgentError("crash"),
+        accumulated_budget=budget,
+        completed_stories=[],
+        last_completed=None,
+    )
+
+    assert captured_kwargs.get("previous_run_id") == "20260301-100000-orig01"
+
+
+async def test_halt_controller_no_previous_run_id_passes_none(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(7.2 / AC#15b) HaltController without previous_run_id passes None (backward compat)."""
+    captured_kwargs: dict[str, object] = {}
+
+    async def _mock_write_halt_report(*args: object, **kwargs: object) -> Path:
+        captured_kwargs.update(kwargs)
+        return tmp_path / "summary.md"
+
+    monkeypatch.setattr("arcwright_ai.cli.halt.write_halt_report", _mock_write_halt_report)
+    monkeypatch.setattr("arcwright_ai.cli.halt.update_run_status", AsyncMock())
+    monkeypatch.setattr("arcwright_ai.cli.halt.append_entry", AsyncMock())
+
+    controller = HaltController(
+        project_root=tmp_path,
+        run_id="20260306-120000-abc123",
+        epic_spec="5",
+    )
+    budget = _make_budget()
+    await controller.handle_halt(
+        story_id=StoryId("5-4-halt-resume"),
+        exception=AgentError("crash"),
+        accumulated_budget=budget,
+        completed_stories=[],
+        last_completed=None,
+    )
+
+    assert captured_kwargs.get("previous_run_id") is None
+
+
+async def test_handle_graph_halt_extracts_failing_ac_ids_from_v3(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(7.3 / AC#15c) handle_graph_halt() extracts failing AC IDs from StoryState.retry_history."""
+    captured_kwargs: dict[str, object] = {}
+
+    async def _mock_write_halt_report(*args: object, **kwargs: object) -> Path:
+        captured_kwargs.update(kwargs)
+        return tmp_path / "summary.md"
+
+    monkeypatch.setattr("arcwright_ai.cli.halt.write_halt_report", _mock_write_halt_report)
+    monkeypatch.setattr("arcwright_ai.cli.halt.update_run_status", AsyncMock())
+    monkeypatch.setattr("arcwright_ai.cli.halt.append_entry", AsyncMock())
+
+    story_state = _make_story_state(
+        retry_history=[_make_fail_v3_result(unmet_criteria=["AC1", "AC3"])],
+    )
+
+    controller = _make_halt_controller(tmp_path)
+    budget = _make_budget()
+    await controller.handle_graph_halt(
+        story_state=story_state,
+        accumulated_budget=budget,
+        completed_stories=[],
+        last_completed=None,
+    )
+
+    failing_ac_ids = captured_kwargs.get("failing_ac_ids")
+    assert isinstance(failing_ac_ids, list)
+    assert "1" in failing_ac_ids
+    assert "3" in failing_ac_ids
+
+
+async def test_handle_halt_exception_path_passes_empty_failing_ac_ids(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(7.4 / AC#15d) handle_halt() exception path passes failing_ac_ids=[]."""
+    captured_kwargs: dict[str, object] = {}
+
+    async def _mock_write_halt_report(*args: object, **kwargs: object) -> Path:
+        captured_kwargs.update(kwargs)
+        return tmp_path / "summary.md"
+
+    monkeypatch.setattr("arcwright_ai.cli.halt.write_halt_report", _mock_write_halt_report)
+    monkeypatch.setattr("arcwright_ai.cli.halt.update_run_status", AsyncMock())
+    monkeypatch.setattr("arcwright_ai.cli.halt.append_entry", AsyncMock())
+
+    controller = _make_halt_controller(tmp_path)
+    budget = _make_budget()
+    await controller.handle_halt(
+        story_id=StoryId("5-4-halt-resume"),
+        exception=AgentError("crash"),
+        accumulated_budget=budget,
+        completed_stories=[],
+        last_completed=None,
+    )
+
+    assert captured_kwargs.get("failing_ac_ids") == []
+
+
+# ---------------------------------------------------------------------------
+# Task 7 — _extract_failing_ac_ids_from_state (AC: #8, #15)
+# ---------------------------------------------------------------------------
+
+
+def test_extract_failing_ac_ids_from_state_v3_feedback() -> None:
+    """_extract_failing_ac_ids_from_state extracts ACs from V3 unmet_criteria."""
+    state = _make_story_state(
+        retry_history=[_make_fail_v3_result(unmet_criteria=["AC1", "AC3"])],
+    )
+    result = HaltController._extract_failing_ac_ids_from_state(state)
+    assert "1" in result
+    assert "3" in result
+
+
+def test_extract_failing_ac_ids_from_state_empty_history() -> None:
+    """_extract_failing_ac_ids_from_state returns [] for empty retry history."""
+    state = _make_story_state(retry_history=[])
+    result = HaltController._extract_failing_ac_ids_from_state(state)
+    assert result == []
+
+
+def test_extract_failing_ac_ids_from_state_v6_no_ac_id_attr() -> None:
+    """_extract_failing_ac_ids_from_state handles V6 failures with no ac_id attribute."""
+    state = _make_story_state(
+        retry_history=[_make_fail_v6_result(failure_count=2)],
+    )
+    # V6 failures from _make_fail_v6_result don't have ac_id or rule_id → returns empty
+    result = HaltController._extract_failing_ac_ids_from_state(state)
+    assert isinstance(result, list)
+
+
+async def test_handle_graph_halt_ignores_v6_rule_id_only_when_collecting_ac_ids(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """V6 rule-only failures are not reported as failing AC IDs in halt report args."""
+    captured_kwargs: dict[str, object] = {}
+
+    async def _mock_write_halt_report(*args: object, **kwargs: object) -> Path:
+        captured_kwargs.update(kwargs)
+        return tmp_path / "summary.md"
+
+    monkeypatch.setattr("arcwright_ai.cli.halt.write_halt_report", _mock_write_halt_report)
+    monkeypatch.setattr("arcwright_ai.cli.halt.update_run_status", AsyncMock())
+    monkeypatch.setattr("arcwright_ai.cli.halt.append_entry", AsyncMock())
+
+    failure = MagicMock()
+    failure.ac_id = None
+    failure.rule_id = "V6-001"
+    v6_result = MagicMock()
+    v6_result.failures = [failure]
+    pipeline_result = MagicMock()
+    pipeline_result.outcome = "fail_v6"
+    pipeline_result.feedback = None
+    pipeline_result.v6_result = v6_result
+
+    state = _make_story_state(retry_history=[pipeline_result])
+    controller = _make_halt_controller(tmp_path)
+    await controller.handle_graph_halt(
+        story_state=state,
+        accumulated_budget=_make_budget(),
+        completed_stories=[],
+        last_completed=None,
+    )
+
+    assert captured_kwargs.get("failing_ac_ids") == []

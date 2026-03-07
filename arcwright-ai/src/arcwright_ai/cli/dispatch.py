@@ -45,6 +45,7 @@ from arcwright_ai.output.run_manager import (
     update_run_status,
     update_story_status,
 )
+from arcwright_ai.output.summary import write_success_summary
 
 __all__: list[str] = ["dispatch_command"]
 
@@ -561,6 +562,9 @@ async def _dispatch_epic_async(epic_spec: str, *, skip_confirm: bool = False, re
     # --- Resume branch ---
     stories: list[tuple[Path, StoryId, EpicId]]
     accumulated_budget_init: BudgetState
+    # original_run_id_str is set in the resume branch; None for normal dispatch.
+    # It is accessible outside the branch so halt/success handlers can thread it through.
+    original_run_id_str: str | None = None
     if resume:
         prior_run = await _find_latest_run_for_epic(project_root, epic_spec)
         if prior_run is None:
@@ -641,6 +645,7 @@ async def _dispatch_epic_async(epic_spec: str, *, skip_confirm: bool = False, re
         project_root=project_root,
         run_id=str(run_id),
         epic_spec=epic_spec,
+        previous_run_id=original_run_id_str,
     )
 
     try:
@@ -822,6 +827,22 @@ async def _dispatch_epic_async(epic_spec: str, *, skip_confirm: bool = False, re
                 }
             },
         )
+
+        # Write resume-aware success summary when in resume mode (AC#4 / Story 5.4).
+        # The finalize_node already wrote per-story summaries; this overwrites the
+        # run-level summary with full cross-run context (previous_run_id).
+        if original_run_id_str is not None:
+            try:
+                await write_success_summary(
+                    project_root,
+                    str(run_id),
+                    previous_run_id=original_run_id_str,
+                )
+            except Exception:
+                logger.warning(
+                    "run_manager.write_error",
+                    extra={"data": {"operation": "write_success_summary", "previous_run_id": original_run_id_str}},
+                )
 
         typer.echo(f"\n✓ Epic {epic_spec} complete — {len(stories)} stories dispatched.", err=True)
         typer.echo(

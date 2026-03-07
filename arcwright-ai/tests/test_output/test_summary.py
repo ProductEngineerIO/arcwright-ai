@@ -16,6 +16,8 @@ from arcwright_ai.output.run_manager import (
 )
 from arcwright_ai.output.summary import (
     _extract_epic_from_slug,
+    _extract_failing_ac_ids,
+    _truncate_output_by_lines,
     write_halt_report,
     write_success_summary,
     write_timeout_summary,
@@ -308,8 +310,9 @@ async def test_write_halt_report_retry_history_table_truncation(tmp_path: Path, 
 
 @pytest.mark.asyncio
 async def test_write_halt_report_long_agent_output_truncation(tmp_path: Path, run_dir: str) -> None:
-    """(9f) write_halt_report truncates last_agent_output to 2000 chars with notice."""
-    long_output = "A" * 3000
+    """(9f) write_halt_report truncates last_agent_output to 500 lines with notice."""
+    # Build a 600-line output so truncation triggers
+    long_output = "\n".join(f"line {i}" for i in range(600))
     path = await write_halt_report(
         tmp_path,
         run_dir,
@@ -322,11 +325,11 @@ async def test_write_halt_report_long_agent_output_truncation(tmp_path: Path, ru
     content = path.read_text(encoding="utf-8")
 
     assert "truncated" in content.lower()
-    assert "3000" in content  # total length notice
-    # Last 2000 chars of "A"*3000 == "A"*2000
-    assert "A" * 2000 in content
-    # The first 1000 'A's should not appear as a continuous block
-    assert "A" * 2001 not in content
+    assert "600" in content  # total line count notice
+    # Last 500 lines start at line 100 (lines 100-599 of a 0-indexed 600-line output)
+    assert "line 599" in content
+    # The first line should not appear (it was truncated off)
+    assert "line 0\n" not in content
 
 
 @pytest.mark.asyncio
@@ -586,3 +589,308 @@ async def test_write_timeout_summary_creates_parent_dirs(tmp_path: Path) -> None
     await create_run(tmp_path, run_id, config, STORY_SLUGS_SINGLE)
     path = await write_timeout_summary(tmp_path, run_id)
     assert path.parent.exists()
+
+
+# ---------------------------------------------------------------------------
+# Task 6.1-6.2 — _truncate_output_by_lines (AC: #1, #13b)
+# ---------------------------------------------------------------------------
+
+
+def test_truncate_output_by_lines_under_limit() -> None:
+    """(6.1) _truncate_output_by_lines — text under 500 lines → no truncation."""
+    text = "\n".join(f"line {i}" for i in range(100))
+    result, was_truncated = _truncate_output_by_lines(text)
+    assert not was_truncated
+    assert result == text
+
+
+def test_truncate_output_by_lines_exactly_at_limit() -> None:
+    """(6.1) _truncate_output_by_lines — exactly 500 lines → no truncation."""
+    text = "\n".join(f"line {i}" for i in range(500))
+    result, was_truncated = _truncate_output_by_lines(text)
+    assert not was_truncated
+    assert result == text
+
+
+def test_truncate_output_by_lines_over_limit() -> None:
+    """(6.2) _truncate_output_by_lines — over 500 lines → truncates, was_truncated=True."""
+    text = "\n".join(f"line {i}" for i in range(600))
+    result, was_truncated = _truncate_output_by_lines(text)
+    assert was_truncated
+    # Should keep last 500 lines (lines 100-599)
+    assert "line 599" in result
+    assert "line 0\n" not in result
+
+
+def test_truncate_output_by_lines_custom_max() -> None:
+    """(6.2) _truncate_output_by_lines — custom max_lines parameter is respected."""
+    text = "\n".join(f"line {i}" for i in range(20))
+    result, was_truncated = _truncate_output_by_lines(text, max_lines=10)
+    assert was_truncated
+    assert "line 19" in result
+    assert "line 0\n" not in result
+
+
+def test_truncate_output_by_lines_empty_text() -> None:
+    """(6.1) _truncate_output_by_lines — empty text → (empty, False)."""
+    result, was_truncated = _truncate_output_by_lines("")
+    assert not was_truncated
+    assert result == ""
+
+
+# ---------------------------------------------------------------------------
+# Task 6.3-6.6 — write_halt_report new params (AC: #1, #3, #13a-d)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_write_halt_report_failing_ac_ids_displayed(tmp_path: Path, run_dir: str) -> None:
+    """(6.3) write_halt_report — failing_ac_ids=['1','3'] → 'Failing ACs: #1, #3'."""
+    path = await write_halt_report(
+        tmp_path,
+        run_dir,
+        halted_story="5-4-halt-resume",
+        halt_reason="validation exhaustion",
+        validation_history=[],
+        last_agent_output="",
+        suggested_fix="fix this",
+        failing_ac_ids=["1", "3"],
+    )
+    content = path.read_text(encoding="utf-8")
+    assert "**Failing ACs:** #1, #3" in content
+
+
+@pytest.mark.asyncio
+async def test_write_halt_report_failing_ac_ids_none_shows_na(tmp_path: Path, run_dir: str) -> None:
+    """(6.4) write_halt_report — failing_ac_ids=None → 'Failing ACs: N/A'."""
+    path = await write_halt_report(
+        tmp_path,
+        run_dir,
+        halted_story="5-4-halt-resume",
+        halt_reason="budget exceeded",
+        validation_history=[],
+        last_agent_output="",
+        suggested_fix="fix",
+        failing_ac_ids=None,
+    )
+    content = path.read_text(encoding="utf-8")
+    assert "**Failing ACs:** N/A" in content
+
+
+@pytest.mark.asyncio
+async def test_write_halt_report_worktree_path_none_shows_placeholder(tmp_path: Path, run_dir: str) -> None:
+    """(6.5) write_halt_report — worktree_path=None → renders N/A placeholder."""
+    path = await write_halt_report(
+        tmp_path,
+        run_dir,
+        halted_story="5-4-halt-resume",
+        halt_reason="test",
+        validation_history=[],
+        last_agent_output="",
+        suggested_fix="fix",
+        worktree_path=None,
+    )
+    content = path.read_text(encoding="utf-8")
+    assert "N/A (worktree isolation pending Story 6.2)" in content
+
+
+@pytest.mark.asyncio
+async def test_write_halt_report_worktree_path_renders_actual_path(tmp_path: Path, run_dir: str) -> None:
+    """(6.6) write_halt_report — worktree_path='/some/path' → renders actual path."""
+    path = await write_halt_report(
+        tmp_path,
+        run_dir,
+        halted_story="5-4-halt-resume",
+        halt_reason="test",
+        validation_history=[],
+        last_agent_output="",
+        suggested_fix="fix",
+        worktree_path="/worktrees/5-4-branch",
+    )
+    content = path.read_text(encoding="utf-8")
+    assert "/worktrees/5-4-branch" in content
+
+
+# ---------------------------------------------------------------------------
+# Task 6.7-6.8 — write_halt_report previous_run_id (AC: #4, #13e-f)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_write_halt_report_previous_run_combined_summary(tmp_path: Path) -> None:
+    """(6.7) write_halt_report — previous_run_id provided → combined summary contains
+    'Previous Run Report' section and previous run content."""
+    from arcwright_ai.core.constants import DIR_ARCWRIGHT, DIR_RUNS
+
+    config = _make_config()
+    prev_run_id = "20260301-100000-prev11"
+    curr_run_id = "20260306-120000-curr22"
+
+    # Create previous run and write a synthetic summary.md to it
+    await create_run(tmp_path, prev_run_id, config, ["5-3-resume-controller"])
+    prev_summary_dir = tmp_path / DIR_ARCWRIGHT / DIR_RUNS / prev_run_id
+    prev_summary_dir.mkdir(parents=True, exist_ok=True)
+    (prev_summary_dir / "summary.md").write_text("# Previous halt report content", encoding="utf-8")
+
+    # Create current run
+    await create_run(tmp_path, curr_run_id, config, ["5-4-halt-resume"])
+
+    path = await write_halt_report(
+        tmp_path,
+        curr_run_id,
+        halted_story="5-4-halt-resume",
+        halt_reason="validation exhaustion",
+        validation_history=[],
+        last_agent_output="",
+        suggested_fix="fix",
+        previous_run_id=prev_run_id,
+    )
+    content = path.read_text(encoding="utf-8")
+    assert "Previous Run Report" in content
+    assert "Previous halt report content" in content
+    assert prev_run_id in content
+
+
+@pytest.mark.asyncio
+async def test_write_halt_report_previous_run_missing_logs_warning_proceeds(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """(6.8) write_halt_report — previous_run_id provided but summary missing →
+    warning logged, new summary still written."""
+    import logging
+
+    config = _make_config()
+    curr_run_id = "20260306-120000-curr22"
+    await create_run(tmp_path, curr_run_id, config, ["5-4-halt-resume"])
+
+    with caplog.at_level(logging.WARNING, logger="arcwright_ai.output.summary"):
+        path = await write_halt_report(
+            tmp_path,
+            curr_run_id,
+            halted_story="5-4-halt-resume",
+            halt_reason="validation exhaustion",
+            validation_history=[],
+            last_agent_output="",
+            suggested_fix="fix",
+            previous_run_id="nonexistent-run-id",
+        )
+
+    # New summary was written despite missing previous
+    assert path.exists()
+    content = path.read_text(encoding="utf-8")
+    assert "# Run Summary:" in content
+    # Warning was logged
+    assert any("previous_run_read_error" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Task 6.9-6.10 — write_success_summary previous_run_id (AC: #4, #13g-h)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_write_success_summary_previous_run_combined(tmp_path: Path) -> None:
+    """(6.9) write_success_summary — previous_run_id provided → combined summary
+    contains 'Previous Run Report' section."""
+    from arcwright_ai.core.constants import DIR_ARCWRIGHT, DIR_RUNS
+
+    config = _make_config()
+    prev_run_id = "20260301-100000-prev33"
+    curr_run_id = "20260306-120000-curr44"
+
+    # Create previous run and write a synthetic summary.md
+    await create_run(tmp_path, prev_run_id, config, ["5-3-resume-controller"])
+    prev_summary_dir = tmp_path / DIR_ARCWRIGHT / DIR_RUNS / prev_run_id
+    prev_summary_dir.mkdir(parents=True, exist_ok=True)
+    (prev_summary_dir / "summary.md").write_text("# Halt report from previous run", encoding="utf-8")
+
+    # Create current run
+    await create_run(tmp_path, curr_run_id, config, ["5-4-halt-resume"])
+
+    path = await write_success_summary(
+        tmp_path,
+        curr_run_id,
+        previous_run_id=prev_run_id,
+    )
+    content = path.read_text(encoding="utf-8")
+    assert "Previous Run Report" in content
+    assert "Halt report from previous run" in content
+    assert prev_run_id in content
+
+
+@pytest.mark.asyncio
+async def test_write_success_summary_no_previous_run_id_unchanged(tmp_path: Path, run_dir: str) -> None:
+    """(6.10) write_success_summary — previous_run_id=None → behavior unchanged."""
+    path = await write_success_summary(tmp_path, run_dir)
+    content = path.read_text(encoding="utf-8")
+    # Normal summary structure present; no previous run section
+    assert "# Run Summary:" in content
+    assert "Previous Run Report" not in content
+
+
+# ---------------------------------------------------------------------------
+# Task 6.11-6.12 — _extract_failing_ac_ids (AC: #8, #13a)
+# ---------------------------------------------------------------------------
+
+
+def test_extract_failing_ac_ids_parses_v3_format() -> None:
+    """(6.11) _extract_failing_ac_ids — 'V3: ACs 1, 3' → ['1', '3']."""
+    history: list[dict[str, Any]] = [
+        {"attempt": 1, "outcome": "fail_v3", "failures": "V3: ACs 1, 3"},
+    ]
+    result = _extract_failing_ac_ids(history)
+    assert result == ["1", "3"]
+
+
+def test_extract_failing_ac_ids_empty_history() -> None:
+    """(6.12) _extract_failing_ac_ids — empty history → []."""
+    result = _extract_failing_ac_ids([])
+    assert result == []
+
+
+def test_extract_failing_ac_ids_deduplicates() -> None:
+    """_extract_failing_ac_ids — same AC across multiple attempts → deduplicated."""
+    history: list[dict[str, Any]] = [
+        {"attempt": 1, "outcome": "fail_v3", "failures": "V3: ACs 1, 3"},
+        {"attempt": 2, "outcome": "fail_v3", "failures": "V3: ACs 1, 5"},
+    ]
+    result = _extract_failing_ac_ids(history)
+    assert result == ["1", "3", "5"]
+
+
+def test_extract_failing_ac_ids_parses_mixed_token_formats() -> None:
+    """_extract_failing_ac_ids parses AC IDs from '#N', 'AC-N', and 'ACN' forms."""
+    history: list[dict[str, Any]] = [
+        {"attempt": 1, "outcome": "fail_v3", "failures": "V3: ACs #2, AC-4, AC7"},
+    ]
+    result = _extract_failing_ac_ids(history)
+    assert result == ["2", "4", "7"]
+
+
+def test_extract_failing_ac_ids_no_matches_returns_empty() -> None:
+    """_extract_failing_ac_ids — no AC pattern in failures → []."""
+    history: list[dict[str, Any]] = [
+        {"attempt": 1, "outcome": "fail_v6", "failures": "V6: 2 checks failed"},
+    ]
+    result = _extract_failing_ac_ids(history)
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_write_halt_report_ac_ids_extracted_from_history(tmp_path: Path, run_dir: str) -> None:
+    """write_halt_report — when failing_ac_ids omitted, ACs extracted from validation_history."""
+    history: list[dict[str, Any]] = [
+        {"attempt": 1, "outcome": "fail_v3", "failures": "V3: ACs 2, 4"},
+    ]
+    path = await write_halt_report(
+        tmp_path,
+        run_dir,
+        halted_story="5-4-halt-resume",
+        halt_reason="validation exhaustion",
+        validation_history=history,
+        last_agent_output="",
+        suggested_fix="fix",
+    )
+    content = path.read_text(encoding="utf-8")
+    assert "**Failing ACs:** #2, #4" in content

@@ -8,6 +8,7 @@ graph-level halts (non-SUCCESS terminal states from the dispatch loop).
 from __future__ import annotations
 
 import logging
+import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -71,7 +72,14 @@ class HaltController:
             build the resume command shown in halt output.
     """
 
-    def __init__(self, *, project_root: Path, run_id: str, epic_spec: str) -> None:
+    def __init__(
+        self,
+        *,
+        project_root: Path,
+        run_id: str,
+        epic_spec: str,
+        previous_run_id: str | None = None,
+    ) -> None:
         """Initialise the halt controller.
 
         Args:
@@ -79,10 +87,15 @@ class HaltController:
             run_id: Run identifier string.
             epic_spec: Epic identifier (e.g., ``"5"`` or ``"epic-5"``), used
                 when rendering the resume command in halt output.
+            previous_run_id: Optional run ID of the original halted run when
+                this controller is operating in resume mode.  When provided it
+                is passed to ``write_halt_report()`` so the combined summary
+                includes the previous run's artifacts.
         """
         self.project_root = project_root
         self.run_id = run_id
         self.epic_spec = epic_spec
+        self.previous_run_id = previous_run_id
 
     # ---------------------------------------------------------------------------
     # Public entry points
@@ -145,6 +158,9 @@ class HaltController:
                 validation_history=[],
                 last_agent_output="",
                 suggested_fix=suggested_fix,
+                failing_ac_ids=[],
+                worktree_path=None,
+                previous_run_id=self.previous_run_id,
             )
         except Exception as exc:
             logger.warning(
@@ -235,6 +251,7 @@ class HaltController:
         # AC#2: Write halt report with full diagnostic data (best-effort).
         # finalize_node already wrote a per-story report; we overwrite with
         # a run-level report that includes cross-story completed_stories context.
+        failing_ac_ids = self._extract_failing_ac_ids_from_state(story_state)
         try:
             await write_halt_report(
                 self.project_root,
@@ -244,6 +261,9 @@ class HaltController:
                 validation_history=validation_history,
                 last_agent_output=last_agent_output,
                 suggested_fix=suggested_fix,
+                failing_ac_ids=failing_ac_ids,
+                worktree_path=None,
+                previous_run_id=self.previous_run_id,
             )
         except Exception as exc:
             logger.warning(
@@ -625,3 +645,54 @@ class HaltController:
                         failures = f"V3: ACs {', '.join(unmet)}"
             history.append({"attempt": i + 1, "outcome": outcome_str, "failures": failures})
         return history
+
+    @staticmethod
+    def _normalize_ac_id(raw_value: object) -> str | None:
+        """Normalize raw AC identifier text to a numeric AC ID.
+
+        Args:
+            raw_value: Raw AC identifier value from validation feedback.
+
+        Returns:
+            Numeric AC ID as a string (e.g. ``"3"``), or ``None`` when
+            no AC ID can be parsed.
+        """
+        match = re.search(r"(\d+)", str(raw_value))
+        if match is None:
+            return None
+        return match.group(1)
+
+    @staticmethod
+    def _extract_failing_ac_ids_from_state(story_state: StoryState) -> list[str]:
+        """Extract failing AC IDs from a terminal story state's retry history.
+
+        Inspects V3 feedback ``unmet_criteria`` and V6 ``failures`` across all
+        retry attempts and returns the unique set of AC identifier strings.
+
+        Args:
+            story_state: Terminal story execution state from the graph.
+
+        Returns:
+            Sorted list of unique failing AC ID strings.  An empty list is
+            returned when no retry history is available (e.g. budget-exceeded
+            halts with no validation attempts).
+        """
+        ac_ids: set[str] = set()
+        for result in story_state.retry_history:
+            feedback = getattr(result, "feedback", None)
+            if feedback is not None:
+                unmet = getattr(feedback, "unmet_criteria", [])
+                for ac_ref in unmet:
+                    normalized = HaltController._normalize_ac_id(ac_ref)
+                    if normalized is not None:
+                        ac_ids.add(normalized)
+            v6_result = getattr(result, "v6_result", None)
+            if v6_result is not None and hasattr(v6_result, "failures"):
+                for failure in v6_result.failures:
+                    ac_ref = getattr(failure, "ac_id", None)
+                    if ac_ref is None:
+                        continue
+                    normalized = HaltController._normalize_ac_id(ac_ref)
+                    if normalized is not None:
+                        ac_ids.add(normalized)
+        return sorted(ac_ids, key=int)

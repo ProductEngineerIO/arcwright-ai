@@ -10,6 +10,7 @@ NEVER import from ``engine/``, ``agent/``, ``validation/``, ``context/``,
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from typing import TYPE_CHECKING, Any
 
@@ -25,6 +26,8 @@ __all__: list[str] = [
     "write_success_summary",
     "write_timeout_summary",
 ]
+
+_log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Private helpers
@@ -91,6 +94,44 @@ def _truncate_output(text: str, max_chars: int = 2000) -> tuple[str, bool]:
     return text[-max_chars:], True
 
 
+def _truncate_output_by_lines(text: str, max_lines: int = 500) -> tuple[str, bool]:
+    """Truncate text to its last *max_lines* lines.
+
+    Args:
+        text: The text to truncate.
+        max_lines: Maximum number of lines to keep from the end.
+
+    Returns:
+        A 2-tuple ``(truncated_text, was_truncated)`` where *was_truncated*
+        is ``True`` when the original text exceeded *max_lines*.
+    """
+    lines = text.splitlines(keepends=True)
+    if len(lines) <= max_lines:
+        return text, False
+    return "".join(lines[-max_lines:]), True
+
+
+def _extract_failing_ac_ids(validation_history: list[dict[str, Any]]) -> list[str]:
+    """Extract unique failing AC IDs from validation history entries.
+
+    Parses AC ID references from the ``failures`` field in each entry.
+    Supports formats like ``"V3: ACs 1, 3"`` and ``"V3: ACs AC1, AC2"``.
+
+    Args:
+        validation_history: List of validation dicts with ``failures`` keys.
+
+    Returns:
+        Sorted list of unique AC ID strings (e.g., ``["1", "3"]``).
+    """
+    ac_ids: set[str] = set()
+    for entry in validation_history:
+        failures = str(entry.get("failures", ""))
+        for segment in re.findall(r"ACs?\s+([^\n.;]+)", failures, flags=re.IGNORECASE):
+            for ac_id in re.findall(r"(?:AC[-\s]*)?#?(\d+)", segment, flags=re.IGNORECASE):
+                ac_ids.add(ac_id)
+    return sorted(ac_ids, key=int)
+
+
 def _escape_markdown_table_cell(text: str) -> str:
     """Escape markdown table control characters in a table cell value.
 
@@ -124,7 +165,12 @@ def _format_resume_epic_target(epic_num: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-async def write_success_summary(project_root: Path, run_id: str) -> Path:
+async def write_success_summary(
+    project_root: Path,
+    run_id: str,
+    *,
+    previous_run_id: str | None = None,
+) -> Path:
     """Write a run success summary to ``summary.md``.
 
     Reads ``run.yaml`` via :func:`~arcwright_ai.output.run_manager.get_run_status`,
@@ -134,9 +180,16 @@ async def write_success_summary(project_root: Path, run_id: str) -> Path:
     The function is idempotent — each call overwrites any previous
     ``summary.md`` at the target path.
 
+    When *previous_run_id* is provided the previous run's ``summary.md`` is
+    read and prepended under a ``## Previous Run Report`` section before the
+    new run's content.  If the previous summary cannot be read (missing or
+    corrupted) a warning is logged and the new summary is written without it.
+
     Args:
         project_root: Absolute path to the target project root.
         run_id: Run identifier string.
+        previous_run_id: Optional run ID of a prior halted run whose summary
+            should be included for chronological continuity.
 
     Returns:
         Path to the written ``summary.md`` file.
@@ -206,6 +259,29 @@ async def write_success_summary(project_root: Path, run_id: str) -> Path:
     lines.append("")
 
     content = "\n".join(lines)
+
+    # Prepend previous run report when previous_run_id is provided (AC#4).
+    if previous_run_id is not None:
+        prev_path = _summary_path(project_root, previous_run_id)
+        try:
+            prev_content = await asyncio.to_thread(prev_path.read_text, encoding="utf-8")
+            prev_lines: list[str] = [
+                "## Previous Run Report",
+                "",
+                f"*From halted run: {previous_run_id}*",
+                "",
+                prev_content,
+                "",
+                "---",
+                "",
+            ]
+            content = "\n".join(prev_lines) + content
+        except Exception:
+            _log.warning(
+                "summary.previous_run_read_error",
+                extra={"data": {"previous_run_id": previous_run_id}},
+            )
+
     path = _summary_path(project_root, run_id)
     await asyncio.to_thread(path.parent.mkdir, parents=True, exist_ok=True)
     await write_text_async(path, content)
@@ -221,15 +297,23 @@ async def write_halt_report(
     validation_history: list[dict[str, Any]],
     last_agent_output: str,
     suggested_fix: str,
+    failing_ac_ids: list[str] | None = None,
+    worktree_path: str | None = None,
+    previous_run_id: str | None = None,
 ) -> Path:
     """Write a structured halt report to ``summary.md``.
 
     Builds a diagnostic markdown document containing the 4 required NFR18
-    fields (halted story, validation failures, retry history, suggested fix)
-    plus run context and last agent output.
+    fields (halted story with failing AC IDs, validation failures, retry
+    history, suggested fix) plus run context and last agent output.
 
     The function is idempotent — each call overwrites any previous
     ``summary.md`` at the target path.
+
+    When *previous_run_id* is provided the previous run's ``summary.md`` is
+    read and prepended under a ``## Previous Run Report`` section.  If the
+    previous summary cannot be read a warning is logged and the new report is
+    written without it.
 
     Args:
         project_root: Absolute path to the target project root.
@@ -240,6 +324,15 @@ async def write_halt_report(
             ``attempt`` (int), ``outcome`` (str), and ``failures`` (str).
         last_agent_output: Raw output from the last agent invocation.
         suggested_fix: Human-readable suggestion for resolving the failure.
+        failing_ac_ids: Optional explicit list of failing AC ID strings to
+            display in the "Halted Story" section.  When ``None`` the IDs are
+            extracted from *validation_history* automatically.  When an empty
+            list is passed, ``"N/A"`` is displayed.
+        worktree_path: Optional path to the isolated worktree for the failing
+            story.  When ``None``, renders a placeholder noting that worktree
+            isolation is pending Story 6.2.
+        previous_run_id: Optional run ID of a prior halted run whose summary
+            should be prepended for chronological continuity.
 
     Returns:
         Path to the written ``summary.md`` file.
@@ -250,6 +343,9 @@ async def write_halt_report(
     run_status = await get_run_status(project_root, run_id)
     epic_num = _extract_epic_from_slug(halted_story)
     resume_epic_target = _format_resume_epic_target(epic_num)
+
+    # Resolve failing AC IDs: use explicit list, or extract from validation history.
+    resolved_ac_ids = _extract_failing_ac_ids(validation_history) if failing_ac_ids is None else failing_ac_ids
 
     lines: list[str] = []
 
@@ -264,6 +360,15 @@ async def write_halt_report(
     lines.append(f"- **Epic ID:** {epic_num}")
     lines.append(f"- **Halt Reason:** {halt_reason}")
     lines.append(f"- **Run ID:** {run_id}")
+    if resolved_ac_ids:
+        ac_display = ", ".join(f"#{ac}" for ac in resolved_ac_ids)
+        lines.append(f"- **Failing ACs:** {ac_display}")
+    else:
+        lines.append("- **Failing ACs:** N/A")
+    if worktree_path is not None:
+        lines.append(f"- **Preserved Worktree:** {worktree_path}")
+    else:
+        lines.append("- **Preserved Worktree:** N/A (worktree isolation pending Story 6.2)")
     lines.append("")
 
     # Validation Failures (NFR18 field 2)
@@ -302,27 +407,22 @@ async def write_halt_report(
         lines.append("| — | — | — |")
     lines.append("")
 
-    # Last Agent Output
+    # Last Agent Output  — line-based truncation (NFR18 field 3)
     lines.append("## Last Agent Output")
     lines.append("")
-    truncated_text, was_truncated = _truncate_output(last_agent_output)
-    total_length = len(last_agent_output)
+    truncated_text, was_truncated = _truncate_output_by_lines(last_agent_output)
+    total_lines = last_agent_output.count("\n") + 1 if last_agent_output else 0
     if was_truncated:
-        if total_length > 2000:
-            lines.append(f"*... truncated ({total_length} chars total) ...*")
-            lines.append("")
-            lines.append("<details>")
-            lines.append("<summary>Last 2000 characters of agent output</summary>")
-            lines.append("")
-            lines.append("```")
-            lines.append(truncated_text)
-            lines.append("```")
-            lines.append("")
-            lines.append("</details>")
-        else:
-            lines.append("```")
-            lines.append(truncated_text)
-            lines.append("```")
+        lines.append(f"*... truncated ({total_lines} lines total, showing last 500) ...*")
+        lines.append("")
+        lines.append("<details>")
+        lines.append("<summary>Last 500 lines of agent output</summary>")
+        lines.append("")
+        lines.append("```")
+        lines.append(truncated_text)
+        lines.append("```")
+        lines.append("")
+        lines.append("</details>")
     else:
         lines.append("```")
         lines.append(truncated_text)
@@ -363,6 +463,29 @@ async def write_halt_report(
     lines.append("")
 
     content = "\n".join(lines)
+
+    # Prepend previous run report when previous_run_id is provided (AC#4).
+    if previous_run_id is not None:
+        prev_path = _summary_path(project_root, previous_run_id)
+        try:
+            prev_content = await asyncio.to_thread(prev_path.read_text, encoding="utf-8")
+            prev_lines: list[str] = [
+                "## Previous Run Report",
+                "",
+                f"*From halted run: {previous_run_id}*",
+                "",
+                prev_content,
+                "",
+                "---",
+                "",
+            ]
+            content = "\n".join(prev_lines) + content
+        except Exception:
+            _log.warning(
+                "summary.previous_run_read_error",
+                extra={"data": {"previous_run_id": previous_run_id}},
+            )
+
     path = _summary_path(project_root, run_id)
     await asyncio.to_thread(path.parent.mkdir, parents=True, exist_ok=True)
     await write_text_async(path, content)
