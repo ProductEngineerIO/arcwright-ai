@@ -82,7 +82,7 @@ development_status:
   5-2-halt-controller-graceful-halt-on-unrecoverable-failure: done
   5-3-resume-controller-resume-halted-epic-from-failure-point: done
   5-4-halt-and-resume-integration-with-run-artifacts: done
-  5-5-run-status-command-live-and-historical-run-visibility: backlog
+  5-5-run-status-command-live-and-historical-run-visibility: review
   epic-5-retrospective: optional
 
   # Epic 6: SCM Integration & PR Generation (6 stories, 29 pts)

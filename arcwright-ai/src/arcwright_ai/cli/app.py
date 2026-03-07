@@ -5,7 +5,7 @@ from __future__ import annotations
 import typer
 
 from arcwright_ai.cli.dispatch import dispatch_command
-from arcwright_ai.cli.status import init_command, validate_setup_command
+from arcwright_ai.cli.status import init_command, status_command, validate_setup_command
 
 app = typer.Typer(
     name="arcwright-ai",
@@ -16,6 +16,7 @@ app = typer.Typer(
 # Register commands
 app.command(name="dispatch")(dispatch_command)
 app.command(name="init")(init_command)
+app.command(name="status")(status_command)
 app.command(name="validate-setup")(validate_setup_command)
 
 

@@ -1,14 +1,17 @@
 """CLI status — Sprint and run status display commands.
 
 Contains: init command for scaffolding .arcwright-ai/ project directory,
-and validate-setup command for configuration verification.
+validate-setup command for configuration verification, and status command
+for live and historical run visibility.
 """
 
 from __future__ import annotations
 
+import asyncio
 import os
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 import typer
 
@@ -23,15 +26,25 @@ from arcwright_ai.core.constants import (
     ENV_API_CLAUDE_API_KEY,
     EXIT_CONFIG,
     EXIT_SUCCESS,
+    EXIT_VALIDATION,
     GLOBAL_CONFIG_DIR,
 )
-from arcwright_ai.core.exceptions import ConfigError
+from arcwright_ai.core.exceptions import ConfigError, RunError
 from arcwright_ai.core.io import load_yaml
+from arcwright_ai.output.run_manager import RunStatusValue, get_run_status, list_runs
 
 __all__: list[str] = [
     "init_command",
+    "status_command",
     "validate_setup_command",
 ]
+
+# ---------------------------------------------------------------------------
+# Status command constants
+# ---------------------------------------------------------------------------
+
+_COMPLETED_STATUSES: frozenset[str] = frozenset({"success", "completed", "done"})
+_FAILED_STATUSES: frozenset[str] = frozenset({"failed", "halted", "escalated"})
 
 # ---------------------------------------------------------------------------
 # Gitignore entries managed by arcwright-ai
@@ -587,3 +600,211 @@ def validate_setup_command(
     else:
         typer.echo("All checks passed. Ready for dispatch.", err=True)
         raise typer.Exit(code=EXIT_SUCCESS)
+
+
+# ---------------------------------------------------------------------------
+# Status command helpers
+# ---------------------------------------------------------------------------
+
+
+def _format_cost_value(value: Any) -> str:
+    """Format a budget/cost value for display.
+
+    Returns ``"N/A"`` for zero or empty values; otherwise returns the string
+    representation.
+
+    Args:
+        value: Raw budget field value (may be None, int, str, Decimal, etc.).
+
+    Returns:
+        Human-readable string or ``"N/A"``.
+    """
+    if value is None or value == 0 or value == "0" or value == "":
+        return "N/A"
+    return str(value)
+
+
+def _format_elapsed(start_iso: str, end_iso: str | None = None) -> str:
+    """Compute elapsed time between two ISO 8601 timestamps.
+
+    If ``end_iso`` is None the current UTC time is used as the end point.
+
+    Args:
+        start_iso: ISO 8601 start timestamp string.
+        end_iso: ISO 8601 end timestamp string, or None for "now".
+
+    Returns:
+        Human-readable elapsed string in the form ``"Xh Ym Zs"``.
+    """
+    try:
+        start_dt = datetime.fromisoformat(start_iso)
+    except ValueError:
+        return "unknown"
+
+    if end_iso is not None:
+        try:
+            end_dt = datetime.fromisoformat(end_iso)
+        except ValueError:
+            end_dt = datetime.now(tz=UTC)
+    else:
+        end_dt = datetime.now(tz=UTC)
+
+    # Ensure both are timezone-aware for comparison
+    if start_dt.tzinfo is None:
+        start_dt = start_dt.replace(tzinfo=UTC)
+    if end_dt.tzinfo is None:
+        end_dt = end_dt.replace(tzinfo=UTC)
+
+    total_seconds = max(0, int((end_dt - start_dt).total_seconds()))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours}h {minutes}m {seconds}s"
+
+
+def _parse_iso_datetime(timestamp: str) -> datetime | None:
+    """Parse an ISO 8601 timestamp into a timezone-aware datetime.
+
+    Args:
+        timestamp: ISO 8601 timestamp string.
+
+    Returns:
+        Parsed timezone-aware datetime, or None when parsing fails.
+    """
+    try:
+        parsed = datetime.fromisoformat(timestamp)
+    except ValueError:
+        return None
+
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed
+
+
+async def _status_async(project_root: Path, run_id: str | None) -> None:
+    """Async implementation of the status command.
+
+    Reads run state from ``run.yaml`` via ``get_run_status()`` and ``list_runs()``,
+    then formats and emits run status to stderr.
+
+    Args:
+        project_root: Resolved project root directory.
+        run_id: Specific run ID to inspect, or None for the latest run.
+
+    Raises:
+        typer.Exit: With code 0 on success or when no runs exist; with code 1
+            when run_id is not found.
+    """
+    if run_id is None:
+        runs = await list_runs(project_root)
+        if not runs:
+            typer.echo(
+                "No runs found. Use 'arcwright-ai dispatch' to start a run.",
+                err=True,
+            )
+            raise typer.Exit(code=EXIT_SUCCESS)
+        resolved_run_id = runs[0].run_id
+    else:
+        resolved_run_id = run_id
+
+    try:
+        run_status = await get_run_status(project_root, resolved_run_id)
+    except RunError:
+        typer.echo(
+            f"Run not found: {resolved_run_id}. Use 'arcwright-ai status' to list recent runs.",
+            err=True,
+        )
+        raise typer.Exit(code=EXIT_VALIDATION) from None
+
+    # Categorize stories
+    completed_stories: list[str] = []
+    failed_stories: list[str] = []
+    pending_stories: list[str] = []
+    latest_completed_at: datetime | None = None
+
+    for slug, entry in run_status.stories.items():
+        st = entry.status
+        if entry.completed_at:
+            completed_at_dt = _parse_iso_datetime(entry.completed_at)
+            if completed_at_dt and (latest_completed_at is None or completed_at_dt > latest_completed_at):
+                latest_completed_at = completed_at_dt
+
+        if st in _COMPLETED_STATUSES:
+            completed_stories.append(slug)
+        elif st in _FAILED_STATUSES:
+            failed_stories.append(slug)
+        else:
+            pending_stories.append(slug)
+
+    # Compute elapsed time
+    is_terminal = run_status.status in (
+        RunStatusValue.COMPLETED,
+        RunStatusValue.HALTED,
+        RunStatusValue.TIMED_OUT,
+    )
+    elapsed = _format_elapsed(
+        run_status.start_time,
+        latest_completed_at.isoformat() if is_terminal and latest_completed_at is not None else None,
+    )
+
+    # Format budget/cost fields
+    budget = run_status.budget
+    invocation_count = _format_cost_value(budget.get("invocation_count"))
+    total_tokens = _format_cost_value(budget.get("total_tokens"))
+    estimated_cost = _format_cost_value(budget.get("estimated_cost"))
+
+    # Build output
+    separator = "\u2500" * 38
+    total_stories = len(run_status.stories)
+
+    typer.echo("Arcwright AI \u2014 Run Status", err=True)
+    typer.echo(separator, err=True)
+    typer.echo("", err=True)
+    typer.echo(f"  Run ID:    {run_status.run_id}", err=True)
+    typer.echo(f"  Status:    {run_status.status.value}", err=True)
+    typer.echo(f"  Started:   {run_status.start_time}", err=True)
+    typer.echo(f"  Elapsed:   {elapsed}", err=True)
+    typer.echo("", err=True)
+    typer.echo(f"Stories ({total_stories} total):", err=True)
+    if completed_stories:
+        typer.echo(f"  \u2713 {len(completed_stories)} completed: {', '.join(completed_stories)}", err=True)
+    else:
+        typer.echo("  \u2713 0 completed", err=True)
+    if failed_stories:
+        typer.echo(f"  \u2717 {len(failed_stories)} failed: {', '.join(failed_stories)}", err=True)
+    else:
+        typer.echo("  \u2717 0 failed", err=True)
+    if pending_stories:
+        typer.echo(f"  \u25e6 {len(pending_stories)} pending: {', '.join(pending_stories)}", err=True)
+    else:
+        typer.echo("  \u25e6 0 pending", err=True)
+    typer.echo("", err=True)
+    typer.echo("Cost:", err=True)
+    typer.echo(f"  Invocations: {invocation_count}", err=True)
+    typer.echo(f"  Tokens:      {total_tokens}", err=True)
+    typer.echo(f"  Est. Cost:   {estimated_cost}", err=True)
+    typer.echo("", err=True)
+
+
+# ---------------------------------------------------------------------------
+# Status command
+# ---------------------------------------------------------------------------
+
+
+def status_command(
+    run_id: Annotated[
+        str | None,
+        typer.Argument(help="Run ID to inspect. Shows latest run if omitted."),
+    ] = None,
+    path: str = typer.Option(".", "--path", "-p", help="Project root directory"),
+) -> None:
+    """Display status for a live or historical run.
+
+    Without a run-id, shows the most recent run. With a run-id, shows that
+    specific run. All output goes to stderr per D8.
+
+    Args:
+        run_id: Run identifier to inspect. If omitted, the latest run is shown.
+        path: Path to the project root directory. Defaults to cwd.
+    """
+    project_root = Path(path).resolve()
+    asyncio.run(_status_async(project_root, run_id))
