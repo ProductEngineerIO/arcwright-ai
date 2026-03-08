@@ -29,6 +29,9 @@ class StoryState(BaseModel):
         run_id: Unique run identifier (e.g., '20260302-143052-a7f3').
         story_path: Path to the story markdown file.
         project_root: Root directory of the project.
+        worktree_path: Absolute path to the git worktree for this story.
+            Set by ``preflight_node`` after ``create_worktree`` succeeds.
+            ``None`` means no SCM integration (backward-compatible default).
         status: Current lifecycle state (queued → ... → success/escalated).
         context_bundle: Assembled context from preflight (None until preflight runs).
         agent_output: Raw agent response text (None until agent runs).
@@ -46,6 +49,7 @@ class StoryState(BaseModel):
     run_id: RunId
     story_path: Path
     project_root: Path
+    worktree_path: Path | None = None
     status: TaskState = TaskState.QUEUED
     context_bundle: ContextBundle | None = None
     agent_output: str | None = None

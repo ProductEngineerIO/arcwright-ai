@@ -266,6 +266,17 @@ def test_dispatch_story_end_to_end_with_mock_sdk(
 
     monkeypatch.setattr("arcwright_ai.engine.nodes.invoke_agent", _mock_invoke)
 
+    # Mock SCM functions to prevent real git calls (tmp_path is not a git repo)
+    from pathlib import Path
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(
+        "arcwright_ai.engine.nodes.create_worktree",
+        AsyncMock(return_value=Path(tmp_path / ".arcwright-ai" / "worktrees" / "2-1-story-slug")),
+    )
+    monkeypatch.setattr("arcwright_ai.engine.nodes.remove_worktree", AsyncMock())
+    monkeypatch.setattr("arcwright_ai.engine.nodes.commit_story", AsyncMock(return_value="abc1234"))
+
     result = runner.invoke(app, ["dispatch", "--story", "2.1"], catch_exceptions=False)
 
     # Verify exit code

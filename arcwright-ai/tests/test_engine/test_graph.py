@@ -38,6 +38,13 @@ def _mock_output_functions(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("arcwright_ai.engine.nodes.update_run_status", AsyncMock())
     monkeypatch.setattr("arcwright_ai.engine.nodes.write_success_summary", AsyncMock())
     monkeypatch.setattr("arcwright_ai.engine.nodes.write_halt_report", AsyncMock())
+    # Default SCM mocks — prevent real git calls in graph unit tests
+    monkeypatch.setattr(
+        "arcwright_ai.engine.nodes.create_worktree",
+        AsyncMock(return_value=Path("/project/.arcwright-ai/worktrees/2-1-state-models")),
+    )
+    monkeypatch.setattr("arcwright_ai.engine.nodes.remove_worktree", AsyncMock())
+    monkeypatch.setattr("arcwright_ai.engine.nodes.commit_story", AsyncMock(return_value="abc1234"))
 
 
 def make_initial_state() -> StoryState:

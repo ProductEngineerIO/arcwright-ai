@@ -92,7 +92,7 @@ development_status:
   6-3-branch-manager-and-commit-strategy: done
   6-4-pr-body-generator-with-provenance-embedding: done
   6-5-worktree-cleanup-command: done
-  6-6-scm-integration-with-engine-nodes: backlog
+  6-6-scm-integration-with-engine-nodes: done
   epic-6-retrospective: optional
 
   # Epic 7: Cost Tracking & Budget Enforcement (4 stories, 16 pts)

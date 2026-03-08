@@ -1032,6 +1032,38 @@ async def test_handle_halt_exception_path_passes_empty_failing_ac_ids(
     assert captured_kwargs.get("failing_ac_ids") == []
 
 
+async def test_handle_graph_halt_passes_worktree_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Graph halt path forwards worktree_path to write_halt_report when available."""
+    captured_kwargs: dict[str, object] = {}
+
+    async def _mock_write_halt_report(*args: object, **kwargs: object) -> Path:
+        captured_kwargs.update(kwargs)
+        return tmp_path / "summary.md"
+
+    monkeypatch.setattr("arcwright_ai.cli.halt.write_halt_report", _mock_write_halt_report)
+    monkeypatch.setattr("arcwright_ai.cli.halt.update_run_status", AsyncMock())
+    monkeypatch.setattr("arcwright_ai.cli.halt.append_entry", AsyncMock())
+
+    story_state = _make_story_state(
+        retry_history=[_make_fail_v6_result()],
+    )
+    story_state.worktree_path = tmp_path / ".arcwright-ai" / "worktrees" / "5-2-halt-controller"
+
+    controller = _make_halt_controller(tmp_path)
+    budget = _make_budget()
+    await controller.handle_graph_halt(
+        story_state=story_state,
+        accumulated_budget=budget,
+        completed_stories=[],
+        last_completed=None,
+    )
+
+    assert captured_kwargs.get("worktree_path") == str(story_state.worktree_path)
+
+
 # ---------------------------------------------------------------------------
 # Task 7 — _extract_failing_ac_ids_from_state (AC: #8, #15)
 # ---------------------------------------------------------------------------

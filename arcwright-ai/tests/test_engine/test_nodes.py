@@ -20,12 +20,13 @@ from arcwright_ai.core.constants import (
     HALT_REPORT_FILENAME,
     VALIDATION_FILENAME,
 )
-from arcwright_ai.core.exceptions import AgentError, ContextError, ValidationError
+from arcwright_ai.core.exceptions import AgentError, BranchError, ContextError, ScmError, ValidationError, WorktreeError
 from arcwright_ai.core.lifecycle import TaskState
 from arcwright_ai.core.types import BudgetState, ContextBundle, EpicId, RunId, StoryId
 from arcwright_ai.engine.nodes import (
     _build_validation_history_dicts,
     _derive_halt_reason,
+    _derive_story_title,
     agent_dispatch_node,
     budget_check_node,
     commit_node,
@@ -62,6 +63,13 @@ def _mock_output_functions(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("arcwright_ai.engine.nodes.update_run_status", AsyncMock())
     monkeypatch.setattr("arcwright_ai.engine.nodes.write_success_summary", AsyncMock())
     monkeypatch.setattr("arcwright_ai.engine.nodes.write_halt_report", AsyncMock())
+    # Default SCM mocks — prevent real git calls in unit tests
+    monkeypatch.setattr(
+        "arcwright_ai.engine.nodes.create_worktree",
+        AsyncMock(return_value=Path("/project/.arcwright-ai/worktrees/2-1-state-models")),
+    )
+    monkeypatch.setattr("arcwright_ai.engine.nodes.remove_worktree", AsyncMock())
+    monkeypatch.setattr("arcwright_ai.engine.nodes.commit_story", AsyncMock(return_value="abc1234"))
 
 
 @pytest.fixture
@@ -1156,3 +1164,316 @@ def test_build_validation_history_dicts_converts_pipeline_results(
     assert history[1]["attempt"] == 2
     assert history[1]["outcome"] == PipelineOutcome.PASS.value
     assert history[1]["failures"] == ""
+
+
+# ---------------------------------------------------------------------------
+# Story 6.6: SCM integration — _derive_story_title helper (AC: #4.5)
+# ---------------------------------------------------------------------------
+
+
+def test_derive_story_title_strips_prefix_and_title_cases() -> None:
+    """_derive_story_title converts '6-6-scm-integration' → 'Scm Integration'."""
+    assert _derive_story_title("6-6-scm-integration") == "Scm Integration"
+
+
+def test_derive_story_title_handles_three_part_slug() -> None:
+    """_derive_story_title handles multi-word name after prefix."""
+    assert _derive_story_title("2-1-state-models") == "State Models"
+
+
+def test_derive_story_title_no_prefix_returns_slug_title_cased() -> None:
+    """_derive_story_title returns title-cased slug when no numeric prefix."""
+    assert _derive_story_title("my-story") == "My Story"
+
+
+# ---------------------------------------------------------------------------
+# Story 6.6: SCM integration — preflight_node (AC: #1, #7, #8)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_preflight_node_creates_worktree(
+    story_state_with_project: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """preflight_node calls create_worktree and sets worktree_path in state."""
+    expected_path = Path("/project/.arcwright-ai/worktrees/2-6-preflight-node")
+    mock_create = AsyncMock(return_value=expected_path)
+    monkeypatch.setattr("arcwright_ai.engine.nodes.create_worktree", mock_create)
+
+    result = await preflight_node(story_state_with_project)
+
+    mock_create.assert_called_once_with(
+        str(story_state_with_project.story_id),
+        project_root=story_state_with_project.project_root,
+    )
+    assert result.worktree_path == expected_path
+    assert result.status == TaskState.RUNNING
+
+
+@pytest.mark.asyncio
+async def test_preflight_node_scm_error_escalates(
+    story_state_with_project: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """preflight_node transitions to ESCALATED and writes halt report when create_worktree fails."""
+    scm_exc = ScmError("git worktree add failed", details={"code": 128})
+
+    async def _raise(*args: object, **kwargs: object) -> Path:
+        raise scm_exc
+
+    monkeypatch.setattr("arcwright_ai.engine.nodes.create_worktree", _raise)
+
+    result = await preflight_node(story_state_with_project)
+
+    assert result.status == TaskState.ESCALATED
+    assert result.worktree_path is None
+
+    halt_path = (
+        story_state_with_project.project_root
+        / DIR_ARCWRIGHT
+        / DIR_RUNS
+        / str(story_state_with_project.run_id)
+        / DIR_STORIES
+        / str(story_state_with_project.story_id)
+        / HALT_REPORT_FILENAME
+    )
+    assert halt_path.exists()
+    content = halt_path.read_text(encoding="utf-8")
+    assert "preflight_worktree_creation_failed" in content
+    assert "git worktree add failed" in content
+
+
+def test_route_budget_check_returns_exceeded_when_state_already_escalated(make_story_state: StoryState) -> None:
+    """Escalated states must route directly to finalize via exceeded edge."""
+    state = make_story_state.model_copy(update={"status": TaskState.ESCALATED})
+    assert route_budget_check(state) == "exceeded"
+
+
+# ---------------------------------------------------------------------------
+# Story 6.6: SCM integration — agent_dispatch_node (AC: #2, #5, #6)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_agent_dispatch_uses_worktree_cwd(
+    story_state_with_project: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """agent_dispatch_node passes worktree_path as cwd when worktree_path is set."""
+    worktree = Path("/project/.arcwright-ai/worktrees/2-6-preflight-node")
+    monkeypatch.setattr("arcwright_ai.engine.nodes.create_worktree", AsyncMock(return_value=worktree))
+    preflight_result = await preflight_node(story_state_with_project)
+    assert preflight_result.worktree_path == worktree
+
+    captured_cwd: list[Path] = []
+
+    async def _mock_invoke(prompt: str, *, model: str, cwd: Path, sandbox: object) -> object:
+        captured_cwd.append(cwd)
+        from decimal import Decimal
+
+        from arcwright_ai.agent.invoker import InvocationResult
+
+        return InvocationResult(
+            output_text="done",
+            tokens_input=10,
+            tokens_output=10,
+            total_cost=Decimal("0.001"),
+            duration_ms=100,
+            session_id="s1",
+            num_turns=1,
+            is_error=False,
+        )
+
+    monkeypatch.setattr("arcwright_ai.engine.nodes.invoke_agent", _mock_invoke)
+    await agent_dispatch_node(preflight_result)
+
+    assert len(captured_cwd) == 1
+    assert captured_cwd[0] == worktree
+
+
+@pytest.mark.asyncio
+async def test_agent_dispatch_falls_back_to_project_root(
+    story_state_with_project: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """agent_dispatch_node uses project_root as cwd when worktree_path is None."""
+    monkeypatch.setattr("arcwright_ai.engine.nodes.create_worktree", AsyncMock(return_value=None))
+    # Build state with worktree_path=None directly
+    from arcwright_ai.context.injector import build_context_bundle
+
+    bundle = await build_context_bundle(
+        story_state_with_project.story_path,
+        story_state_with_project.project_root,
+        artifacts_path=story_state_with_project.config.methodology.artifacts_path,
+    )
+    state = story_state_with_project.model_copy(
+        update={
+            "status": TaskState.RUNNING,
+            "context_bundle": bundle,
+            "worktree_path": None,
+        }
+    )
+
+    captured_cwd: list[Path] = []
+
+    async def _mock_invoke(prompt: str, *, model: str, cwd: Path, sandbox: object) -> object:
+        captured_cwd.append(cwd)
+        from decimal import Decimal
+
+        from arcwright_ai.agent.invoker import InvocationResult
+
+        return InvocationResult(
+            output_text="done",
+            tokens_input=10,
+            tokens_output=10,
+            total_cost=Decimal("0.001"),
+            duration_ms=100,
+            session_id="s1",
+            num_turns=1,
+            is_error=False,
+        )
+
+    monkeypatch.setattr("arcwright_ai.engine.nodes.invoke_agent", _mock_invoke)
+    await agent_dispatch_node(state)
+
+    assert captured_cwd[0] == story_state_with_project.project_root
+
+
+# ---------------------------------------------------------------------------
+# Story 6.6: SCM integration — commit_node (AC: #3, #6, #13)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_commit_node_commits_and_removes_worktree(
+    make_story_state: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """commit_node calls commit_story and remove_worktree with correct args when worktree_path set."""
+    worktree_path = Path("/project/.arcwright-ai/worktrees/2-1-state-models")
+    state = make_story_state.model_copy(update={"status": TaskState.SUCCESS, "worktree_path": worktree_path})
+
+    mock_commit = AsyncMock(return_value="deadbeef")
+    mock_remove = AsyncMock()
+    monkeypatch.setattr("arcwright_ai.engine.nodes.commit_story", mock_commit)
+    monkeypatch.setattr("arcwright_ai.engine.nodes.remove_worktree", mock_remove)
+
+    result = await commit_node(state)
+
+    assert result.status == TaskState.SUCCESS
+    mock_commit.assert_called_once()
+    call_kwargs = mock_commit.call_args[1]
+    assert call_kwargs["story_slug"] == str(state.story_id)
+    assert call_kwargs["worktree_path"] == worktree_path
+
+    mock_remove.assert_called_once_with(str(state.story_id), project_root=state.project_root)
+
+
+@pytest.mark.asyncio
+async def test_commit_node_skips_scm_when_no_worktree(
+    make_story_state: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """commit_node skips SCM operations when worktree_path is None."""
+    state = make_story_state.model_copy(update={"status": TaskState.SUCCESS, "worktree_path": None})
+
+    mock_commit = AsyncMock(return_value="deadbeef")
+    mock_remove = AsyncMock()
+    monkeypatch.setattr("arcwright_ai.engine.nodes.commit_story", mock_commit)
+    monkeypatch.setattr("arcwright_ai.engine.nodes.remove_worktree", mock_remove)
+
+    result = await commit_node(state)
+
+    assert result.status == TaskState.SUCCESS
+    mock_commit.assert_not_called()
+    mock_remove.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_commit_node_handles_branch_error_gracefully(
+    make_story_state: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """commit_node logs warning on BranchError but still calls remove_worktree (non-fatal)."""
+    worktree_path = Path("/project/.arcwright-ai/worktrees/2-1-state-models")
+    state = make_story_state.model_copy(update={"status": TaskState.SUCCESS, "worktree_path": worktree_path})
+
+    async def _raise_branch_error(*args: object, **kwargs: object) -> str:
+        raise BranchError("nothing to commit", details={})
+
+    mock_remove = AsyncMock()
+    monkeypatch.setattr("arcwright_ai.engine.nodes.commit_story", _raise_branch_error)
+    monkeypatch.setattr("arcwright_ai.engine.nodes.remove_worktree", mock_remove)
+
+    with caplog.at_level(logging.WARNING):
+        result = await commit_node(state)
+
+    assert result.status == TaskState.SUCCESS
+    assert any("scm.commit.error" in r.message for r in caplog.records)
+    mock_remove.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_commit_node_handles_worktree_error_gracefully(
+    make_story_state: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """commit_node logs warning on WorktreeError from remove_worktree but does not crash."""
+    worktree_path = Path("/project/.arcwright-ai/worktrees/2-1-state-models")
+    state = make_story_state.model_copy(update={"status": TaskState.SUCCESS, "worktree_path": worktree_path})
+
+    async def _raise_worktree_error(*args: object, **kwargs: object) -> None:
+        raise WorktreeError("worktree not found", details={})
+
+    monkeypatch.setattr("arcwright_ai.engine.nodes.commit_story", AsyncMock(return_value="abc123"))
+    monkeypatch.setattr("arcwright_ai.engine.nodes.remove_worktree", _raise_worktree_error)
+
+    with caplog.at_level(logging.WARNING):
+        result = await commit_node(state)
+
+    assert result.status == TaskState.SUCCESS
+    assert any("scm.worktree.remove.error" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Story 6.6: SCM integration — finalize_node (AC: #4)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_finalize_preserves_worktree_on_escalated(
+    make_story_state: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """finalize_node logs scm.worktree.preserved on ESCALATED and does NOT call remove_worktree."""
+    worktree_path = Path("/project/.arcwright-ai/worktrees/2-1-state-models")
+    state = make_story_state.model_copy(update={"status": TaskState.ESCALATED, "worktree_path": worktree_path})
+
+    mock_remove = AsyncMock()
+    monkeypatch.setattr("arcwright_ai.engine.nodes.remove_worktree", mock_remove)
+
+    with caplog.at_level(logging.INFO):
+        result = await finalize_node(state)
+
+    assert result.status == TaskState.ESCALATED
+    mock_remove.assert_not_called()
+    assert any("scm.worktree.preserved" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_finalize_no_worktree_preserved_log_when_no_worktree_path(
+    make_story_state: StoryState,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """finalize_node does not log scm.worktree.preserved when worktree_path is None."""
+    state = make_story_state.model_copy(update={"status": TaskState.ESCALATED, "worktree_path": None})
+
+    with caplog.at_level(logging.INFO):
+        result = await finalize_node(state)
+
+    assert result.status == TaskState.ESCALATED
+    assert not any("scm.worktree.preserved" in r.message for r in caplog.records)

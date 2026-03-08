@@ -252,6 +252,8 @@ class HaltController:
         # finalize_node already wrote a per-story report; we overwrite with
         # a run-level report that includes cross-story completed_stories context.
         failing_ac_ids = self._extract_failing_ac_ids_from_state(story_state)
+        raw_worktree_path = getattr(story_state, "worktree_path", None)
+        worktree_path = str(raw_worktree_path) if raw_worktree_path is not None else None
         try:
             await write_halt_report(
                 self.project_root,
@@ -262,7 +264,7 @@ class HaltController:
                 last_agent_output=last_agent_output,
                 suggested_fix=suggested_fix,
                 failing_ac_ids=failing_ac_ids,
-                worktree_path=None,
+                worktree_path=worktree_path,
                 previous_run_id=self.previous_run_id,
             )
         except Exception as exc:

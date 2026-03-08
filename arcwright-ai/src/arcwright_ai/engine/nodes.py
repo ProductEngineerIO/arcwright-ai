@@ -22,7 +22,7 @@ from arcwright_ai.core.constants import (
     HALT_REPORT_FILENAME,
     VALIDATION_FILENAME,
 )
-from arcwright_ai.core.exceptions import AgentError, ContextError, ValidationError
+from arcwright_ai.core.exceptions import AgentError, BranchError, ContextError, ScmError, ValidationError, WorktreeError
 from arcwright_ai.core.io import write_text_async
 from arcwright_ai.core.lifecycle import TaskState
 from arcwright_ai.core.types import ProvenanceEntry
@@ -30,12 +30,15 @@ from arcwright_ai.engine.state import StoryState  # noqa: TC001
 from arcwright_ai.output.provenance import append_entry, render_validation_row
 from arcwright_ai.output.run_manager import update_run_status, update_story_status
 from arcwright_ai.output.summary import write_halt_report, write_success_summary
+from arcwright_ai.scm.branch import commit_story
+from arcwright_ai.scm.worktree import create_worktree, remove_worktree
 from arcwright_ai.validation.pipeline import PipelineOutcome, PipelineResult, run_validation_pipeline
 
 if TYPE_CHECKING:
     from pathlib import Path
 
 __all__: list[str] = [
+    "_derive_story_title",
     "agent_dispatch_node",
     "budget_check_node",
     "commit_node",
@@ -47,6 +50,20 @@ __all__: list[str] = [
 ]
 
 logger = logging.getLogger(__name__)
+
+
+def _derive_story_title(story_id: str) -> str:
+    """Derive a human-readable title from a story ID slug.
+
+    Args:
+        story_id: Story identifier slug (e.g., "6-6-scm-integration").
+
+    Returns:
+        Title-cased story name (e.g., "Scm Integration").
+    """
+    parts = story_id.split("-", 2)
+    name_part = parts[2] if len(parts) > 2 else story_id
+    return name_part.replace("-", " ").title()
 
 
 async def preflight_node(state: StoryState) -> StoryState:
@@ -71,6 +88,88 @@ async def preflight_node(state: StoryState) -> StoryState:
     # Transition: QUEUED → PREFLIGHT
     state = state.model_copy(update={"status": TaskState.PREFLIGHT})
 
+    checkpoint_dir: Path = (
+        state.project_root / DIR_ARCWRIGHT / DIR_RUNS / str(state.run_id) / DIR_STORIES / str(state.story_id)
+    )
+    await asyncio.to_thread(checkpoint_dir.mkdir, parents=True, exist_ok=True)
+
+    # Create isolated git worktree BEFORE context assembly (AC: #1, #6, #7, #8)
+    worktree_path = None
+    try:
+        worktree_path = await create_worktree(str(state.story_id), project_root=state.project_root)
+        logger.info(
+            "scm.worktree.create",
+            extra={
+                "data": {
+                    "story": str(state.story_id),
+                    "worktree_path": str(worktree_path),
+                    "story_slug": str(state.story_id),
+                }
+            },
+        )
+    except ScmError as exc:
+        logger.error(
+            "scm.preflight.error",
+            extra={
+                "data": {
+                    "story": str(state.story_id),
+                    "error": exc.message,
+                    "details": exc.details,
+                }
+            },
+        )
+        halt_report = "\n".join(
+            [
+                f"# Halt Report: Story {state.story_id}",
+                "",
+                "## Summary",
+                "",
+                f"- **Story**: {state.story_id}",
+                f"- **Epic**: {state.epic_id}",
+                f"- **Run**: {state.run_id}",
+                "- **Status**: ESCALATED",
+                "- **Reason**: preflight_worktree_creation_failed",
+                "",
+                "## Error",
+                "",
+                f"- **Type**: {type(exc).__name__}",
+                f"- **Message**: {exc.message}",
+                f"- **Details**: {exc.details}",
+                "",
+                "## Resume Command",
+                "",
+                "```bash",
+                f"arcwright-ai resume {state.run_id}",
+                "```",
+                "",
+            ]
+        )
+        try:
+            await write_text_async(checkpoint_dir / HALT_REPORT_FILENAME, halt_report)
+        except Exception as report_exc:
+            logger.warning(
+                "summary.write_error",
+                extra={
+                    "data": {
+                        "node": "preflight",
+                        "story": str(state.story_id),
+                        "error": str(report_exc),
+                    }
+                },
+            )
+        escalated = state.model_copy(
+            update={
+                "status": TaskState.ESCALATED,
+                "worktree_path": None,
+                "agent_output": f"Preflight SCM error: {exc.message}",
+            }
+        )
+        logger.info(
+            "engine.node.exit",
+            extra={"data": {"node": "preflight", "story": str(state.story_id), "status": str(escalated.status)}},
+        )
+        return escalated
+
     try:
         bundle = await build_context_bundle(
             state.story_path,
@@ -89,15 +188,13 @@ async def preflight_node(state: StoryState) -> StoryState:
         raise
 
     # Build checkpoint path and write
-    checkpoint_dir: Path = (
-        state.project_root / DIR_ARCWRIGHT / DIR_RUNS / str(state.run_id) / DIR_STORIES / str(state.story_id)
-    )
-    await asyncio.to_thread(checkpoint_dir.mkdir, parents=True, exist_ok=True)
     serialised = serialize_bundle_to_markdown(bundle)
     await write_text_async(checkpoint_dir / CONTEXT_BUNDLE_FILENAME, serialised)
 
     # Transition: PREFLIGHT → RUNNING
-    updated = state.model_copy(update={"context_bundle": bundle, "status": TaskState.RUNNING})
+    updated = state.model_copy(
+        update={"context_bundle": bundle, "status": TaskState.RUNNING, "worktree_path": worktree_path}
+    )
 
     logger.info(
         "engine.node.exit",
@@ -181,11 +278,24 @@ async def agent_dispatch_node(state: StoryState) -> StoryState:
         },
     )
 
+    # Use worktree_path as cwd if available; fall back to project_root for backward compat (AC: #2, #5, #6)
+    agent_cwd = state.worktree_path if state.worktree_path is not None else state.project_root
+    logger.info(
+        "agent.dispatch",
+        extra={
+            "data": {
+                "story": str(state.story_id),
+                "cwd": str(agent_cwd),
+                "using_worktree": state.worktree_path is not None,
+            }
+        },
+    )
+
     try:
         result = await invoke_agent(
             prompt,
             model=state.config.model.version,
-            cwd=state.project_root,
+            cwd=agent_cwd,
             sandbox=validate_path,
         )
     except AgentError:
@@ -720,12 +830,14 @@ async def validate_node(state: StoryState) -> StoryState:
 
 
 async def commit_node(state: StoryState) -> StoryState:
-    """Commit node — updates run.yaml with story completion and budget.
+    """Commit node — updates run.yaml, commits worktree, and removes worktree.
 
     Calls run_manager to update story status to "success" with completion
     timestamp, and updates the run-level last_completed_story pointer and
-    budget snapshot. All writes are best-effort — failures are logged but
-    do not halt execution.
+    budget snapshot. If a worktree_path is set, calls ``commit_story`` to
+    stage and commit changes, then ``remove_worktree`` to clean up the
+    worktree. All writes and SCM operations are best-effort — failures are
+    logged as warnings but do not halt execution.
 
     Args:
         state: Current story execution state (expected SUCCESS).
@@ -781,6 +893,53 @@ async def commit_node(state: StoryState) -> StoryState:
                 }
             },
         )
+
+    # SCM: commit and remove worktree (AC: #3, #6, #13)
+    if state.worktree_path is not None:
+        story_title = _derive_story_title(story_slug)
+
+        # Commit story changes in worktree (best-effort, non-fatal)
+        try:
+            commit_hash = await commit_story(
+                story_slug=story_slug,
+                story_title=story_title,
+                story_path=str(state.story_path),
+                run_id=run_id,
+                worktree_path=state.worktree_path,
+            )
+            logger.info(
+                "scm.commit",
+                extra={
+                    "data": {
+                        "story": story_slug,
+                        "commit_hash": commit_hash,
+                        "worktree_path": str(state.worktree_path),
+                    }
+                },
+            )
+        except ScmError as exc:
+            logger.warning(
+                "scm.commit.error",
+                extra={"data": {"story": story_slug, "error": exc.message, "details": exc.details}},
+            )
+
+        # Remove worktree after commit (best-effort, non-fatal)
+        try:
+            await remove_worktree(story_slug, project_root=project_root)
+            logger.info(
+                "scm.worktree.remove",
+                extra={
+                    "data": {
+                        "story": story_slug,
+                        "worktree_path": str(state.worktree_path),
+                    }
+                },
+            )
+        except ScmError as exc:
+            logger.warning(
+                "scm.worktree.remove.error",
+                extra={"data": {"story": story_slug, "error": exc.message, "details": exc.details}},
+            )
 
     logger.info(
         "engine.node.exit",
@@ -868,8 +1027,10 @@ async def finalize_node(state: StoryState) -> StoryState:
     """Finalize node — writes run-level summary at graph termination.
 
     Examines the terminal state (SUCCESS or ESCALATED) and writes the
-    appropriate run-level summary via output/summary. All writes are
-    best-effort — failures are logged but do not affect the returned state.
+    appropriate run-level summary via output/summary. When ESCALATED and a
+    worktree_path is set, the worktree is preserved for manual inspection and
+    a ``scm.worktree.preserved`` event is logged. All writes are best-effort —
+    failures are logged but do not affect the returned state.
 
     Args:
         state: Current story execution state in a terminal status.
@@ -900,7 +1061,21 @@ async def finalize_node(state: StoryState) -> StoryState:
                 validation_history=validation_history_dicts,
                 last_agent_output=last_agent_output,
                 suggested_fix=suggested_fix,
+                worktree_path=str(state.worktree_path) if state.worktree_path is not None else None,
             )
+
+            # Preserve worktree on ESCALATED — do NOT remove (AC: #4)
+            if state.worktree_path is not None:
+                logger.info(
+                    "scm.worktree.preserved",
+                    extra={
+                        "data": {
+                            "story": story_slug,
+                            "worktree_path": str(state.worktree_path),
+                            "reason": "story_escalated",
+                        }
+                    },
+                )
     except Exception as exc:
         logger.warning(
             "summary.write_error",
@@ -936,6 +1111,9 @@ def route_budget_check(state: StoryState) -> str:
     Returns:
         'exceeded' if budget limits are breached, 'ok' otherwise.
     """
+    if state.status == TaskState.ESCALATED:
+        return "exceeded"
+
     budget = state.budget
     if budget.max_invocations > 0 and budget.invocation_count >= budget.max_invocations:
         return "exceeded"
