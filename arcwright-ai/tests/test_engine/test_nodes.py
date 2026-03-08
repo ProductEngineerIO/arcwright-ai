@@ -1324,6 +1324,47 @@ async def test_preflight_node_scm_error_escalates(
     assert "git worktree add failed" in content
 
 
+@pytest.mark.asyncio
+async def test_preflight_node_removes_stale_worktree_and_retries(
+    story_state_with_project: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When create_worktree raises 'already exists', preflight removes the stale
+    worktree and retries rather than escalating.  This handles the common case
+    where a prior escalated run preserved the worktree."""
+    from arcwright_ai.core.exceptions import ScmError
+
+    expected_path = Path("/project/.arcwright-ai/worktrees/2-6-preflight-node")
+    stale_exc = ScmError(
+        "Worktree already exists for '2-6-preflight-node'",
+        details={"story_slug": "2-6-preflight-node"},
+    )
+
+    call_count = 0
+
+    async def _create_worktree(slug: str, *, project_root: Path) -> Path:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise stale_exc
+        return expected_path
+
+    mock_remove = AsyncMock()
+    monkeypatch.setattr("arcwright_ai.engine.nodes.create_worktree", _create_worktree)
+    monkeypatch.setattr("arcwright_ai.engine.nodes.remove_worktree", mock_remove)
+
+    result = await preflight_node(story_state_with_project)
+
+    assert result.status == TaskState.RUNNING, "Should succeed after stale cleanup"
+    assert result.worktree_path == expected_path
+    assert call_count == 2, "create_worktree called twice (first stale, then fresh)"
+    mock_remove.assert_awaited_once_with(
+        str(story_state_with_project.story_id),
+        project_root=story_state_with_project.project_root,
+        delete_branch=True,
+    )
+
+
 def test_route_budget_check_returns_exceeded_when_state_already_escalated(make_story_state: StoryState) -> None:
     """Escalated states must route directly to finalize via exceeded edge."""
     state = make_story_state.model_copy(update={"status": TaskState.ESCALATED})

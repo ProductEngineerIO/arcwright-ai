@@ -97,7 +97,28 @@ async def preflight_node(state: StoryState) -> StoryState:
     # Create isolated git worktree BEFORE context assembly (AC: #1, #6, #7, #8)
     worktree_path = None
     try:
-        worktree_path = await create_worktree(str(state.story_id), project_root=state.project_root)
+        story_slug = str(state.story_id)
+        try:
+            worktree_path = await create_worktree(story_slug, project_root=state.project_root)
+        except ScmError as stale_exc:
+            # If a worktree was preserved from a prior escalated run, remove it
+            # and retry rather than escalating immediately.  This allows fresh
+            # `dispatch --story` retries without manual `git worktree remove`.
+            if "already exists" in stale_exc.message:
+                logger.info(
+                    "scm.worktree.stale_cleanup",
+                    extra={
+                        "data": {
+                            "story": story_slug,
+                            "reason": "stale_from_prior_escalation",
+                            "original_error": stale_exc.message,
+                        }
+                    },
+                )
+                await remove_worktree(story_slug, project_root=state.project_root, delete_branch=True)
+                worktree_path = await create_worktree(story_slug, project_root=state.project_root)
+            else:
+                raise
         logger.info(
             "scm.worktree.create",
             extra={
