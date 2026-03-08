@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 import typer
+import yaml
 from typer.testing import CliRunner
 
 from arcwright_ai.agent.invoker import InvocationResult
@@ -305,6 +306,21 @@ def test_dispatch_story_end_to_end_with_mock_sdk(
     response_data = response_entries[-1].get("data", {})
     assert int(response_data.get("tokens_input", 0)) > 0
     assert int(response_data.get("tokens_output", 0)) > 0
+
+    # Verify run.yaml was created (guards against regression where --story
+    # path used bare mkdir and skipped create_run, causing run_manager.write_error)
+    run_yamls = list(tmp_path.glob(".arcwright-ai/runs/*/run.yaml"))
+    assert len(run_yamls) == 1, "Expected run.yaml to be created by single-story dispatch"
+    run_data = yaml.safe_load(run_yamls[0].read_text(encoding="utf-8"))
+    assert run_data["status"] in ("running", "queued", "completed"), (
+        f"Unexpected run status in run.yaml: {run_data['status']}"
+    )
+
+    # No run_manager write errors should appear in the log
+    write_error_events = [e for e in entries if e.get("event") == "run_manager.write_error"]
+    assert write_error_events == [], (
+        f"Unexpected run_manager.write_error events: {write_error_events}"
+    )
 
 
 # ---------------------------------------------------------------------------

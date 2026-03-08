@@ -21,7 +21,6 @@ from arcwright_ai.cli.resume import (
 from arcwright_ai.core.config import RunConfig, load_config
 from arcwright_ai.core.constants import (
     DIR_ARCWRIGHT,
-    DIR_RUNS,
     EXIT_AGENT,
     EXIT_CONFIG,
     EXIT_INTERNAL,
@@ -333,8 +332,20 @@ async def _dispatch_story_async(story_spec: str) -> int:
         return EXIT_CONFIG
 
     run_id = generate_run_id()
-    run_dir = project_root / DIR_ARCWRIGHT / DIR_RUNS / str(run_id)
-    run_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        run_dir = await create_run(project_root, run_id, config, [str(story_id)])
+    except Exception as exc:
+        typer.echo(f"✗ Failed to create run: {exc}", err=True)
+        return EXIT_CONFIG
+
+    try:
+        await update_run_status(project_root, str(run_id), status=RunStatusValue.RUNNING)
+    except Exception:
+        logger.warning(
+            "run_manager.write_error",
+            extra={"data": {"operation": "update_run_status", "status": "RUNNING"}},
+        )
 
     handler, previous_level = _setup_run_logging(run_dir)
     try:
