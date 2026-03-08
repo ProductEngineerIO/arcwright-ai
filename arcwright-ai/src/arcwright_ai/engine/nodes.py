@@ -115,7 +115,7 @@ async def preflight_node(state: StoryState) -> StoryState:
                         }
                     },
                 )
-                await remove_worktree(story_slug, project_root=state.project_root, delete_branch=True)
+                await remove_worktree(story_slug, project_root=state.project_root, delete_branch=True, force=True)
                 worktree_path = await create_worktree(story_slug, project_root=state.project_root)
             else:
                 raise

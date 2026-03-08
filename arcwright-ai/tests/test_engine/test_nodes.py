@@ -1362,6 +1362,7 @@ async def test_preflight_node_removes_stale_worktree_and_retries(
         str(story_state_with_project.story_id),
         project_root=story_state_with_project.project_root,
         delete_branch=True,
+        force=True,
     )
 
 

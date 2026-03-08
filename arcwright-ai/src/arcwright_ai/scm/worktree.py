@@ -183,7 +183,13 @@ async def create_worktree(
     return worktree_path
 
 
-async def remove_worktree(story_slug: str, *, project_root: Path, delete_branch: bool = False) -> None:
+async def remove_worktree(
+    story_slug: str,
+    *,
+    project_root: Path,
+    delete_branch: bool = False,
+    force: bool = False,
+) -> None:
     """Remove the git worktree for a story.
 
     Idempotent: if the worktree directory does not exist (already removed or
@@ -192,6 +198,10 @@ async def remove_worktree(story_slug: str, *, project_root: Path, delete_branch:
     Args:
         story_slug: Identifier for the story whose worktree should be removed.
         project_root: Absolute path to the root of the main git repository.
+        delete_branch: If True, also delete the story branch after removing the worktree.
+        force: If True, pass ``--force`` to ``git worktree remove`` so that
+            worktrees with modified or untracked files are removed without error.
+            Use when cleaning up stale worktrees from prior escalations.
 
     Raises:
         WorktreeError: If ``git worktree remove`` fails for a reason other than
@@ -216,8 +226,13 @@ async def remove_worktree(story_slug: str, *, project_root: Path, delete_branch:
 
     branch_name: str = BRANCH_PREFIX + story_slug
 
+    git_remove_args = ["worktree", "remove"]
+    if force:
+        git_remove_args.append("--force")
+    git_remove_args.append(str(worktree_path))
+
     try:
-        await git("worktree", "remove", str(worktree_path), cwd=project_root)
+        await git(*git_remove_args, cwd=project_root)
     except ScmError as exc:
         # If the directory existed but git no longer tracks the worktree (race
         # condition or leftover directory), treat the missing-worktree case as
