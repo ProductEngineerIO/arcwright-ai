@@ -91,7 +91,7 @@ development_status:
   6-2-worktree-manager-atomic-create-delete-with-recovery: done
   6-3-branch-manager-and-commit-strategy: done
   6-4-pr-body-generator-with-provenance-embedding: done
-  6-5-worktree-cleanup-command: backlog
+  6-5-worktree-cleanup-command: done
   6-6-scm-integration-with-engine-nodes: backlog
   epic-6-retrospective: optional
 
