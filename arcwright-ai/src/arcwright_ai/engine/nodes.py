@@ -22,7 +22,7 @@ from arcwright_ai.core.constants import (
     HALT_REPORT_FILENAME,
     VALIDATION_FILENAME,
 )
-from arcwright_ai.core.exceptions import AgentError, ContextError, ScmError, ValidationError
+from arcwright_ai.core.exceptions import ContextError, ScmError, ValidationError
 from arcwright_ai.core.io import write_text_async
 from arcwright_ai.core.lifecycle import TaskState
 from arcwright_ai.core.types import ProvenanceEntry
@@ -299,16 +299,48 @@ async def agent_dispatch_node(state: StoryState) -> StoryState:
             cwd=agent_cwd,
             sandbox=validate_path,
         )
-    except AgentError:
-        logger.info(
-            "agent.error",
-            extra={"data": {"node": "agent_dispatch", "story": str(state.story_id), "status": str(state.status)}},
+    except Exception as exc:
+        # SDK crash before any output — escalate cleanly so finalize_node can
+        # still run and remove the worktree (prevents worktree leaks).
+        logger.error(
+            "agent.sdk_error",
+            extra={
+                "data": {
+                    "node": "agent_dispatch",
+                    "story": str(state.story_id),
+                    "attempt": state.retry_count + 1,
+                    "error": str(exc),
+                }
+            },
         )
+        checkpoint_dir: Path = (
+            state.project_root / DIR_ARCWRIGHT / DIR_RUNS / str(state.run_id) / DIR_STORIES / str(state.story_id)
+        )
+        await asyncio.to_thread(checkpoint_dir.mkdir, parents=True, exist_ok=True)
+        sdk_error_check = V6CheckResult(
+            check_name="agent_sdk_error",
+            passed=False,
+            failure_detail=str(exc),
+        )
+        synthetic_v6 = V6ValidationResult(passed=False, results=[sdk_error_check])
+        synthetic_pipeline = PipelineResult(
+            passed=False,
+            outcome=PipelineOutcome.FAIL_V6,
+            v6_result=synthetic_v6,
+        )
+        halt_report = _generate_halt_report(state, synthetic_pipeline, state.retry_history, reason="agent_sdk_error")
+        await write_text_async(checkpoint_dir / HALT_REPORT_FILENAME, halt_report)
         logger.info(
             "engine.node.exit",
-            extra={"data": {"node": "agent_dispatch", "story": str(state.story_id), "status": str(state.status)}},
+            extra={
+                "data": {
+                    "node": "agent_dispatch",
+                    "story": str(state.story_id),
+                    "status": str(TaskState.ESCALATED),
+                }
+            },
         )
-        raise
+        return state.model_copy(update={"status": TaskState.ESCALATED, "agent_output": ""})
 
     # Update budget
     new_budget = state.budget.model_copy(
@@ -542,6 +574,15 @@ async def validate_node(state: StoryState) -> StoryState:
 
     if state.agent_output is None:
         raise ValidationError("validate_node requires agent_output from agent_dispatch")
+
+    # Pass-through: agent_dispatch already escalated (e.g. SDK crash before output).
+    # The halt report was written there; nothing more to do here.
+    if state.status == TaskState.ESCALATED:
+        logger.info(
+            "engine.node.exit",
+            extra={"data": {"node": "validate", "story": str(state.story_id), "status": str(state.status)}},
+        )
+        return state
 
     try:
         pipeline_result = await run_validation_pipeline(

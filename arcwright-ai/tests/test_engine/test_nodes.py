@@ -612,9 +612,7 @@ async def test_validate_node_sdk_crash_transitions_to_escalated(
 
     result = await validate_node(validate_ready_state)
 
-    assert result.status == TaskState.ESCALATED, (
-        f"Expected ESCALATED on SDK crash, got {result.status}"
-    )
+    assert result.status == TaskState.ESCALATED, f"Expected ESCALATED on SDK crash, got {result.status}"
 
 
 @pytest.mark.asyncio
@@ -623,6 +621,7 @@ async def test_validate_node_sdk_crash_writes_halt_report(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """SDK crash during validation writes a halt report to the checkpoint dir."""
+
     async def _crash(*args: object, **kwargs: object) -> PipelineResult:
         raise AgentError("Command failed with exit code 1 (exit code: 1)")
 
@@ -630,9 +629,9 @@ async def test_validate_node_sdk_crash_writes_halt_report(
 
     await validate_node(validate_ready_state)
 
-    halt_reports = list(validate_ready_state.project_root.glob(
-        f".arcwright-ai/runs/*/stories/*/{HALT_REPORT_FILENAME}"
-    ))
+    halt_reports = list(
+        validate_ready_state.project_root.glob(f".arcwright-ai/runs/*/stories/*/{HALT_REPORT_FILENAME}")
+    )
     assert len(halt_reports) == 1, "Expected halt report to be written on SDK crash"
     content = halt_reports[0].read_text(encoding="utf-8")
     assert "validation_sdk_error" in content, "Halt report should identify SDK error source"
@@ -876,18 +875,52 @@ async def test_agent_dispatch_node_writes_agent_output_checkpoint(
 
 
 @pytest.mark.asyncio
-async def test_agent_dispatch_node_raises_agent_error_on_sdk_failure(
+async def test_agent_dispatch_node_escalates_cleanly_on_sdk_failure(
     dispatch_ready_state: StoryState,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """agent_dispatch_node propagates AgentError when invoke_agent raises it."""
+    """SDK crash in agent_dispatch_node escalates to ESCALATED instead of propagating.
+
+    Previously raised AgentError uncaught, bypassing finalize_node and leaking
+    the worktree.  Now the node catches the exception, writes a halt report,
+    and returns ESCALATED so finalize_node can clean up.
+    """
 
     async def _raise_agent_error(*args: object, **kwargs: object) -> InvocationResult:
         raise AgentError("SDK connection failed")
 
     monkeypatch.setattr("arcwright_ai.engine.nodes.invoke_agent", _raise_agent_error)
-    with pytest.raises(AgentError, match="SDK connection failed"):
-        await agent_dispatch_node(dispatch_ready_state)
+    result = await agent_dispatch_node(dispatch_ready_state)
+
+    assert result.status == TaskState.ESCALATED, f"Expected ESCALATED on SDK crash, got {result.status}"
+    halt_reports = list(
+        dispatch_ready_state.project_root.glob(f".arcwright-ai/runs/*/stories/*/{HALT_REPORT_FILENAME}")
+    )
+    assert len(halt_reports) == 1, "Expected halt report written on agent SDK crash"
+    content = halt_reports[0].read_text(encoding="utf-8")
+    assert "agent_sdk_error" in content
+
+
+@pytest.mark.asyncio
+async def test_agent_dispatch_node_sdk_failure_passthrough_in_validate_node(
+    dispatch_ready_state: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """validate_node passes through immediately when state arrives as ESCALATED.
+
+    Ensures agent SDK crash → validate passthrough → finalize works end-to-end
+    without a second exception raised inside validate_node.
+    """
+
+    async def _raise_agent_error(*args: object, **kwargs: object) -> InvocationResult:
+        raise AgentError("SDK connection failed")
+
+    monkeypatch.setattr("arcwright_ai.engine.nodes.invoke_agent", _raise_agent_error)
+    escalated_state = await agent_dispatch_node(dispatch_ready_state)
+
+    # validate_node must pass through without crashing
+    result = await validate_node(escalated_state)
+    assert result.status == TaskState.ESCALATED
 
 
 @pytest.mark.asyncio
