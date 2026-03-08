@@ -22,7 +22,7 @@ from arcwright_ai.core.constants import (
     HALT_REPORT_FILENAME,
     VALIDATION_FILENAME,
 )
-from arcwright_ai.core.exceptions import AgentError, BranchError, ContextError, ScmError, ValidationError, WorktreeError
+from arcwright_ai.core.exceptions import AgentError, ContextError, ScmError, ValidationError
 from arcwright_ai.core.io import write_text_async
 from arcwright_ai.core.lifecycle import TaskState
 from arcwright_ai.core.types import ProvenanceEntry
@@ -33,6 +33,7 @@ from arcwright_ai.output.summary import write_halt_report, write_success_summary
 from arcwright_ai.scm.branch import commit_story
 from arcwright_ai.scm.worktree import create_worktree, remove_worktree
 from arcwright_ai.validation.pipeline import PipelineOutcome, PipelineResult, run_validation_pipeline
+from arcwright_ai.validation.v6_invariant import V6CheckResult, V6ValidationResult
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -542,15 +543,40 @@ async def validate_node(state: StoryState) -> StoryState:
     if state.agent_output is None:
         raise ValidationError("validate_node requires agent_output from agent_dispatch")
 
-    pipeline_result = await run_validation_pipeline(
-        agent_output=state.agent_output,
-        story_path=state.story_path,
-        project_root=state.project_root,
-        model=state.config.model.version,
-        cwd=state.project_root,
-        sandbox=validate_path,
-        attempt_number=state.retry_count + 1,
-    )
+    try:
+        pipeline_result = await run_validation_pipeline(
+            agent_output=state.agent_output,
+            story_path=state.story_path,
+            project_root=state.project_root,
+            model=state.config.model.version,
+            cwd=state.project_root,
+            sandbox=validate_path,
+            attempt_number=state.retry_count + 1,
+        )
+    except Exception as exc:
+        # SDK or filesystem crash during validation — convert to ESCALATED so
+        # finalize_node can still run and remove the worktree (prevents leaks).
+        logger.error(
+            "validation.sdk_error",
+            extra={
+                "data": {
+                    "story": str(state.story_id),
+                    "attempt": state.retry_count + 1,
+                    "error": str(exc),
+                }
+            },
+        )
+        sdk_error_check = V6CheckResult(
+            check_name="validation_sdk_error",
+            passed=False,
+            failure_detail=str(exc),
+        )
+        synthetic_v6 = V6ValidationResult(passed=False, results=[sdk_error_check])
+        pipeline_result = PipelineResult(
+            passed=False,
+            outcome=PipelineOutcome.FAIL_V6,
+            v6_result=synthetic_v6,
+        )
 
     # Update budget with validation costs
     new_budget = state.budget.model_copy(

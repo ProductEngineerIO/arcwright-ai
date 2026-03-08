@@ -592,8 +592,55 @@ async def test_validate_node_retry_includes_feedback_in_validation_result(
     assert len(result.validation_result.feedback.unmet_criteria) > 0
 
 
+@pytest.mark.asyncio
+async def test_validate_node_sdk_crash_transitions_to_escalated(
+    validate_ready_state: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SDK crash during run_validation_pipeline escalates instead of propagating.
+
+    Guards against regression where a CommandError / AgentError from the
+    reflexion invocation bubbled out of validate_node uncaught, bypassing
+    finalize_node and leaving the worktree behind.
+    """
+    from arcwright_ai.engine.nodes import run_validation_pipeline  # noqa: PLC0415
+
+    async def _crash(*args: object, **kwargs: object) -> PipelineResult:
+        raise AgentError("Command failed with exit code 1 (exit code: 1)")
+
+    monkeypatch.setattr("arcwright_ai.engine.nodes.run_validation_pipeline", _crash)
+
+    result = await validate_node(validate_ready_state)
+
+    assert result.status == TaskState.ESCALATED, (
+        f"Expected ESCALATED on SDK crash, got {result.status}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_validate_node_sdk_crash_writes_halt_report(
+    validate_ready_state: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SDK crash during validation writes a halt report to the checkpoint dir."""
+    async def _crash(*args: object, **kwargs: object) -> PipelineResult:
+        raise AgentError("Command failed with exit code 1 (exit code: 1)")
+
+    monkeypatch.setattr("arcwright_ai.engine.nodes.run_validation_pipeline", _crash)
+
+    await validate_node(validate_ready_state)
+
+    halt_reports = list(validate_ready_state.project_root.glob(
+        f".arcwright-ai/runs/*/stories/*/{HALT_REPORT_FILENAME}"
+    ))
+    assert len(halt_reports) == 1, "Expected halt report to be written on SDK crash"
+    content = halt_reports[0].read_text(encoding="utf-8")
+    assert "validation_sdk_error" in content, "Halt report should identify SDK error source"
+
+
 # ---------------------------------------------------------------------------
 # Preflight node — real implementation tests
+# ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
 
 
