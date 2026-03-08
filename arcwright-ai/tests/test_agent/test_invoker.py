@@ -357,9 +357,13 @@ def test_patch_sdk_parser_wraps_parse_message(monkeypatch: pytest.MonkeyPatch) -
     result = _client_mod.parse_message({"type": "system", "subtype": "init", "data": {}})
     assert isinstance(result, SystemMessage)
 
-    # Calling with an unknown type should return None instead of raising
+    # Calling with an unknown type should return a _SkippedMessage sentinel
+    # (not None, not raise) so the streaming loop can track the message type.
+    from arcwright_ai.agent.invoker import _SkippedMessage
+
     result = _client_mod.parse_message({"type": "rate_limit_event", "data": {}})
-    assert result is None
+    assert isinstance(result, _SkippedMessage)
+    assert result.msg_type == "rate_limit_event"
 
     # Restore original to avoid polluting other tests
     _client_mod.parse_message = original_fn
@@ -370,18 +374,20 @@ async def test_invoke_agent_skips_none_messages_from_patched_parser(
     project_root: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """When SDK yields None messages (from patched parser), they are silently skipped."""
+    """When SDK yields _SkippedMessage sentinels (from patched parser), they are silently skipped."""
     import claude_code_sdk
     from claude_code_sdk.types import AssistantMessage, ResultMessage, TextBlock
 
+    from arcwright_ai.agent.invoker import _SkippedMessage
+
     messages = [
-        None,  # rate_limit_event (patched → None)
+        _SkippedMessage("rate_limit_event"),  # patched parser sentinel
         AssistantMessage(
             content=[TextBlock(text="Hello")],
             model="mock-model",
             parent_tool_use_id=None,
         ),
-        None,  # another unknown type
+        _SkippedMessage("some_other_unknown_event"),  # another unknown type
         ResultMessage(
             subtype="success",
             duration_ms=50,
@@ -410,6 +416,59 @@ async def test_invoke_agent_skips_none_messages_from_patched_parser(
 
     assert result.output_text == "Hello"
     assert result.session_id == "null-test-session"
+
+
+async def test_invoke_agent_rate_limit_event_then_exit_code_1_retries(
+    project_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """rate_limit_event followed by ClaudeSDKError(exit_code=1) is treated as
+    retryable — the invoker retries and succeeds on the second attempt."""
+    import claude_code_sdk
+    from claude_code_sdk.types import ResultMessage
+
+    from arcwright_ai.agent.invoker import _SkippedMessage
+
+    attempt_count = 0
+
+    async def mock_query(*, prompt: Any, options: Any = None, **kwargs: Any) -> Any:
+        nonlocal attempt_count
+        attempt_count += 1
+        if attempt_count == 1:
+            # First attempt: yield rate_limit_event sentinel, then crash with exit code 1
+            yield _SkippedMessage("rate_limit_event")
+            exc = ClaudeSDKError("Command failed with exit code 1 (exit code: 1)")
+            exc.exit_code = 1  # type: ignore[attr-defined]
+            raise exc
+        else:
+            # Second attempt: succeed
+            yield ResultMessage(
+                subtype="success",
+                duration_ms=100,
+                duration_api_ms=80,
+                is_error=False,
+                num_turns=1,
+                session_id="retry-session",
+                total_cost_usd=0.02,
+                usage={"input_tokens": 20, "output_tokens": 10},
+                result="Done after retry",
+            )
+
+    async def instant_sleep(delay: float) -> None:
+        pass
+
+    monkeypatch.setattr(claude_code_sdk, "query", mock_query)
+    monkeypatch.setattr(asyncio, "sleep", instant_sleep)
+
+    result = await invoke_agent(
+        prompt="test",
+        model="claude-test",
+        cwd=project_root,
+        sandbox=validate_path,
+    )
+
+    assert attempt_count == 2, "Expected exactly one retry"
+    assert result.session_id == "retry-session"
 
 
 # ---------------------------------------------------------------------------

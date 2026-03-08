@@ -39,6 +39,20 @@ _FILE_WRITE_TOOLS: frozenset[str] = frozenset({"CreateFile", "Edit", "MultiEdit"
 # Flag prevents double-patching across multiple invoke_agent calls.
 _SDK_PARSER_PATCHED: bool = False
 
+
+class _SkippedMessage:
+    """Sentinel returned by the patched SDK parser for unrecognised message types.
+
+    Carrying the original ``type`` field lets the streaming loop detect whether
+    a ``rate_limit_event`` was silently dropped just before the claude CLI
+    exited with code 1, so we can treat that as a retryable condition.
+    """
+
+    __slots__ = ("msg_type",)
+
+    def __init__(self, msg_type: str) -> None:
+        self.msg_type = msg_type
+
 # Flag prevents registering the asyncio exception handler more than once.
 _BG_HANDLER_INSTALLED: bool = False
 
@@ -112,7 +126,7 @@ def _patch_sdk_parser() -> None:
         except Exception:
             msg_type = data.get("type", "<unknown>") if isinstance(data, dict) else "<invalid>"
             logger.debug("Skipping unrecognised SDK message type: %s", msg_type)
-            return None
+            return _SkippedMessage(msg_type)
 
     # Patch the name *in the client module* (where it was imported).
     _client_mod.parse_message = _safe_parse_message  # type: ignore[attr-defined]
@@ -367,6 +381,7 @@ async def _invoke_with_backoff(
     needs_streaming = getattr(options, "can_use_tool", None) is not None
 
     for attempt in range(_BACKOFF_MAX_RETRIES):
+        saw_rate_limit_event: bool = False
         try:
 
             async def _prompt_stream() -> AsyncGenerator[dict[str, Any], None]:
@@ -377,9 +392,12 @@ async def _invoke_with_backoff(
 
             sdk_prompt: str | AsyncGenerator[dict[str, Any], None] = _prompt_stream() if needs_streaming else prompt
             async for message in sdk_query(prompt=sdk_prompt, options=options):
-                if message is None:
-                    # Patched parse_message returned None for an unknown
-                    # message type — skip silently.
+                if isinstance(message, _SkippedMessage):
+                    # Patched parse_message returned a sentinel for an unknown
+                    # message type. Track rate_limit_event specifically so we
+                    # can retry if the process then exits with code 1.
+                    if message.msg_type == "rate_limit_event":
+                        saw_rate_limit_event = True
                     continue
                 yield message
             return
@@ -408,7 +426,10 @@ async def _invoke_with_backoff(
             exit_code: int | None = getattr(exc, "exit_code", None)
             if stderr:
                 sdk_error_detail = f"{sdk_error_detail} | stderr={stderr}"
-            if _RATE_LIMIT_RE.search(sdk_error_detail):
+            is_rate_limit = _RATE_LIMIT_RE.search(sdk_error_detail) or (
+                saw_rate_limit_event and exit_code == 1
+            )
+            if is_rate_limit:
                 wait = min(
                     _BACKOFF_BASE * (2**attempt) + random.uniform(0, 0.5),
                     _BACKOFF_CAP,
@@ -421,6 +442,7 @@ async def _invoke_with_backoff(
                             "wait_seconds": round(wait, 2),
                             "error": sdk_error_detail,
                             "exit_code": exit_code,
+                            "triggered_by": "rate_limit_event" if saw_rate_limit_event else "error_pattern",
                         }
                     },
                 )
