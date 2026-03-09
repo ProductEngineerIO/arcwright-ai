@@ -637,6 +637,49 @@ async def test_validate_node_sdk_crash_writes_halt_report(
     assert "validation_sdk_error" in content, "Halt report should identify SDK error source"
 
 
+@pytest.mark.asyncio
+async def test_validate_node_uses_worktree_path_as_cwd(
+    validate_ready_state: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """validate_node passes worktree_path as cwd to run_validation_pipeline so
+    the V3 reflexion agent reads files from the worktree, not the main repo root."""
+    worktree = validate_ready_state.project_root / ".arcwright-ai" / "worktrees" / "3-4-validate-node"
+    worktree.mkdir(parents=True, exist_ok=True)
+    state = validate_ready_state.model_copy(update={"worktree_path": worktree})
+
+    captured_cwd: list[Path] = []
+
+    async def _capture(*args: object, **kwargs: object) -> PipelineResult:
+        captured_cwd.append(kwargs["cwd"])
+        return _make_pass_result()
+
+    monkeypatch.setattr("arcwright_ai.engine.nodes.run_validation_pipeline", _capture)
+
+    await validate_node(state)
+
+    assert captured_cwd == [worktree], "cwd must be worktree_path, not project_root"
+
+
+@pytest.mark.asyncio
+async def test_validate_node_falls_back_to_project_root_when_no_worktree(
+    validate_ready_state: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When worktree_path is None, cwd falls back to project_root."""
+    captured_cwd: list[Path] = []
+
+    async def _capture(*args: object, **kwargs: object) -> PipelineResult:
+        captured_cwd.append(kwargs["cwd"])
+        return _make_pass_result()
+
+    monkeypatch.setattr("arcwright_ai.engine.nodes.run_validation_pipeline", _capture)
+
+    await validate_node(validate_ready_state)  # worktree_path is None by default
+
+    assert captured_cwd == [validate_ready_state.project_root]
+
+
 # ---------------------------------------------------------------------------
 # Preflight node — real implementation tests
 # ---------------------------------------------------------------------------

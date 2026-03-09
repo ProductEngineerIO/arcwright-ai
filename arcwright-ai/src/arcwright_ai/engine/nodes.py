@@ -611,7 +611,7 @@ async def validate_node(state: StoryState) -> StoryState:
             story_path=state.story_path,
             project_root=state.project_root,
             model=state.config.model.version,
-            cwd=state.project_root,
+            cwd=state.worktree_path or state.project_root,
             sandbox=validate_path,
             attempt_number=state.retry_count + 1,
         )
