@@ -289,6 +289,58 @@ async def test_remove_worktree_idempotent_never_created(
 
 
 # ---------------------------------------------------------------------------
+# Task 7.9b — remove_worktree force=True falls back to rmtree on "Directory not empty"
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_remove_worktree_force_rmtree_fallback_on_nonempty_dir(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """When git worktree remove --force fails with 'Directory not empty' (exit 255),
+    remove_worktree falls back to shutil.rmtree + git worktree prune rather than raising.
+
+    This handles the case where the agent created files/subdirs in the worktree
+    and git's own rmdir logic can't delete a non-empty tree.
+    """
+    # Create worktree dir with nested content (simulates agent-created files).
+    worktree_path = _worktree_path(tmp_path)
+    nested = worktree_path / "src" / "subdir"
+    nested.mkdir(parents=True)
+    (nested / "file.py").write_text("# agent-created")
+
+    dir_not_empty_exc = ScmError(
+        f"git worktree failed (exit 255)",
+        details={
+            "command": ["worktree", "remove", "--force", str(worktree_path)],
+            "stderr": f"error: failed to delete '{worktree_path}': Directory not empty",
+            "returncode": 255,
+        },
+    )
+
+    git_calls: list[tuple[str, ...]] = []
+
+    async def _mock_git(*args: str, **kwargs: object) -> GitResult:
+        git_calls.append(args)
+        if args[:3] == ("worktree", "remove", "--force"):
+            raise dir_not_empty_exc
+        return _ok()
+
+    monkeypatch.setattr("arcwright_ai.scm.worktree.git", _mock_git)
+
+    # Should NOT raise even though git worktree remove --force failed.
+    await remove_worktree(_SLUG, project_root=tmp_path, force=True, delete_branch=True)
+
+    # worktree directory must be gone (rmtree cleaned it up).
+    assert not worktree_path.exists(), "rmtree should have removed the worktree directory"
+
+    # git worktree prune must have been called to reconcile git's tracking.
+    prune_calls = [c for c in git_calls if c[:2] == ("worktree", "prune")]
+    assert prune_calls, "git worktree prune must be called after rmtree fallback"
+
+
+# ---------------------------------------------------------------------------
 # Task 7.10 — list_worktrees returns correct slugs (AC #15j)
 # ---------------------------------------------------------------------------
 

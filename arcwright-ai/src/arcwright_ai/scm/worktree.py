@@ -17,6 +17,7 @@ module never calls ``subprocess`` directly.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 import shutil
@@ -240,6 +241,27 @@ async def remove_worktree(
         if not worktree_path.exists():
             # Directory is gone — consider this a success.
             pass
+        elif force and (
+            "directory not empty" in (exc.details or {}).get("stderr", "").lower()
+            or "directory not empty" in exc.message.lower()
+        ):
+            # git worktree remove --force can't rmdir non-empty directories
+            # (e.g. agent-created files/subdirs).  Fall back to shutil.rmtree
+            # then git worktree prune to reconcile git's internal tracking.
+            logger.info(
+                "git.worktree.force_rmtree",
+                extra={
+                    "data": {
+                        "story_slug": story_slug,
+                        "worktree_path": str(worktree_path),
+                        "reason": "directory_not_empty_fallback",
+                    }
+                },
+            )
+            await asyncio.to_thread(shutil.rmtree, str(worktree_path), ignore_errors=True)
+            # Prune git's now-dangling worktree reference.
+            with contextlib.suppress(ScmError):
+                await git("worktree", "prune", cwd=project_root)
         else:
             logger.error(
                 "git.worktree.remove.error",
