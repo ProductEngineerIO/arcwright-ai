@@ -341,6 +341,57 @@ async def test_remove_worktree_force_rmtree_fallback_on_nonempty_dir(
 
 
 # ---------------------------------------------------------------------------
+# Task 7.9c — remove_worktree force=True falls back to rmtree when "not a working tree"
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_remove_worktree_force_rmtree_fallback_on_unregistered_worktree(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """When git worktree remove --force fails with 'is not a working tree' (exit 128),
+    remove_worktree falls back to shutil.rmtree + git worktree prune rather than raising.
+
+    This handles the case where the worktree directory exists on disk but is no longer
+    registered in git's worktree tracking (e.g. after a prior partial cleanup).
+    """
+    # Create worktree dir that exists but is unregistered in git.
+    worktree_path = _worktree_path(tmp_path)
+    worktree_path.mkdir(parents=True)
+    (worktree_path / "orphaned-file.txt").write_text("leftover")
+
+    not_a_working_tree_exc = ScmError(
+        "git worktree failed (exit 128)",
+        details={
+            "command": ["worktree", "remove", "--force", str(worktree_path)],
+            "stderr": f"fatal: '{worktree_path}' is not a working tree",
+            "returncode": 128,
+        },
+    )
+
+    git_calls: list[tuple[str, ...]] = []
+
+    async def _mock_git(*args: str, **kwargs: object) -> GitResult:
+        git_calls.append(args)
+        if args[:3] == ("worktree", "remove", "--force"):
+            raise not_a_working_tree_exc
+        return _ok()
+
+    monkeypatch.setattr("arcwright_ai.scm.worktree.git", _mock_git)
+
+    # Should NOT raise even though git worktree remove --force failed.
+    await remove_worktree(_SLUG, project_root=tmp_path, force=True, delete_branch=True)
+
+    # worktree directory must be gone (rmtree cleaned it up).
+    assert not worktree_path.exists(), "rmtree should have removed the worktree directory"
+
+    # git worktree prune must have been called to reconcile git's tracking.
+    prune_calls = [c for c in git_calls if c[:2] == ("worktree", "prune")]
+    assert prune_calls, "git worktree prune must be called after rmtree fallback"
+
+
+# ---------------------------------------------------------------------------
 # Task 7.10 — list_worktrees returns correct slugs (AC #15j)
 # ---------------------------------------------------------------------------
 

@@ -241,20 +241,25 @@ async def remove_worktree(
         if not worktree_path.exists():
             # Directory is gone — consider this a success.
             pass
-        elif force and (
-            "directory not empty" in (exc.details or {}).get("stderr", "").lower()
-            or "directory not empty" in exc.message.lower()
-        ):
-            # git worktree remove --force can't rmdir non-empty directories
-            # (e.g. agent-created files/subdirs).  Fall back to shutil.rmtree
-            # then git worktree prune to reconcile git's internal tracking.
+        elif force:
+            # When force=True, git may fail for several reasons:
+            # - "directory not empty": git's own rmdir can't handle subdirs
+            # - "is not a working tree": directory exists but unregistered in git
+            # In all such cases fall back to shutil.rmtree + git worktree prune.
+            stderr_lower = (exc.details or {}).get("stderr", "").lower()
+            if "directory not empty" in stderr_lower:
+                reason = "directory_not_empty_fallback"
+            elif "is not a working tree" in stderr_lower:
+                reason = "unregistered_worktree_fallback"
+            else:
+                reason = "force_rmtree_fallback"
             logger.info(
                 "git.worktree.force_rmtree",
                 extra={
                     "data": {
                         "story_slug": story_slug,
                         "worktree_path": str(worktree_path),
-                        "reason": "directory_not_empty_fallback",
+                        "reason": reason,
                     }
                 },
             )
