@@ -318,9 +318,7 @@ def test_dispatch_story_end_to_end_with_mock_sdk(
 
     # No run_manager write errors should appear in the log
     write_error_events = [e for e in entries if e.get("event") == "run_manager.write_error"]
-    assert write_error_events == [], (
-        f"Unexpected run_manager.write_error events: {write_error_events}"
-    )
+    assert write_error_events == [], f"Unexpected run_manager.write_error events: {write_error_events}"
 
 
 # ---------------------------------------------------------------------------

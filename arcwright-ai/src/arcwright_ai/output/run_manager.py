@@ -102,6 +102,7 @@ class StoryStatusEntry(ArcwrightModel):
     retry_count: int = 0
     started_at: str | None = None
     completed_at: str | None = None
+    pr_url: str | None = None
 
 
 class RunStatus(ArcwrightModel):
@@ -368,6 +369,7 @@ async def update_story_status(
     started_at: str | None = None,
     completed_at: str | None = None,
     retry_count: int | None = None,
+    pr_url: str | None = None,
 ) -> None:
     """Update (or create) a story entry inside ``run.yaml``.
 
@@ -384,6 +386,7 @@ async def update_story_status(
         started_at: ISO 8601 start timestamp, or ``None`` to leave unchanged.
         completed_at: ISO 8601 completion timestamp, or ``None`` to leave unchanged.
         retry_count: Retry attempt count, or ``None`` to leave unchanged.
+        pr_url: Pull request URL, or ``None`` to leave unchanged.
 
     Raises:
         RunError: If ``run.yaml`` does not exist or cannot be read/written.
@@ -402,6 +405,8 @@ async def update_story_status(
             entry["completed_at"] = completed_at
         if retry_count is not None:
             entry["retry_count"] = retry_count
+        if pr_url is not None:
+            entry["pr_url"] = pr_url
         stories[story_slug] = entry
     else:
         stories[story_slug] = {
@@ -409,6 +414,7 @@ async def update_story_status(
             "retry_count": retry_count if retry_count is not None else 0,
             "started_at": started_at,
             "completed_at": completed_at,
+            "pr_url": pr_url,
         }
 
     await asyncio.to_thread(save_yaml, path, data)

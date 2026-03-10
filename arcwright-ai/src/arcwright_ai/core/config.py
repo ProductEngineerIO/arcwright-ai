@@ -107,11 +107,13 @@ class ScmConfig(ArcwrightModel):
 
     Attributes:
         branch_template: Git branch name template string.
+        remote: Default git remote name for push/PR operations.
     """
 
     model_config = ConfigDict(frozen=True, extra="ignore", str_strip_whitespace=True)
 
     branch_template: str = "arcwright/{story_slug}"
+    remote: str = "origin"
 
 
 class ReproducibilityConfig(ArcwrightModel):

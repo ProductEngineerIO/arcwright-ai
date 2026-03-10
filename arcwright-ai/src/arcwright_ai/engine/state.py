@@ -50,6 +50,7 @@ class StoryState(BaseModel):
     story_path: Path
     project_root: Path
     worktree_path: Path | None = None
+    pr_url: str | None = None
     status: TaskState = TaskState.QUEUED
     context_bundle: ContextBundle | None = None
     agent_output: str | None = None

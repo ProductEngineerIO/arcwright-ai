@@ -13,6 +13,7 @@ from arcwright_ai.agent.invoker import InvocationResult
 from arcwright_ai.core.config import ApiConfig, LimitsConfig, RunConfig
 from arcwright_ai.core.constants import (
     AGENT_OUTPUT_FILENAME,
+    BRANCH_PREFIX,
     CONTEXT_BUNDLE_FILENAME,
     DIR_ARCWRIGHT,
     DIR_RUNS,
@@ -70,6 +71,16 @@ def _mock_output_functions(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     monkeypatch.setattr("arcwright_ai.engine.nodes.remove_worktree", AsyncMock())
     monkeypatch.setattr("arcwright_ai.engine.nodes.commit_story", AsyncMock(return_value="abc1234"))
+    # Story 6.7: push/PR mocks (non-fatal operations — default to success)
+    monkeypatch.setattr("arcwright_ai.engine.nodes.push_branch", AsyncMock())
+    monkeypatch.setattr(
+        "arcwright_ai.engine.nodes.generate_pr_body",
+        AsyncMock(return_value="## Story: 6-7-push-branch\n\n---\n"),
+    )
+    monkeypatch.setattr(
+        "arcwright_ai.engine.nodes.open_pull_request",
+        AsyncMock(return_value=None),
+    )
 
 
 @pytest.fixture
@@ -603,7 +614,6 @@ async def test_validate_node_sdk_crash_transitions_to_escalated(
     reflexion invocation bubbled out of validate_node uncaught, bypassing
     finalize_node and leaving the worktree behind.
     """
-    from arcwright_ai.engine.nodes import run_validation_pipeline  # noqa: PLC0415
 
     async def _crash(*args: object, **kwargs: object) -> PipelineResult:
         raise AgentError("Command failed with exit code 1 (exit code: 1)")
@@ -1642,3 +1652,195 @@ async def test_finalize_no_worktree_preserved_log_when_no_worktree_path(
 
     assert result.status == TaskState.ESCALATED
     assert not any("scm.worktree.preserved" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Story 6.7 — commit_node push + PR integration tests (Task 5.3)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_commit_node_calls_push_branch_after_successful_commit(
+    make_story_state: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """commit_node calls push_branch after a successful commit (AC: #8)."""
+    worktree_path = Path("/project/.arcwright-ai/worktrees/2-1-state-models")
+    state = make_story_state.model_copy(update={"status": TaskState.SUCCESS, "worktree_path": worktree_path})
+
+    mock_push = AsyncMock(return_value=True)
+    monkeypatch.setattr("arcwright_ai.engine.nodes.push_branch", mock_push)
+
+    await commit_node(state)
+
+    mock_push.assert_called_once()
+    call_kwargs = mock_push.call_args
+    # branch_name should be arcwright/<story_id>, project_root should be state.project_root
+    assert BRANCH_PREFIX in call_kwargs.args[0]
+    assert call_kwargs.kwargs["remote"] == "origin"
+
+
+@pytest.mark.asyncio
+async def test_commit_node_calls_generate_pr_body_after_push(
+    make_story_state: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """commit_node calls generate_pr_body after push (AC: #3, #8)."""
+    worktree_path = Path("/project/.arcwright-ai/worktrees/2-1-state-models")
+    state = make_story_state.model_copy(update={"status": TaskState.SUCCESS, "worktree_path": worktree_path})
+
+    mock_gen = AsyncMock(return_value="PR body")
+    monkeypatch.setattr("arcwright_ai.engine.nodes.generate_pr_body", mock_gen)
+    monkeypatch.setattr("arcwright_ai.engine.nodes.push_branch", AsyncMock(return_value=True))
+
+    await commit_node(state)
+
+    mock_gen.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_commit_node_calls_open_pull_request_after_generate_pr_body(
+    make_story_state: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """commit_node calls open_pull_request after generating PR body (AC: #4, #8)."""
+    worktree_path = Path("/project/.arcwright-ai/worktrees/2-1-state-models")
+    state = make_story_state.model_copy(update={"status": TaskState.SUCCESS, "worktree_path": worktree_path})
+
+    mock_gen = AsyncMock(return_value="PR body")
+    mock_open = AsyncMock(return_value="https://github.com/owner/repo/pull/1")
+    monkeypatch.setattr("arcwright_ai.engine.nodes.push_branch", AsyncMock(return_value=True))
+    monkeypatch.setattr("arcwright_ai.engine.nodes.generate_pr_body", mock_gen)
+    monkeypatch.setattr("arcwright_ai.engine.nodes.open_pull_request", mock_open)
+
+    result = await commit_node(state)
+
+    mock_open.assert_called_once()
+    assert result.pr_url == "https://github.com/owner/repo/pull/1"
+
+
+@pytest.mark.asyncio
+async def test_commit_node_stores_pr_url_in_state(
+    make_story_state: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """commit_node stores pr_url in state when open_pull_request succeeds (AC: #9)."""
+    worktree_path = Path("/project/.arcwright-ai/worktrees/2-1-state-models")
+    state = make_story_state.model_copy(update={"status": TaskState.SUCCESS, "worktree_path": worktree_path})
+
+    expected_url = "https://github.com/owner/repo/pull/7"
+    monkeypatch.setattr("arcwright_ai.engine.nodes.push_branch", AsyncMock(return_value=True))
+    monkeypatch.setattr("arcwright_ai.engine.nodes.generate_pr_body", AsyncMock(return_value="body"))
+    monkeypatch.setattr("arcwright_ai.engine.nodes.open_pull_request", AsyncMock(return_value=expected_url))
+
+    result = await commit_node(state)
+
+    assert result.pr_url == expected_url
+
+
+@pytest.mark.asyncio
+async def test_commit_node_pr_url_none_when_open_pull_request_returns_none(
+    make_story_state: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """commit_node pr_url is None when open_pull_request returns None (gh missing)."""
+    worktree_path = Path("/project/.arcwright-ai/worktrees/2-1-state-models")
+    state = make_story_state.model_copy(update={"status": TaskState.SUCCESS, "worktree_path": worktree_path})
+
+    monkeypatch.setattr("arcwright_ai.engine.nodes.push_branch", AsyncMock(return_value=True))
+    monkeypatch.setattr("arcwright_ai.engine.nodes.generate_pr_body", AsyncMock(return_value="body"))
+    monkeypatch.setattr("arcwright_ai.engine.nodes.open_pull_request", AsyncMock(return_value=None))
+
+    result = await commit_node(state)
+
+    assert result.pr_url is None
+
+
+@pytest.mark.asyncio
+async def test_commit_node_remove_worktree_called_even_if_push_fails(
+    make_story_state: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """remove_worktree is called even when push_branch returns False (AC: #8 non-fatal)."""
+    worktree_path = Path("/project/.arcwright-ai/worktrees/2-1-state-models")
+    state = make_story_state.model_copy(update={"status": TaskState.SUCCESS, "worktree_path": worktree_path})
+
+    monkeypatch.setattr("arcwright_ai.engine.nodes.push_branch", AsyncMock(return_value=False))
+    mock_remove = AsyncMock()
+    monkeypatch.setattr("arcwright_ai.engine.nodes.remove_worktree", mock_remove)
+    mock_gen = AsyncMock(return_value="PR body")
+    monkeypatch.setattr("arcwright_ai.engine.nodes.generate_pr_body", mock_gen)
+
+    result = await commit_node(state)
+
+    assert result.status == TaskState.SUCCESS
+    mock_remove.assert_called_once()
+    mock_gen.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_commit_node_push_not_called_when_commit_fails(
+    make_story_state: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """push_branch is NOT called when commit_story raises (no commit = no push)."""
+    worktree_path = Path("/project/.arcwright-ai/worktrees/2-1-state-models")
+    state = make_story_state.model_copy(update={"status": TaskState.SUCCESS, "worktree_path": worktree_path})
+
+    from arcwright_ai.core.exceptions import BranchError as _BranchError
+
+    monkeypatch.setattr(
+        "arcwright_ai.engine.nodes.commit_story",
+        AsyncMock(side_effect=_BranchError("no changes", details={})),
+    )
+    mock_push = AsyncMock()
+    monkeypatch.setattr("arcwright_ai.engine.nodes.push_branch", mock_push)
+
+    await commit_node(state)
+
+    mock_push.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_commit_node_push_pr_do_not_change_story_status(
+    make_story_state: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Story status remains SUCCESS even when open_pull_request raises (AC: #5, #8)."""
+    worktree_path = Path("/project/.arcwright-ai/worktrees/2-1-state-models")
+    state = make_story_state.model_copy(update={"status": TaskState.SUCCESS, "worktree_path": worktree_path})
+
+    monkeypatch.setattr("arcwright_ai.engine.nodes.push_branch", AsyncMock(return_value=True))
+    monkeypatch.setattr("arcwright_ai.engine.nodes.generate_pr_body", AsyncMock(side_effect=Exception("boom")))
+
+    result = await commit_node(state)
+
+    assert result.status == TaskState.SUCCESS
+
+
+# ---------------------------------------------------------------------------
+# Story 6.7 — PR URL in run summary (Task 5.5)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_commit_node_updates_story_status_with_pr_url(
+    make_story_state: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """commit_node calls update_story_status with pr_url when PR is created (AC: #9)."""
+    worktree_path = Path("/project/.arcwright-ai/worktrees/2-1-state-models")
+    state = make_story_state.model_copy(update={"status": TaskState.SUCCESS, "worktree_path": worktree_path})
+
+    expected_url = "https://github.com/owner/repo/pull/99"
+    monkeypatch.setattr("arcwright_ai.engine.nodes.push_branch", AsyncMock(return_value=True))
+    monkeypatch.setattr("arcwright_ai.engine.nodes.generate_pr_body", AsyncMock(return_value="body"))
+    monkeypatch.setattr("arcwright_ai.engine.nodes.open_pull_request", AsyncMock(return_value=expected_url))
+    mock_update = AsyncMock()
+    monkeypatch.setattr("arcwright_ai.engine.nodes.update_story_status", mock_update)
+
+    await commit_node(state)
+
+    # One of the calls to update_story_status should include pr_url
+    pr_url_calls = [call for call in mock_update.call_args_list if call.kwargs.get("pr_url") == expected_url]
+    assert pr_url_calls, "update_story_status was not called with pr_url"

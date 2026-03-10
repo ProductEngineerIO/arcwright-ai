@@ -252,6 +252,17 @@ async def write_success_summary(
         lines.append(f"- .arcwright-ai/runs/{run_id}/stories/{slug}/")
     lines.append("")
 
+    # Pull Request section (AC: #9 — only present when a PR URL was recorded)
+    pr_entries: list[tuple[str, str]] = [
+        (slug, entry.pr_url) for slug, entry in run_status.stories.items() if entry.pr_url
+    ]
+    if pr_entries:
+        lines.append("## Pull Request")
+        lines.append("")
+        for slug, url in pr_entries:
+            lines.append(f"- **{slug}**: {url}")
+        lines.append("")
+
     # Next Steps
     lines.append("## Next Steps")
     lines.append("")

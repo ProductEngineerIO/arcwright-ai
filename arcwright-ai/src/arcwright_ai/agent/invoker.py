@@ -53,6 +53,7 @@ class _SkippedMessage:
     def __init__(self, msg_type: str) -> None:
         self.msg_type = msg_type
 
+
 # Flag prevents registering the asyncio exception handler more than once.
 _BG_HANDLER_INSTALLED: bool = False
 
@@ -426,9 +427,7 @@ async def _invoke_with_backoff(
             exit_code: int | None = getattr(exc, "exit_code", None)
             if stderr:
                 sdk_error_detail = f"{sdk_error_detail} | stderr={stderr}"
-            is_rate_limit = _RATE_LIMIT_RE.search(sdk_error_detail) or (
-                saw_rate_limit_event and exit_code == 1
-            )
+            is_rate_limit = _RATE_LIMIT_RE.search(sdk_error_detail) or (saw_rate_limit_event and exit_code == 1)
             if is_rate_limit:
                 wait = min(
                     _BACKOFF_BASE * (2**attempt) + random.uniform(0, 0.5),

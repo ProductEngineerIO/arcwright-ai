@@ -15,6 +15,7 @@ from arcwright_ai.agent.sandbox import validate_path
 from arcwright_ai.context.injector import build_context_bundle, serialize_bundle_to_markdown
 from arcwright_ai.core.constants import (
     AGENT_OUTPUT_FILENAME,
+    BRANCH_PREFIX,
     CONTEXT_BUNDLE_FILENAME,
     DIR_ARCWRIGHT,
     DIR_RUNS,
@@ -30,7 +31,8 @@ from arcwright_ai.engine.state import StoryState  # noqa: TC001
 from arcwright_ai.output.provenance import append_entry, render_validation_row
 from arcwright_ai.output.run_manager import update_run_status, update_story_status
 from arcwright_ai.output.summary import write_halt_report, write_success_summary
-from arcwright_ai.scm.branch import commit_story
+from arcwright_ai.scm.branch import commit_story, push_branch
+from arcwright_ai.scm.pr import generate_pr_body, open_pull_request
 from arcwright_ai.scm.worktree import create_worktree, remove_worktree
 from arcwright_ai.validation.pipeline import PipelineOutcome, PipelineResult, run_validation_pipeline
 from arcwright_ai.validation.v6_invariant import V6CheckResult, V6ValidationResult
@@ -373,11 +375,11 @@ async def agent_dispatch_node(state: StoryState) -> StoryState:
     )
 
     # Write agent output checkpoint
-    checkpoint_dir: Path = (
+    checkpoint_dir_success: Path = (
         state.project_root / DIR_ARCWRIGHT / DIR_RUNS / str(state.run_id) / DIR_STORIES / str(state.story_id)
     )
-    await asyncio.to_thread(checkpoint_dir.mkdir, parents=True, exist_ok=True)
-    await write_text_async(checkpoint_dir / AGENT_OUTPUT_FILENAME, result.output_text)
+    await asyncio.to_thread(checkpoint_dir_success.mkdir, parents=True, exist_ok=True)
+    await write_text_async(checkpoint_dir_success / AGENT_OUTPUT_FILENAME, result.output_text)
 
     # Provenance: record agent invocation decision (best-effort)
     try:
@@ -394,7 +396,7 @@ async def agent_dispatch_node(state: StoryState) -> StoryState:
             ac_references=refs,
             timestamp=datetime.now(tz=UTC).isoformat(),
         )
-        provenance_path = checkpoint_dir / VALIDATION_FILENAME
+        provenance_path = checkpoint_dir_success / VALIDATION_FILENAME
         await append_entry(provenance_path, provenance_entry)
     except Exception as exc:
         logger.warning(
@@ -987,6 +989,7 @@ async def commit_node(state: StoryState) -> StoryState:
         story_title = _derive_story_title(story_slug)
 
         # Commit story changes in worktree (best-effort, non-fatal)
+        commit_hash: str | None = None
         try:
             commit_hash = await commit_story(
                 story_slug=story_slug,
@@ -1010,6 +1013,74 @@ async def commit_node(state: StoryState) -> StoryState:
                 "scm.commit.error",
                 extra={"data": {"story": story_slug, "error": exc.message, "details": exc.details}},
             )
+
+        # Push branch and open PR after successful commit (AC: #8, best-effort)
+        pr_url: str | None = None
+        if commit_hash is not None:
+            branch_name = BRANCH_PREFIX + story_slug
+            configured_remote = state.config.scm.remote.strip() if state.config.scm.remote.strip() else "origin"
+
+            # Push branch to remote (AC: #1, #2) — best-effort wrapper handles ScmError internally
+            push_succeeded = False
+            try:
+                push_succeeded = await push_branch(
+                    branch_name,
+                    project_root=project_root,
+                    remote=configured_remote,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "scm.push.error",
+                    extra={"data": {"story": story_slug, "error": str(exc)}},
+                )
+
+            if push_succeeded:
+                # Generate PR body and open PR (AC: #3, #4)
+                try:
+                    pr_body = await generate_pr_body(run_id, story_slug, project_root=project_root)
+                    pr_url = await open_pull_request(
+                        branch_name,
+                        story_slug,
+                        pr_body,
+                        project_root=project_root,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "scm.pr.error",
+                        extra={"data": {"story": story_slug, "error": str(exc)}},
+                    )
+            else:
+                logger.warning(
+                    "scm.pr.create.skipped",
+                    extra={"data": {"story": story_slug, "reason": "push_failed_or_skipped"}},
+                )
+
+            # Store PR URL in run.yaml (AC: #9)
+            if pr_url is not None:
+                try:
+                    await update_story_status(
+                        project_root,
+                        run_id,
+                        story_slug,
+                        status="success",
+                        pr_url=pr_url,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "run_manager.write_error",
+                        extra={
+                            "data": {
+                                "node": "commit",
+                                "story": story_slug,
+                                "operation": "update_story_status_pr_url",
+                                "error": str(exc),
+                            }
+                        },
+                    )
+
+        # Store PR URL in state (AC: #9)
+        if pr_url is not None:
+            state = state.model_copy(update={"pr_url": pr_url})
 
         # Remove worktree after commit (best-effort, non-fatal)
         try:

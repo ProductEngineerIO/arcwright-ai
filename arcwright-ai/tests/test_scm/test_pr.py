@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import logging
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from arcwright_ai.core.constants import STORY_COPY_FILENAME, VALIDATION_FILENAME
 from arcwright_ai.core.exceptions import ScmError
-from arcwright_ai.scm.pr import generate_pr_body
+from arcwright_ai.scm.pr import _detect_default_branch, generate_pr_body, open_pull_request
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -491,3 +491,282 @@ async def test_generate_pr_body_wraps_large_diff_fenced_blocks_in_details(
     body = await generate_pr_body(_RUN_ID, _SLUG, project_root=tmp_path)
 
     assert "<details><summary>Diff (60 lines)</summary>" in body
+
+
+# ---------------------------------------------------------------------------
+# Story 6.7 — _detect_default_branch tests (Task 5.4)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_detect_default_branch_returns_main_on_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """_detect_default_branch returns 'main' when all detection methods fail."""
+    from arcwright_ai.core.exceptions import ScmError as _ScmError
+
+    monkeypatch.setattr("arcwright_ai.scm.pr.shutil.which", lambda _: None)
+
+    async def _git_fail(*args: object, **kwargs: object) -> object:
+        raise _ScmError("failed", details={})
+
+    monkeypatch.setattr("arcwright_ai.scm.pr.git", AsyncMock(side_effect=_git_fail))
+
+    result = await _detect_default_branch(tmp_path, "6-7-story")
+
+    assert result == "main"
+
+
+@pytest.mark.asyncio
+async def test_detect_default_branch_strips_origin_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """_detect_default_branch prefers parsing git remote show origin output."""
+    from arcwright_ai.scm.git import GitResult
+
+    monkeypatch.setattr(
+        "arcwright_ai.scm.pr.git",
+        AsyncMock(return_value=GitResult(stdout="* remote origin\n  HEAD branch: main\n", stderr="", returncode=0)),
+    )
+
+    result = await _detect_default_branch(tmp_path, "6-7-story")
+
+    assert result == "main"
+
+
+@pytest.mark.asyncio
+async def test_detect_default_branch_returns_branch_without_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """_detect_default_branch returns parsed HEAD branch from git remote show output."""
+    from arcwright_ai.scm.git import GitResult
+
+    monkeypatch.setattr(
+        "arcwright_ai.scm.pr.git",
+        AsyncMock(return_value=GitResult(stdout="* remote origin\n  HEAD branch: develop\n", stderr="", returncode=0)),
+    )
+
+    result = await _detect_default_branch(tmp_path, "6-7-story")
+
+    assert result == "develop"
+
+
+# ---------------------------------------------------------------------------
+# Story 6.7 — open_pull_request tests (Task 5.2)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_open_pull_request_returns_none_when_gh_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """open_pull_request returns None when gh CLI is not on PATH."""
+    monkeypatch.setattr("arcwright_ai.scm.pr.shutil.which", lambda _: None)
+
+    result = await open_pull_request(
+        "arcwright/my-story",
+        "6-7-push-branch",
+        "PR body",
+        project_root=tmp_path,
+    )
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_open_pull_request_logs_skipped_when_gh_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    """open_pull_request logs scm.pr.create.skipped with reason=gh_not_found."""
+    from arcwright_ai.scm.git import GitResult
+
+    monkeypatch.setattr("arcwright_ai.scm.pr.shutil.which", lambda _: None)
+    monkeypatch.setattr(
+        "arcwright_ai.scm.pr.git",
+        AsyncMock(return_value=GitResult(stdout="https://github.com/owner/repo.git", stderr="", returncode=0)),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="arcwright_ai.scm.pr"):
+        await open_pull_request(
+            "arcwright/my-story",
+            "6-7-push-branch",
+            "PR body",
+            project_root=tmp_path,
+        )
+
+    assert any("scm.pr.create.skipped" in r.message for r in caplog.records)
+    manual_url_logs = [r for r in caplog.records if r.message == "scm.pr.create.skipped"]
+    assert manual_url_logs
+    data = getattr(manual_url_logs[-1], "data", {})
+    assert data.get("manual_pr_url") == "https://github.com/owner/repo/pull/new/arcwright/my-story"
+
+
+@pytest.mark.asyncio
+async def test_open_pull_request_returns_pr_url_on_success(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """open_pull_request returns the PR URL extracted from gh stdout."""
+    from arcwright_ai.scm.git import GitResult
+
+    monkeypatch.setattr("arcwright_ai.scm.pr.shutil.which", lambda _: "/usr/local/bin/gh")
+    monkeypatch.setattr(
+        "arcwright_ai.scm.pr.git",
+        AsyncMock(return_value=GitResult(stdout="origin/main", stderr="", returncode=0)),
+    )
+
+    pr_url = "https://github.com/owner/repo/pull/42"
+
+    mock_proc = MagicMock()
+    mock_proc.returncode = 0
+    mock_proc.communicate = AsyncMock(return_value=(pr_url.encode(), b""))
+
+    with patch("arcwright_ai.scm.pr.asyncio.create_subprocess_exec", AsyncMock(return_value=mock_proc)):
+        result = await open_pull_request(
+            "arcwright/my-story",
+            "6-7-push-branch",
+            "PR body",
+            project_root=tmp_path,
+        )
+
+    assert result == pr_url
+
+
+@pytest.mark.asyncio
+async def test_open_pull_request_logs_create_event_on_success(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    """open_pull_request logs scm.pr.create on success."""
+    from arcwright_ai.scm.git import GitResult
+
+    monkeypatch.setattr("arcwright_ai.scm.pr.shutil.which", lambda _: "/usr/local/bin/gh")
+    monkeypatch.setattr(
+        "arcwright_ai.scm.pr.git",
+        AsyncMock(return_value=GitResult(stdout="origin/main", stderr="", returncode=0)),
+    )
+
+    pr_url = "https://github.com/owner/repo/pull/42"
+    mock_proc = MagicMock()
+    mock_proc.returncode = 0
+    mock_proc.communicate = AsyncMock(return_value=(pr_url.encode(), b""))
+
+    with (
+        patch("arcwright_ai.scm.pr.asyncio.create_subprocess_exec", AsyncMock(return_value=mock_proc)),
+        caplog.at_level(logging.INFO, logger="arcwright_ai.scm.pr"),
+    ):
+        await open_pull_request(
+            "arcwright/my-story",
+            "6-7-push-branch",
+            "PR body",
+            project_root=tmp_path,
+        )
+
+    assert any("scm.pr.create" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_open_pull_request_returns_none_on_gh_auth_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """open_pull_request returns None when gh exits with non-zero (auth failure)."""
+    from arcwright_ai.scm.git import GitResult
+
+    monkeypatch.setattr("arcwright_ai.scm.pr.shutil.which", lambda _: "/usr/local/bin/gh")
+    monkeypatch.setattr(
+        "arcwright_ai.scm.pr.git",
+        AsyncMock(return_value=GitResult(stdout="origin/main", stderr="", returncode=0)),
+    )
+
+    mock_proc = MagicMock()
+    mock_proc.returncode = 1
+    mock_proc.communicate = AsyncMock(return_value=(b"", b"not authenticated"))
+
+    with patch("arcwright_ai.scm.pr.asyncio.create_subprocess_exec", AsyncMock(return_value=mock_proc)):
+        result = await open_pull_request(
+            "arcwright/my-story",
+            "6-7-push-branch",
+            "PR body",
+            project_root=tmp_path,
+        )
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_open_pull_request_returns_none_when_pr_already_exists(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """open_pull_request returns None and logs pr_already_exists when PR exists."""
+    from arcwright_ai.scm.git import GitResult
+
+    monkeypatch.setattr("arcwright_ai.scm.pr.shutil.which", lambda _: "/usr/local/bin/gh")
+    monkeypatch.setattr(
+        "arcwright_ai.scm.pr.git",
+        AsyncMock(return_value=GitResult(stdout="origin/main", stderr="", returncode=0)),
+    )
+
+    mock_proc = MagicMock()
+    mock_proc.returncode = 1
+    mock_proc.communicate = AsyncMock(
+        return_value=(b"", b"a pull request for branch 'arcwright/my-story' already exists")
+    )
+
+    with patch("arcwright_ai.scm.pr.asyncio.create_subprocess_exec", AsyncMock(return_value=mock_proc)):
+        result = await open_pull_request(
+            "arcwright/my-story",
+            "6-7-push-branch",
+            "PR body",
+            project_root=tmp_path,
+        )
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_open_pull_request_pr_title_humanized_from_slug(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """open_pull_request passes a humanized title derived from the story slug."""
+    from arcwright_ai.scm.git import GitResult
+
+    monkeypatch.setattr("arcwright_ai.scm.pr.shutil.which", lambda _: "/usr/local/bin/gh")
+    monkeypatch.setattr(
+        "arcwright_ai.scm.pr.git",
+        AsyncMock(return_value=GitResult(stdout="origin/main", stderr="", returncode=0)),
+    )
+
+    pr_url = "https://github.com/owner/repo/pull/42"
+    mock_proc = MagicMock()
+    mock_proc.returncode = 0
+    mock_proc.communicate = AsyncMock(return_value=(pr_url.encode(), b""))
+
+    captured_args: list[tuple[str, ...]] = []
+
+    async def mock_exec(*args: str, **kwargs: object) -> MagicMock:
+        captured_args.append(args)
+        return mock_proc
+
+    with patch("arcwright_ai.scm.pr.asyncio.create_subprocess_exec", mock_exec):
+        await open_pull_request(
+            "arcwright/6-7-push-branch",
+            "6-7-push-branch",
+            "PR body",
+            project_root=tmp_path,
+        )
+
+    assert captured_args, "create_subprocess_exec was not called"
+    pr_create_call = next((args for args in captured_args if "--title" in args), None)
+    assert pr_create_call is not None
+    title_idx = list(pr_create_call).index("--title")
+    assert pr_create_call[title_idx + 1] == "[arcwright] Push Branch"

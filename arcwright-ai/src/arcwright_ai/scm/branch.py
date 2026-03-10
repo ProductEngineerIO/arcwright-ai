@@ -11,8 +11,9 @@ isolated from any human-created branches.  Example: ``arcwright/my-story``.
 No ``--force``, ``reset --hard``, or rebase commands are used.  An existing
 branch is an error, not a silent overwrite.
 
-**No Push in MVP**
-All operations are local only.  Nothing is pushed to a remote.
+**Push/PR Integration**
+Branches may be pushed to a configured remote as a best-effort step after
+successful local commits.
 
 **Single Gateway (Boundary 4)**
 All git subprocess calls go through :func:`arcwright_ai.scm.git.git`.  No
@@ -37,6 +38,7 @@ __all__: list[str] = [
     "create_branch",
     "delete_branch",
     "list_branches",
+    "push_branch",
 ]
 
 logger = logging.getLogger(__name__)
@@ -293,6 +295,66 @@ async def commit_story(
         },
     )
     return commit_hash
+
+
+# ---------------------------------------------------------------------------
+# push_branch
+# ---------------------------------------------------------------------------
+
+
+async def push_branch(
+    branch_name: str,
+    *,
+    project_root: Path,
+    remote: str = "origin",
+) -> bool:
+    """Push a local branch to a remote repository (best-effort).
+
+    Calls ``git push <remote> <branch_name>`` via the :func:`~arcwright_ai.scm.git.git`
+    wrapper.  :class:`~arcwright_ai.core.exceptions.ScmError` is caught, logged as a
+    warning, and not re-raised so that push failures never halt story execution
+    (AC: #1, #2).
+
+    If the remote is already up-to-date (branch already pushed) this is a no-op —
+    git treats it as a successful push (AC: #10).
+
+    Args:
+        branch_name: Full branch name to push (e.g. ``arcwright/my-story``).
+        project_root: Absolute path to the root of the git repository.
+        remote: Remote name to push to.  Defaults to ``"origin"``.
+
+    Returns:
+        ``True`` when push succeeded, ``False`` when push failed and was
+        downgraded to warning.
+    """
+    try:
+        await git("push", remote, branch_name, cwd=project_root)
+    except ScmError as exc:
+        logger.warning(
+            "git.push.error",
+            extra={
+                "data": {
+                    "branch": branch_name,
+                    "remote": remote,
+                    "project_root": str(project_root),
+                    "error": exc.message,
+                    "details": exc.details,
+                }
+            },
+        )
+        return False
+
+    logger.info(
+        "git.push",
+        extra={
+            "data": {
+                "branch": branch_name,
+                "remote": remote,
+                "project_root": str(project_root),
+            }
+        },
+    )
+    return True
 
 
 # ---------------------------------------------------------------------------

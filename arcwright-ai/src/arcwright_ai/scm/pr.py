@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import re
+import shutil
 from typing import TYPE_CHECKING, NamedTuple
 
 from arcwright_ai.core.constants import (
@@ -15,13 +18,20 @@ from arcwright_ai.core.constants import (
 )
 from arcwright_ai.core.exceptions import ScmError
 from arcwright_ai.core.io import read_text_async
+from arcwright_ai.scm.git import git
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-__all__: list[str] = ["generate_pr_body"]
+__all__: list[str] = ["generate_pr_body", "open_pull_request"]
 
 logger = logging.getLogger(__name__)
+
+_GITHUB_REMOTE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"^https://github\.com/(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?$"),
+    re.compile(r"^git@github\.com:(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?$"),
+    re.compile(r"^ssh://git@github\.com/(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?$"),
+)
 
 # ---------------------------------------------------------------------------
 # Collapse thresholds (AC: #3)
@@ -477,3 +487,221 @@ async def generate_pr_body(run_id: str, story_slug: str, *, project_root: Path) 
     )
 
     return body
+
+
+# ---------------------------------------------------------------------------
+# Default branch detection helper
+# ---------------------------------------------------------------------------
+
+
+async def _detect_default_branch(project_root: Path, story_slug: str) -> str:
+    """Detect the repository default branch, fallback to ``main``.
+
+    Args:
+        project_root: Absolute path to the repository root.
+        story_slug: Story slug used in log events.
+
+    Returns:
+        Default branch name (e.g. ``"main"`` or ``"master"``).  Falls back to
+        ``"main"`` if detection fails.
+    """
+    try:
+        result = await git("remote", "show", "origin", cwd=project_root)
+        match = re.search(r"HEAD branch:\s*(?P<branch>\S+)", result.stdout)
+        if match is not None:
+            return match.group("branch")
+    except Exception:
+        pass
+
+    if shutil.which("gh") is not None:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "gh",
+                "repo",
+                "view",
+                "--json",
+                "defaultBranchRef",
+                cwd=str(project_root),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout_bytes, _ = await proc.communicate()
+            if proc.returncode == 0:
+                parsed = json.loads(stdout_bytes.decode("utf-8", errors="replace"))
+                branch = parsed.get("defaultBranchRef", {}).get("name")
+                if isinstance(branch, str) and branch:
+                    return branch
+        except Exception:
+            pass
+
+    try:
+        result = await git("rev-parse", "--abbrev-ref", "origin/HEAD", cwd=project_root)
+        branch = result.stdout.strip()
+        if branch.startswith("origin/"):
+            return branch[len("origin/") :]
+        if branch:
+            return branch
+    except Exception:
+        pass
+
+    logger.warning(
+        "scm.pr.default_branch_fallback",
+        extra={"data": {"story_slug": story_slug, "fallback": "main"}},
+    )
+    return "main"
+
+
+def _parse_github_owner_repo(remote_url: str) -> tuple[str, str] | None:
+    """Parse owner/repo from common GitHub remote URL formats."""
+    for pattern in _GITHUB_REMOTE_PATTERNS:
+        match = pattern.match(remote_url.strip())
+        if match is None:
+            continue
+        owner = match.group("owner")
+        repo = match.group("repo")
+        if owner and repo:
+            return owner, repo
+    return None
+
+
+async def _build_manual_pr_url(project_root: Path, branch_name: str) -> str:
+    """Build manual PR URL including owner/repo when it can be resolved."""
+    try:
+        result = await git("remote", "get-url", "origin", cwd=project_root)
+        parsed = _parse_github_owner_repo(result.stdout.strip())
+        if parsed is not None:
+            owner, repo = parsed
+            return f"https://github.com/{owner}/{repo}/pull/new/{branch_name}"
+    except Exception:
+        pass
+    return f"https://github.com/<owner>/<repo>/pull/new/{branch_name}"
+
+
+# ---------------------------------------------------------------------------
+# Public API — open_pull_request
+# ---------------------------------------------------------------------------
+
+
+async def open_pull_request(
+    branch_name: str,
+    story_slug: str,
+    pr_body: str,
+    *,
+    project_root: Path,
+) -> str | None:
+    """Open a GitHub pull request for the story branch (best-effort).
+
+    Detects the repository default branch, checks ``gh`` CLI availability, then
+    calls ``gh pr create``.  Any failure (gh missing, not authenticated, PR
+    already exists) is logged as a warning and ``None`` is returned.  The
+    caller's story status is never affected by failures (AC: #5).
+
+    Args:
+        branch_name: Full branch name (e.g. ``arcwright/my-story``).
+        story_slug: Story slug used for the PR title and log events.
+        pr_body: Markdown PR description from :func:`generate_pr_body`.
+        project_root: Absolute path to the repository root.
+
+    Returns:
+        PR URL string on success, or ``None`` on any failure.
+    """
+    manual_pr_url = await _build_manual_pr_url(project_root, branch_name)
+
+    # Check gh CLI availability (AC: #5)
+    if shutil.which("gh") is None:
+        logger.warning(
+            "scm.pr.create.skipped",
+            extra={
+                "data": {
+                    "story_slug": story_slug,
+                    "reason": "gh_not_found",
+                    "manual_pr_url": manual_pr_url,
+                }
+            },
+        )
+        return None
+
+    # Detect default branch (AC: #6)
+    default_branch = await _detect_default_branch(project_root, story_slug)
+
+    # Derive PR title from story slug (AC: #7)
+    parts = story_slug.split("-", 2)
+    title_part = parts[2] if len(parts) > 2 else story_slug
+    pr_title = f"[arcwright] {title_part.replace('-', ' ').title()}"
+
+    # Open PR with gh CLI (AC: #4)
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "gh",
+            "pr",
+            "create",
+            "--base",
+            default_branch,
+            "--head",
+            branch_name,
+            "--title",
+            pr_title,
+            "--body",
+            pr_body,
+            cwd=str(project_root),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout_bytes, stderr_bytes = await proc.communicate()
+        stdout = stdout_bytes.decode("utf-8", errors="replace").strip()
+        stderr = stderr_bytes.decode("utf-8", errors="replace").strip()
+
+        if proc.returncode != 0:
+            # PR already exists is not a true error — just skip (AC: #10)
+            if "already exists" in stderr.lower() or "already exists" in stdout.lower():
+                logger.warning(
+                    "scm.pr.create.skipped",
+                    extra={
+                        "data": {
+                            "story_slug": story_slug,
+                            "reason": "pr_already_exists",
+                        }
+                    },
+                )
+            else:
+                logger.warning(
+                    "scm.pr.create.skipped",
+                    extra={
+                        "data": {
+                            "story_slug": story_slug,
+                            "reason": "gh_error",
+                            "stderr": stderr,
+                            "returncode": proc.returncode,
+                            "manual_pr_url": manual_pr_url,
+                        }
+                    },
+                )
+            return None
+
+        pr_url = stdout
+        logger.info(
+            "scm.pr.create",
+            extra={
+                "data": {
+                    "story_slug": story_slug,
+                    "branch": branch_name,
+                    "pr_url": pr_url,
+                    "base": default_branch,
+                }
+            },
+        )
+        return pr_url
+
+    except Exception as exc:
+        logger.warning(
+            "scm.pr.create.skipped",
+            extra={
+                "data": {
+                    "story_slug": story_slug,
+                    "reason": "subprocess_error",
+                    "error": str(exc),
+                    "manual_pr_url": manual_pr_url,
+                }
+            },
+        )
+        return None

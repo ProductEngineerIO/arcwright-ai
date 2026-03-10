@@ -894,3 +894,42 @@ async def test_write_halt_report_ac_ids_extracted_from_history(tmp_path: Path, r
     )
     content = path.read_text(encoding="utf-8")
     assert "**Failing ACs:** #2, #4" in content
+
+
+# ---------------------------------------------------------------------------
+# Story 6.7 — PR URL in run summary (Task 5.5 / AC: #9)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_write_success_summary_includes_pull_request_section_when_pr_url_set(
+    tmp_path: Path,
+    run_dir: str,
+) -> None:
+    """write_success_summary emits '## Pull Request' section when story has pr_url."""
+    pr_url = "https://github.com/owner/repo/pull/42"
+    await update_story_status(
+        tmp_path,
+        run_dir,
+        STORY_SLUGS_SINGLE[0],
+        status="success",
+        pr_url=pr_url,
+    )
+
+    path = await write_success_summary(tmp_path, run_dir)
+    content = path.read_text(encoding="utf-8")
+
+    assert "## Pull Request" in content
+    assert pr_url in content
+
+
+@pytest.mark.asyncio
+async def test_write_success_summary_omits_pull_request_section_when_no_pr_url(
+    tmp_path: Path,
+    run_dir: str,
+) -> None:
+    """write_success_summary omits '## Pull Request' section when no pr_url is set."""
+    path = await write_success_summary(tmp_path, run_dir)
+    content = path.read_text(encoding="utf-8")
+
+    assert "## Pull Request" not in content

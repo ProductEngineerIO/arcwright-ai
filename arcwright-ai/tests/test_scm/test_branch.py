@@ -19,6 +19,7 @@ from arcwright_ai.scm.branch import (
     create_branch,
     delete_branch,
     list_branches,
+    push_branch,
 )
 from arcwright_ai.scm.git import GitResult
 
@@ -490,3 +491,85 @@ async def test_commit_story_logs_structured_event(
         )
 
     assert any("git.commit" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Story 6.7 — push_branch tests (Task 5.1)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_push_branch_calls_git_push_with_correct_args(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """push_branch calls git('push', remote, branch_name, cwd=project_root)."""
+    mock_git = AsyncMock(return_value=_ok())
+    monkeypatch.setattr("arcwright_ai.scm.branch.git", mock_git)
+
+    result = await push_branch(_BRANCH, project_root=tmp_path)
+
+    mock_git.assert_called_once_with("push", "origin", _BRANCH, cwd=tmp_path)
+    assert result is True
+
+
+@pytest.mark.asyncio
+async def test_push_branch_uses_custom_remote(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """push_branch passes the remote argument to git."""
+    mock_git = AsyncMock(return_value=_ok())
+    monkeypatch.setattr("arcwright_ai.scm.branch.git", mock_git)
+
+    result = await push_branch(_BRANCH, project_root=tmp_path, remote="upstream")
+
+    mock_git.assert_called_once_with("push", "upstream", _BRANCH, cwd=tmp_path)
+    assert result is True
+
+
+@pytest.mark.asyncio
+async def test_push_branch_does_not_raise_on_scm_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """push_branch swallows ScmError and returns False (best-effort, non-fatal)."""
+    mock_git = AsyncMock(side_effect=ScmError("push failed", details={}))
+    monkeypatch.setattr("arcwright_ai.scm.branch.git", mock_git)
+
+    # Must not raise
+    result = await push_branch(_BRANCH, project_root=tmp_path)
+
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_push_branch_logs_warning_on_scm_error(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    """push_branch logs git.push.error at WARNING level on ScmError."""
+    mock_git = AsyncMock(side_effect=ScmError("network timeout", details={}))
+    monkeypatch.setattr("arcwright_ai.scm.branch.git", mock_git)
+
+    with caplog.at_level(logging.WARNING, logger="arcwright_ai.scm.branch"):
+        await push_branch(_BRANCH, project_root=tmp_path)
+
+    assert any("git.push.error" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_push_branch_logs_structured_event_on_success(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    """push_branch emits a structured git.push log event on success."""
+    mock_git = AsyncMock(return_value=_ok())
+    monkeypatch.setattr("arcwright_ai.scm.branch.git", mock_git)
+
+    with caplog.at_level(logging.INFO, logger="arcwright_ai.scm.branch"):
+        await push_branch(_BRANCH, project_root=tmp_path)
+
+    assert any("git.push" in r.message for r in caplog.records)

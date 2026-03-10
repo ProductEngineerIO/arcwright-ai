@@ -311,7 +311,7 @@ async def test_remove_worktree_force_rmtree_fallback_on_nonempty_dir(
     (nested / "file.py").write_text("# agent-created")
 
     dir_not_empty_exc = ScmError(
-        f"git worktree failed (exit 255)",
+        "git worktree failed (exit 255)",
         details={
             "command": ["worktree", "remove", "--force", str(worktree_path)],
             "stderr": f"error: failed to delete '{worktree_path}': Directory not empty",
