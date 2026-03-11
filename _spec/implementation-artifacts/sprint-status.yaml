@@ -86,7 +86,7 @@ development_status:
   epic-5-retrospective: done
 
   # Epic 6: SCM Integration & PR Generation (6 stories, 29 pts)
-  epic-6: in-progress
+  epic-6: done
   6-1-git-subprocess-wrapper-safe-shell-out-foundation: done
   6-2-worktree-manager-atomic-create-delete-with-recovery: done
   6-3-branch-manager-and-commit-strategy: done
@@ -94,12 +94,12 @@ development_status:
   6-5-worktree-cleanup-command: done
   6-6-scm-integration-with-engine-nodes: done
   6-7-push-branch-and-open-pull-request: done
-  epic-6-retrospective: optional
+  epic-6-retrospective: done
 
   # Epic 7: Cost Tracking & Budget Enforcement (4 stories, 16 pts)
-  epic-7: backlog
-  7-1-budgetstate-model-and-cost-accumulation: backlog
-  7-2-budget-check-node-dual-ceiling-enforcement: backlog
+  epic-7: in-progress
+  7-1-budgetstate-model-and-cost-accumulation: done
+  7-2-budget-check-node-dual-ceiling-enforcement: review
   7-3-cost-display-in-cli-status-and-run-summary: backlog
   7-4-cost-tracking-integration-with-engine-pipeline: backlog
   epic-7-retrospective: optional

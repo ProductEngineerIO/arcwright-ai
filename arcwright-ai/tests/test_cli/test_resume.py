@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 from typer.testing import CliRunner
 
 from arcwright_ai.cli.app import app
-from arcwright_ai.cli.resume import _find_latest_run_for_epic
+from arcwright_ai.cli.resume import _find_latest_run_for_epic, _reconstruct_budget_from_dict
 from tests.test_cli.test_dispatch import (
     _make_epic_project,
     _make_story_result,
@@ -638,3 +638,97 @@ def test_resume_halt_halt_controller_receives_previous_run_id(
         f"HaltController should receive previous_run_id={original_run_id!r}, "
         f"got {captured_controller_kwargs.get('previous_run_id')!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# _reconstruct_budget_from_dict — per_story and new token fields
+# ---------------------------------------------------------------------------
+
+
+def _make_resume_config() -> object:
+    """Return a minimal RunConfig for _reconstruct_budget_from_dict tests."""
+    from arcwright_ai.core.config import ApiConfig, LimitsConfig, RunConfig
+
+    return RunConfig(
+        api=ApiConfig(claude_api_key="test-key"),
+        limits=LimitsConfig(tokens_per_story=12345, cost_per_run=Decimal("100.0")),
+    )
+
+
+def test_reconstruct_budget_basic_fields() -> None:
+    """_reconstruct_budget_from_dict reconstructs basic mandatory fields."""
+    config = _make_resume_config()
+    budget_dict = {
+        "invocation_count": 4,
+        "total_tokens": 2000,
+        "estimated_cost": "0.15",
+        "max_cost": "50.0",
+    }
+    budget = _reconstruct_budget_from_dict(budget_dict, config)  # type: ignore[arg-type]
+    assert budget.invocation_count == 4
+    assert budget.total_tokens == 2000
+    assert budget.estimated_cost == Decimal("0.15")
+    assert budget.max_invocations == 12345
+    assert budget.max_cost == Decimal("100.0")  # always from config
+    assert budget.per_story == {}
+
+
+def test_reconstruct_budget_with_per_story() -> None:
+    """_reconstruct_budget_from_dict reconstructs per_story dict."""
+    config = _make_resume_config()
+    budget_dict = {
+        "invocation_count": 2,
+        "total_tokens": 700,
+        "total_tokens_input": 500,
+        "total_tokens_output": 200,
+        "estimated_cost": "0.0225",
+        "max_cost": "100.0",
+        "per_story": {
+            "2-1-slug": {
+                "tokens_input": 500,
+                "tokens_output": 200,
+                "cost": "0.0225",
+                "invocations": 2,
+            },
+        },
+    }
+    budget = _reconstruct_budget_from_dict(budget_dict, config)  # type: ignore[arg-type]
+    assert budget.total_tokens_input == 500
+    assert budget.total_tokens_output == 200
+    assert "2-1-slug" in budget.per_story
+    sc = budget.per_story["2-1-slug"]
+    assert sc.tokens_input == 500
+    assert sc.tokens_output == 200
+    assert sc.cost == Decimal("0.0225")
+    assert sc.invocations == 2
+
+
+def test_reconstruct_budget_backward_compat() -> None:
+    """_reconstruct_budget_from_dict handles old dicts without per_story or new fields."""
+    config = _make_resume_config()
+    # Old-format run.yaml budget — no per_story, no total_tokens_input/output
+    budget_dict = {
+        "invocation_count": 3,
+        "total_tokens": 1500,
+        "estimated_cost": "0.10",
+        "max_cost": "50.0",
+    }
+    budget = _reconstruct_budget_from_dict(budget_dict, config)  # type: ignore[arg-type]
+    assert budget.invocation_count == 3
+    assert budget.total_tokens_input == 0  # default
+    assert budget.total_tokens_output == 0  # default
+    assert budget.per_story == {}  # default
+
+
+def test_reconstruct_budget_malformed_fallback() -> None:
+    """_reconstruct_budget_from_dict returns fresh BudgetState on malformed input."""
+    config = _make_resume_config()
+    # Malformed: estimated_cost is not parsable as Decimal
+    budget_dict = {
+        "invocation_count": "not-a-number",
+        "estimated_cost": "$$invalid$$",
+    }
+    budget = _reconstruct_budget_from_dict(budget_dict, config)  # type: ignore[arg-type]
+    # Should return a fresh BudgetState, not raise
+    assert budget.invocation_count == 0
+    assert budget.max_cost == Decimal("100.0")

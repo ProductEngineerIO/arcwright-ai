@@ -16,7 +16,9 @@ __all__: list[str] = [
     "EpicId",
     "ProvenanceEntry",
     "RunId",
+    "StoryCost",
     "StoryId",
+    "calculate_invocation_cost",
 ]
 
 # ---------------------------------------------------------------------------
@@ -98,8 +100,28 @@ class ContextBundle(ArcwrightModel):
     answerer_rules: str = ""
 
 
+class StoryCost(ArcwrightModel):
+    """Per-story cost breakdown for a single story within a run.
+
+    Tracks token consumption and cost for all invocations (first-pass +
+    retries) of a single story.  Frozen per ``ArcwrightModel`` convention;
+    accumulate via ``model_copy(update={...})``.
+
+    Attributes:
+        tokens_input: Total input tokens consumed for this story.
+        tokens_output: Total output tokens consumed for this story.
+        cost: Estimated cost in USD (exact Decimal).
+        invocations: Number of SDK invocations for this story.
+    """
+
+    tokens_input: int = 0
+    tokens_output: int = 0
+    cost: Decimal = Decimal("0")
+    invocations: int = 0
+
+
 class BudgetState(ArcwrightModel):
-    """Tracks token and cost consumption for a story execution.
+    """Tracks token and cost consumption for a run.
 
     Note: BudgetState is frozen per ArcwrightModel convention.  When budget
     values need updating, create a new instance via model_copy(update={...}).
@@ -107,18 +129,24 @@ class BudgetState(ArcwrightModel):
     avoid IEEE 754 floating-point rounding errors in financial calculations.
 
     Attributes:
-        invocation_count: Number of SDK invocations made.
+        invocation_count: Total number of SDK invocations across all stories.
         total_tokens: Cumulative tokens consumed (input + output).
+        total_tokens_input: Cumulative input tokens consumed.
+        total_tokens_output: Cumulative output tokens consumed.
         estimated_cost: Running cost estimate in USD (exact Decimal).
         max_invocations: Maximum SDK invocations allowed (0 = unlimited).
         max_cost: Maximum cost allowed in USD (Decimal; 0 = unlimited).
+        per_story: Per-story cost breakdown mapping story slug to StoryCost.
     """
 
     invocation_count: int = 0
     total_tokens: int = 0
+    total_tokens_input: int = 0
+    total_tokens_output: int = 0
     estimated_cost: Decimal = Decimal("0")
     max_invocations: int = 0
     max_cost: Decimal = Decimal("0")
+    per_story: dict[str, StoryCost] = Field(default_factory=dict)
 
 
 class ProvenanceEntry(ArcwrightModel):
@@ -137,3 +165,39 @@ class ProvenanceEntry(ArcwrightModel):
     rationale: str
     ac_references: list[str] = Field(default_factory=list)
     timestamp: str  # ISO 8601 format — avoid datetime for frozen Pydantic serialisation
+
+
+# ---------------------------------------------------------------------------
+# Cost calculation
+# ---------------------------------------------------------------------------
+
+# TYPE_CHECKING import to avoid circular dependency at runtime.
+# ModelPricing is only needed for the type signature; at runtime,
+# duck-typing on .input_rate / .output_rate is sufficient.
+from typing import TYPE_CHECKING  # noqa: E402
+
+if TYPE_CHECKING:
+    from arcwright_ai.core.config import ModelPricing
+
+
+def calculate_invocation_cost(
+    tokens_input: int,
+    tokens_output: int,
+    pricing: ModelPricing,
+) -> Decimal:
+    """Calculate the cost of a single SDK invocation using per-model pricing.
+
+    Uses exact ``Decimal`` arithmetic to avoid IEEE 754 rounding errors.
+    Pricing rates are expressed as USD per 1 million tokens.
+
+    Args:
+        tokens_input: Number of input tokens consumed.
+        tokens_output: Number of output tokens consumed.
+        pricing: ``ModelPricing`` instance with ``input_rate`` and
+            ``output_rate`` (cost per 1M tokens).
+
+    Returns:
+        Estimated cost in USD as a ``Decimal``.
+    """
+    million = Decimal("1000000")
+    return Decimal(tokens_input) / million * pricing.input_rate + Decimal(tokens_output) / million * pricing.output_rate

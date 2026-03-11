@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import warnings
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,8 @@ from arcwright_ai.core.constants import (
     ENV_LIMITS_TOKENS_PER_STORY,
     ENV_METHODOLOGY_ARTIFACTS_PATH,
     ENV_METHODOLOGY_TYPE,
+    ENV_MODEL_PRICING_INPUT_RATE,
+    ENV_MODEL_PRICING_OUTPUT_RATE,
     ENV_MODEL_VERSION,
     ENV_REPRODUCIBILITY_ENABLED,
     ENV_REPRODUCIBILITY_RETENTION,
@@ -35,6 +38,7 @@ __all__: list[str] = [
     "LimitsConfig",
     "MethodologyConfig",
     "ModelConfig",
+    "ModelPricing",
     "ReproducibilityConfig",
     "RunConfig",
     "ScmConfig",
@@ -58,16 +62,35 @@ class ApiConfig(ArcwrightModel):
     claude_api_key: str
 
 
+class ModelPricing(ArcwrightModel):
+    """Per-model token pricing configuration.
+
+    Rates are expressed as USD per 1 million tokens.  Defaults match
+    Claude Opus 4.5 pricing.
+
+    Attributes:
+        input_rate: Cost per 1M input tokens (USD).
+        output_rate: Cost per 1M output tokens (USD).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="ignore", str_strip_whitespace=True)
+
+    input_rate: Decimal = Decimal("15.00")
+    output_rate: Decimal = Decimal("75.00")
+
+
 class ModelConfig(ArcwrightModel):
-    """Model selection configuration.
+    """Model selection and pricing configuration.
 
     Attributes:
         version: Claude model version identifier.
+        pricing: Per-model token pricing.
     """
 
     model_config = ConfigDict(frozen=True, extra="ignore", str_strip_whitespace=True)
 
     version: str = "claude-opus-4-5"
+    pricing: ModelPricing = Field(default_factory=ModelPricing)
 
 
 class LimitsConfig(ArcwrightModel):
@@ -168,6 +191,13 @@ _KNOWN_SECTION_FIELDS: dict[str, frozenset[str]] = {
     "methodology": frozenset(MethodologyConfig.model_fields.keys()),
     "scm": frozenset(ScmConfig.model_fields.keys()),
     "reproducibility": frozenset(ReproducibilityConfig.model_fields.keys()),
+}
+
+# Nested sub-section known keys for deeper warning detection
+_KNOWN_SUBSECTION_FIELDS: dict[str, dict[str, frozenset[str]]] = {
+    "model": {
+        "pricing": frozenset(ModelPricing.model_fields.keys()),
+    },
 }
 
 
@@ -355,6 +385,37 @@ def _env_set_bool(merged: dict[str, Any], section: str, field: str, env_var: str
         merged.setdefault(section, {})[field] = raw.lower() in {"true", "1", "yes"}
 
 
+def _env_set_decimal(
+    merged: dict[str, Any],
+    section: str,
+    subsection: str,
+    field: str,
+    env_var: str,
+) -> None:
+    """Apply a Decimal env var override to ``merged[section][subsection][field]``.
+
+    Args:
+        merged: Accumulated config dict (mutated in place).
+        section: Top-level section name (e.g. ``"model"``).
+        subsection: Nested section name (e.g. ``"pricing"``).
+        field: Field name within the subsection.
+        env_var: Environment variable name to read.
+
+    Raises:
+        ConfigError: If the env var value cannot be coerced to ``Decimal``.
+    """
+    raw = os.environ.get(env_var)
+    if raw is not None:
+        try:
+            Decimal(raw)  # validate parseable
+        except Exception as err:
+            raise ConfigError(
+                f"Invalid type for {section}.{subsection}.{field}: expected decimal, got str {raw!r}",
+                details={"env_var": env_var, "value": raw},
+            ) from err
+        merged.setdefault(section, {}).setdefault(subsection, {})[field] = raw
+
+
 def _apply_env_overrides(merged: dict[str, Any]) -> None:
     """Apply all ``ARCWRIGHT_*`` env var overrides to ``merged`` (mutates in place).
 
@@ -372,6 +433,10 @@ def _apply_env_overrides(merged: dict[str, Any]) -> None:
     _env_set_str(merged, "scm", "branch_template", ENV_SCM_BRANCH_TEMPLATE)
     _env_set_bool(merged, "reproducibility", "enabled", ENV_REPRODUCIBILITY_ENABLED)
     _env_set_int(merged, "reproducibility", "retention", ENV_REPRODUCIBILITY_RETENTION)
+
+    # Nested: model.pricing
+    _env_set_decimal(merged, "model", "pricing", "input_rate", ENV_MODEL_PRICING_INPUT_RATE)
+    _env_set_decimal(merged, "model", "pricing", "output_rate", ENV_MODEL_PRICING_OUTPUT_RATE)
 
 
 def _translate_pydantic_error(exc: PydanticValidationError) -> None:

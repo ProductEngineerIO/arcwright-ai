@@ -204,8 +204,9 @@ def _build_config_snapshot(config: RunConfig) -> dict[str, Any]:
 def _serialize_budget(budget: BudgetState) -> dict[str, Any]:
     """Serialize a ``BudgetState`` to a YAML-safe dict.
 
-    PyYAML's ``safe_dump`` cannot handle ``Decimal`` objects, so ``estimated_cost``
-    and ``max_cost`` are converted to ``str`` before serialization.
+    PyYAML's ``safe_dump`` cannot handle ``Decimal`` objects, so ``estimated_cost``,
+    ``max_cost``, and per-story ``cost`` fields are converted to ``str`` before
+    serialization.
 
     Args:
         budget: ``BudgetState`` instance to serialize.
@@ -217,6 +218,11 @@ def _serialize_budget(budget: BudgetState) -> dict[str, Any]:
     for key in ("estimated_cost", "max_cost"):
         if isinstance(data.get(key), Decimal):
             data[key] = str(data[key])
+    # Serialize per_story StoryCost Decimal fields
+    if "per_story" in data and isinstance(data["per_story"], dict):
+        for _slug, story_cost in data["per_story"].items():
+            if isinstance(story_cost, dict) and isinstance(story_cost.get("cost"), Decimal):
+                story_cost["cost"] = str(story_cost["cost"])
     return data
 
 
@@ -306,7 +312,12 @@ async def create_run(
         "start_time": datetime.now(tz=UTC).isoformat(),
         "status": RunStatusValue.QUEUED.value,
         "config_snapshot": _build_config_snapshot(config),
-        "budget": _serialize_budget(BudgetState()),
+        "budget": _serialize_budget(
+            BudgetState(
+                max_invocations=config.limits.tokens_per_story,
+                max_cost=Decimal(str(config.limits.cost_per_run)),
+            )
+        ),
         "stories": {
             slug: {
                 "status": "queued",

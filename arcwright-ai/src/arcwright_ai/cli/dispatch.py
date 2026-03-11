@@ -8,7 +8,7 @@ import logging
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 
@@ -29,6 +29,7 @@ from arcwright_ai.core.constants import (
     LOG_FILENAME,
 )
 from arcwright_ai.core.exceptions import (
+    AgentBudgetError,
     AgentError,
     ArcwrightError,
     ConfigError,
@@ -51,6 +52,59 @@ from arcwright_ai.output.summary import write_success_summary
 __all__: list[str] = ["dispatch_command"]
 
 logger = logging.getLogger(__name__)
+
+
+def _is_budget_exceeded(budget: BudgetState) -> bool:
+    """Return True when invocation or cost ceilings are breached.
+
+    Args:
+        budget: Current run/story budget state.
+
+    Returns:
+        ``True`` when any enforced ceiling is exceeded.
+    """
+    if budget.max_invocations > 0 and budget.invocation_count >= budget.max_invocations:
+        return True
+    return budget.max_cost > Decimal("0") and budget.estimated_cost >= budget.max_cost
+
+
+def _breached_budget_ceiling(budget: BudgetState) -> str:
+    """Identify which budget ceiling triggered a halt.
+
+    Args:
+        budget: Current run/story budget state.
+
+    Returns:
+        Ceiling identifier string for error details.
+    """
+    invocation_breached = budget.max_invocations > 0 and budget.invocation_count >= budget.max_invocations
+    cost_breached = budget.max_cost > Decimal("0") and budget.estimated_cost >= budget.max_cost
+    if invocation_breached and cost_breached:
+        return "both"
+    if invocation_breached:
+        return "invocation_ceiling"
+    if cost_breached:
+        return "cost_ceiling"
+    return "unknown"
+
+
+def _build_budget_error_details(budget: BudgetState) -> dict[str, Any]:
+    """Build AgentBudgetError details payload from BudgetState.
+
+    Args:
+        budget: Current run/story budget state.
+
+    Returns:
+        Details dict suitable for ``AgentBudgetError(details=...)``.
+    """
+    return {
+        "invocation_count": budget.invocation_count,
+        "max_invocations": budget.max_invocations,
+        "estimated_cost": str(budget.estimated_cost),
+        "max_cost": str(budget.max_cost),
+        "total_tokens": budget.total_tokens,
+        "breached_ceiling": _breached_budget_ceiling(budget),
+    }
 
 
 def _sdk_error_types() -> tuple[type[BaseException], ...]:
@@ -364,6 +418,10 @@ async def _dispatch_story_async(story_spec: str) -> int:
             story_path=story_path,
             project_root=project_root,
             config=config,
+            budget=BudgetState(
+                max_invocations=config.limits.tokens_per_story,
+                max_cost=Decimal(str(config.limits.cost_per_run)),
+            ),
         )
 
         graph = build_story_graph()
@@ -380,6 +438,17 @@ async def _dispatch_story_async(story_spec: str) -> int:
         typer.echo(f"  📁 Run: {run_dir}", err=True)
 
         if exit_code != EXIT_SUCCESS:
+            if final_status == TaskState.ESCALATED and budget is not None and _is_budget_exceeded(budget):
+                details = _build_budget_error_details(budget)
+                raise AgentBudgetError(
+                    (
+                        "Budget ceiling exceeded "
+                        f"({details['breached_ceiling']}; "
+                        f"invocations={details['invocation_count']}/{details['max_invocations']}; "
+                        f"cost=${details['estimated_cost']}/${details['max_cost']})"
+                    ),
+                    details=details,
+                )
             typer.echo(f"✗ Story {story_id} ended non-successfully (status: {final_status})", err=True)
         return exit_code
 
@@ -514,7 +583,7 @@ async def _dispatch_epic_async(epic_spec: str, *, skip_confirm: bool = False, re
             typer.echo("\nDispatch cancelled by user.", err=True)
             return EXIT_SUCCESS
         accumulated_budget_init = BudgetState(
-            max_invocations=0,
+            max_invocations=config.limits.tokens_per_story,
             max_cost=Decimal(str(config.limits.cost_per_run)),
         )
 
@@ -560,7 +629,7 @@ async def _dispatch_epic_async(epic_spec: str, *, skip_confirm: bool = False, re
                 status=TaskState.QUEUED,
                 config=config,
                 budget=BudgetState(
-                    max_invocations=0,
+                    max_invocations=config.limits.tokens_per_story,
                     max_cost=Decimal(str(config.limits.cost_per_run)),
                 ),
             )
@@ -663,6 +732,17 @@ async def _dispatch_epic_async(epic_spec: str, *, skip_confirm: bool = False, re
                 )
 
                 if exit_code != EXIT_SUCCESS:
+                    if final_status == TaskState.ESCALATED and _is_budget_exceeded(accumulated_budget):
+                        details = _build_budget_error_details(accumulated_budget)
+                        raise AgentBudgetError(
+                            (
+                                "Budget ceiling exceeded "
+                                f"({details['breached_ceiling']}; "
+                                f"invocations={details['invocation_count']}/{details['max_invocations']}; "
+                                f"cost=${details['estimated_cost']}/${details['max_cost']})"
+                            ),
+                            details=details,
+                        )
                     typer.echo(
                         f"✗ Story {story_id} ended non-successfully (status: {final_status})",
                         err=True,

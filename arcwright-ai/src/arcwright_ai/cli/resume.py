@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 import typer
 
-from arcwright_ai.core.types import BudgetState, EpicId, StoryId
+from arcwright_ai.core.types import BudgetState, EpicId, StoryCost, StoryId
 from arcwright_ai.output.run_manager import (
     RunStatus,
     get_run_status,
@@ -85,12 +85,27 @@ def _reconstruct_budget_from_dict(
         and ``max_cost`` from current config.
     """
     try:
+        # Reconstruct per_story dict of StoryCost from serialized data
+        raw_per_story: dict[str, Any] = budget_dict.get("per_story", {}) or {}
+        per_story: dict[str, StoryCost] = {}
+        for slug, sc_dict in raw_per_story.items():
+            if isinstance(sc_dict, dict):
+                per_story[slug] = StoryCost(
+                    tokens_input=sc_dict.get("tokens_input", 0),
+                    tokens_output=sc_dict.get("tokens_output", 0),
+                    cost=Decimal(str(sc_dict.get("cost", "0"))),
+                    invocations=sc_dict.get("invocations", 0),
+                )
+
         return BudgetState(
             invocation_count=budget_dict.get("invocation_count", 0),
             total_tokens=budget_dict.get("total_tokens", 0),
+            total_tokens_input=budget_dict.get("total_tokens_input", 0),
+            total_tokens_output=budget_dict.get("total_tokens_output", 0),
             estimated_cost=Decimal(str(budget_dict.get("estimated_cost", "0"))),
-            max_invocations=0,
+            max_invocations=config.limits.tokens_per_story,
             max_cost=Decimal(str(config.limits.cost_per_run)),
+            per_story=per_story,
         )
     except Exception:
         logger.warning(
@@ -98,7 +113,7 @@ def _reconstruct_budget_from_dict(
             extra={"data": {"budget_dict_keys": list(budget_dict.keys()) if budget_dict else []}},
         )
         return BudgetState(
-            max_invocations=0,
+            max_invocations=config.limits.tokens_per_story,
             max_cost=Decimal(str(config.limits.cost_per_run)),
         )
 

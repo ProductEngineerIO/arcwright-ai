@@ -452,3 +452,89 @@ async def test_create_run_idempotent(tmp_path: Path) -> None:
     await create_run(tmp_path, run_id, config, STORY_SLUGS)
     # Should not raise
     await create_run(tmp_path, run_id, config, STORY_SLUGS)
+
+
+# ---------------------------------------------------------------------------
+# _serialize_budget — per_story and Decimal handling
+# ---------------------------------------------------------------------------
+
+
+def test_serialize_budget_converts_decimals_to_strings() -> None:
+    """_serialize_budget converts all Decimal fields to strings for YAML safety."""
+    from arcwright_ai.output.run_manager import _serialize_budget
+
+    budget = BudgetState(
+        invocation_count=2,
+        total_tokens=1400,
+        total_tokens_input=1000,
+        total_tokens_output=400,
+        estimated_cost=Decimal("0.0225"),
+        max_cost=Decimal("100.0"),
+    )
+    data = _serialize_budget(budget)
+    assert data["estimated_cost"] == "0.0225"
+    assert data["max_cost"] == "100.0"
+    assert data["invocation_count"] == 2
+    assert data["total_tokens_input"] == 1000
+    assert data["total_tokens_output"] == 400
+
+
+def test_serialize_budget_per_story_decimal_conversion() -> None:
+    """_serialize_budget converts per_story StoryCost.cost Decimal to string."""
+    from arcwright_ai.core.types import StoryCost
+    from arcwright_ai.output.run_manager import _serialize_budget
+
+    budget = BudgetState(
+        invocation_count=1,
+        estimated_cost=Decimal("0.01"),
+        per_story={
+            "2-1-slug": StoryCost(
+                tokens_input=500,
+                tokens_output=200,
+                cost=Decimal("0.01"),
+                invocations=1,
+            ),
+        },
+    )
+    data = _serialize_budget(budget)
+    assert "per_story" in data
+    assert "2-1-slug" in data["per_story"]
+    sc = data["per_story"]["2-1-slug"]
+    assert sc["cost"] == "0.01"
+    assert sc["tokens_input"] == 500
+    assert sc["tokens_output"] == 200
+    assert sc["invocations"] == 1
+
+
+def test_serialize_budget_empty_per_story() -> None:
+    """_serialize_budget handles empty per_story dict."""
+    from arcwright_ai.output.run_manager import _serialize_budget
+
+    budget = BudgetState()
+    data = _serialize_budget(budget)
+    assert data["per_story"] == {}
+
+
+def test_serialize_budget_yaml_safe_dump() -> None:
+    """Serialized budget can be passed to yaml.safe_dump without error."""
+    import yaml
+
+    from arcwright_ai.core.types import StoryCost
+    from arcwright_ai.output.run_manager import _serialize_budget
+
+    budget = BudgetState(
+        invocation_count=3,
+        total_tokens=2100,
+        total_tokens_input=1500,
+        total_tokens_output=600,
+        estimated_cost=Decimal("0.0525"),
+        max_cost=Decimal("50.0"),
+        per_story={
+            "3-1-a": StoryCost(tokens_input=500, tokens_output=200, cost=Decimal("0.0175"), invocations=1),
+            "3-2-b": StoryCost(tokens_input=1000, tokens_output=400, cost=Decimal("0.035"), invocations=2),
+        },
+    )
+    data = _serialize_budget(budget)
+    # Should not raise — all Decimals are strings
+    yaml_str = yaml.safe_dump(data, default_flow_style=False)
+    assert "estimated_cost" in yaml_str

@@ -21,7 +21,15 @@ from arcwright_ai.core.constants import (
     HALT_REPORT_FILENAME,
     VALIDATION_FILENAME,
 )
-from arcwright_ai.core.exceptions import AgentError, BranchError, ContextError, ScmError, ValidationError, WorktreeError
+from arcwright_ai.core.exceptions import (
+    AgentBudgetError,
+    AgentError,
+    BranchError,
+    ContextError,
+    ScmError,
+    ValidationError,
+    WorktreeError,
+)
 from arcwright_ai.core.lifecycle import TaskState
 from arcwright_ai.core.types import BudgetState, ContextBundle, EpicId, RunId, StoryId
 from arcwright_ai.engine.nodes import (
@@ -903,7 +911,45 @@ async def test_agent_dispatch_node_updates_budget(
     assert result.budget.invocation_count == 1
     expected_tokens = mock_invoke_result.tokens_input + mock_invoke_result.tokens_output
     assert result.budget.total_tokens == expected_tokens
-    assert result.budget.estimated_cost == mock_invoke_result.total_cost
+    # estimated_cost now uses pricing-based calculation, not SDK-reported total_cost
+    from arcwright_ai.core.types import calculate_invocation_cost
+
+    expected_cost = calculate_invocation_cost(
+        mock_invoke_result.tokens_input,
+        mock_invoke_result.tokens_output,
+        dispatch_ready_state.config.model.pricing,
+    )
+    assert result.budget.estimated_cost == expected_cost
+
+
+@pytest.mark.asyncio
+async def test_agent_dispatch_node_updates_per_story_and_token_breakdown(
+    dispatch_ready_state: StoryState,
+    mock_invoke_result: InvocationResult,
+) -> None:
+    """agent_dispatch_node populates per_story, total_tokens_input, total_tokens_output."""
+    from arcwright_ai.core.types import StoryCost, calculate_invocation_cost
+
+    result = await agent_dispatch_node(dispatch_ready_state)
+    story_slug = str(dispatch_ready_state.story_id)
+
+    # Per-story tracking
+    assert story_slug in result.budget.per_story
+    sc = result.budget.per_story[story_slug]
+    assert isinstance(sc, StoryCost)
+    assert sc.tokens_input == mock_invoke_result.tokens_input
+    assert sc.tokens_output == mock_invoke_result.tokens_output
+    assert sc.invocations == 1
+    expected_cost = calculate_invocation_cost(
+        mock_invoke_result.tokens_input,
+        mock_invoke_result.tokens_output,
+        dispatch_ready_state.config.model.pricing,
+    )
+    assert sc.cost == expected_cost
+
+    # Token breakdown
+    assert result.budget.total_tokens_input == mock_invoke_result.tokens_input
+    assert result.budget.total_tokens_output == mock_invoke_result.tokens_output
 
 
 @pytest.mark.asyncio
@@ -1844,3 +1890,218 @@ async def test_commit_node_updates_story_status_with_pr_url(
     # One of the calls to update_story_status should include pr_url
     pr_url_calls = [call for call in mock_update.call_args_list if call.kwargs.get("pr_url") == expected_url]
     assert pr_url_calls, "update_story_status was not called with pr_url"
+
+
+# ---------------------------------------------------------------------------
+# Story 7.2: Budget check node — dual ceiling enforcement
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_budget_check_node_records_provenance_on_halt(
+    make_story_state: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """budget_check_node writes a ProvenanceEntry when budget exceeded (AC: #3, #11d)."""
+    mock_append = AsyncMock()
+    monkeypatch.setattr("arcwright_ai.engine.nodes.append_entry", mock_append)
+
+    budget = BudgetState(
+        invocation_count=5,
+        max_invocations=5,
+        total_tokens=50_000,
+        estimated_cost=Decimal("1.50"),
+        max_cost=Decimal("10.0"),
+    )
+    state = make_story_state.model_copy(update={"budget": budget})
+    result = await budget_check_node(state)
+
+    assert result.status == TaskState.ESCALATED
+    assert mock_append.call_count == 1
+    args = mock_append.call_args[0]
+    entry = args[1]
+    assert entry.decision == "Budget ceiling exceeded \u2014 halting execution"
+    assert "FR25" in entry.ac_references
+    assert "NFR10" in entry.ac_references
+    assert "D2" in entry.ac_references
+    assert "invocation_count=5/5" in entry.rationale
+    assert "total_tokens=50000" in entry.rationale
+
+
+@pytest.mark.asyncio
+async def test_budget_check_node_returns_escalated_with_budget_details(
+    make_story_state: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """budget_check_node returns ESCALATED (not raises) — aligns with LangGraph pattern (AC: #3, #11e)."""
+    mock_append = AsyncMock()
+    monkeypatch.setattr("arcwright_ai.engine.nodes.append_entry", mock_append)
+
+    budget = BudgetState(
+        invocation_count=10,
+        max_invocations=5,
+        estimated_cost=Decimal("3.50"),
+        max_cost=Decimal("10.0"),
+        total_tokens=100_000,
+    )
+    state = make_story_state.model_copy(update={"budget": budget})
+    result = await budget_check_node(state)
+
+    # Returns ESCALATED (not raises) — finalize_node can still run
+    assert result.status == TaskState.ESCALATED
+    # Provenance was recorded with budget details
+    entry = mock_append.call_args[0][1]
+    assert "estimated_cost=$3.50" in entry.rationale
+
+
+@pytest.mark.asyncio
+async def test_budget_check_provenance_identifies_invocation_ceiling(
+    make_story_state: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Provenance rationale identifies invocation ceiling when invocation limit breached (AC: #11f)."""
+    mock_append = AsyncMock()
+    monkeypatch.setattr("arcwright_ai.engine.nodes.append_entry", mock_append)
+
+    budget = BudgetState(
+        invocation_count=5,
+        max_invocations=5,
+        estimated_cost=Decimal("0.50"),
+        max_cost=Decimal("10.0"),
+    )
+    state = make_story_state.model_copy(update={"budget": budget})
+    await budget_check_node(state)
+
+    entry = mock_append.call_args[0][1]
+    assert "invocation_ceiling" in entry.rationale
+    assert "cost_ceiling" not in entry.rationale
+
+
+@pytest.mark.asyncio
+async def test_budget_check_provenance_identifies_cost_ceiling(
+    make_story_state: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Provenance rationale identifies cost ceiling when cost limit breached (AC: #11f)."""
+    mock_append = AsyncMock()
+    monkeypatch.setattr("arcwright_ai.engine.nodes.append_entry", mock_append)
+
+    budget = BudgetState(
+        invocation_count=2,
+        max_invocations=5,
+        estimated_cost=Decimal("10.00"),
+        max_cost=Decimal("10.00"),
+    )
+    state = make_story_state.model_copy(update={"budget": budget})
+    await budget_check_node(state)
+
+    entry = mock_append.call_args[0][1]
+    assert "cost_ceiling" in entry.rationale
+    assert "invocation_ceiling" not in entry.rationale
+
+
+def test_graph_edge_budget_before_dispatch() -> None:
+    """Graph structure places budget_check between preflight and agent_dispatch (AC: #2, #11g)."""
+    from arcwright_ai.engine.graph import build_story_graph
+
+    graph = build_story_graph()
+    # LangGraph compiled graph exposes .get_graph() with nodes and edges
+    graph_structure = graph.get_graph()
+
+    # Collect all edge tuples: (source, target)
+    edges = [(edge.source, edge.target) for edge in graph_structure.edges]
+
+    # Verify preflight → budget_check and budget_check → agent_dispatch edges exist
+    assert ("preflight", "budget_check") in edges
+    # budget_check routes to agent_dispatch ("ok") or finalize ("exceeded")
+    # The conditional edge from budget_check should have agent_dispatch as a target
+    budget_targets = [t for s, t in edges if s == "budget_check"]
+    assert "agent_dispatch" in budget_targets, f"budget_check targets: {budget_targets}"
+    assert "finalize" in budget_targets, f"budget_check targets: {budget_targets}"
+
+
+def test_retry_accumulates_in_same_budget(make_story_state: StoryState) -> None:
+    """Retry invocations share the same BudgetState — route_budget_check evaluates accumulated budget (AC: #5, #11h)."""
+    # Simulate a state after 1 retry: invocation_count=2 (first pass + one retry),
+    # RETRY status, and budget close to limit
+    budget = BudgetState(
+        invocation_count=4,
+        max_invocations=5,
+        estimated_cost=Decimal("8.00"),
+        max_cost=Decimal("10.0"),
+    )
+    state = make_story_state.model_copy(update={"status": TaskState.RETRY, "retry_count": 1, "budget": budget})
+    # Still within budget
+    assert route_budget_check(state) == "ok"
+
+    # After one more retry: invocation_count=5 — at ceiling
+    budget_at_ceiling = budget.model_copy(update={"invocation_count": 5})
+    state_at_ceiling = state.model_copy(update={"budget": budget_at_ceiling})
+    assert route_budget_check(state_at_ceiling) == "exceeded"
+
+
+@pytest.mark.asyncio
+async def test_finalize_handles_budget_escalation(
+    make_story_state: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """finalize_node handles ESCALATED from budget halt with budget details in suggested_fix (AC: #6, #11i)."""
+    mock_halt = AsyncMock()
+    monkeypatch.setattr("arcwright_ai.engine.nodes.write_halt_report", mock_halt)
+
+    budget = BudgetState(
+        invocation_count=5,
+        max_invocations=5,
+        total_tokens=50_000,
+        estimated_cost=Decimal("1.50"),
+        max_cost=Decimal("10.0"),
+    )
+    state = make_story_state.model_copy(
+        update={"status": TaskState.ESCALATED, "retry_history": [], "retry_count": 0, "budget": budget}
+    )
+    await finalize_node(state)
+
+    assert mock_halt.call_count == 1
+    call_kwargs = mock_halt.call_args[1]
+    assert call_kwargs["halt_reason"] == "budget_exceeded"
+    # Suggested fix should include budget consumption details
+    suggested_fix = call_kwargs["suggested_fix"]
+    assert "invocations=5/5" in suggested_fix
+    assert "$1.50" in suggested_fix
+    assert "total_tokens=50000" in suggested_fix
+    assert "invocation_ceiling" in suggested_fix
+
+
+@pytest.mark.asyncio
+async def test_budget_check_provenance_failure_does_not_block_halt(
+    make_story_state: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Provenance write failure must not prevent budget halt (Boundary #6, AC: #11k)."""
+    mock_append = AsyncMock(side_effect=OSError("disk full"))
+    monkeypatch.setattr("arcwright_ai.engine.nodes.append_entry", mock_append)
+
+    budget = BudgetState(invocation_count=5, max_invocations=5)
+    state = make_story_state.model_copy(update={"budget": budget})
+    result = await budget_check_node(state)
+
+    # Node still returns ESCALATED despite provenance failure
+    assert result.status == TaskState.ESCALATED
+    assert mock_append.call_count == 1
+
+
+def test_agent_budget_error_carries_details() -> None:
+    """AgentBudgetError accepts a details dict with budget state (AC: #11k)."""
+    details = {
+        "invocation_count": 5,
+        "max_invocations": 5,
+        "estimated_cost": "1.50",
+        "max_cost": "10.0",
+        "total_tokens": 50_000,
+        "breached_ceiling": "invocation_ceiling",
+    }
+    err = AgentBudgetError("Budget ceiling exceeded", details=details)
+    assert err.message == "Budget ceiling exceeded"
+    assert err.details is not None
+    assert err.details["breached_ceiling"] == "invocation_ceiling"
+    assert err.details["invocation_count"] == 5

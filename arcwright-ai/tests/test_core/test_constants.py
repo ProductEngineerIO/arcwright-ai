@@ -195,6 +195,8 @@ def test_all_symbols_exported() -> None:
         "ENV_LIMITS_TOKENS_PER_STORY",
         "ENV_METHODOLOGY_ARTIFACTS_PATH",
         "ENV_METHODOLOGY_TYPE",
+        "ENV_MODEL_PRICING_INPUT_RATE",
+        "ENV_MODEL_PRICING_OUTPUT_RATE",
         "ENV_MODEL_VERSION",
         "ENV_PREFIX",
         "ENV_REPRODUCIBILITY_ENABLED",

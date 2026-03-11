@@ -25,6 +25,7 @@ from arcwright_ai.cli.dispatch import (
     _JsonlFileHandler,
 )
 from arcwright_ai.core.config import ApiConfig, RunConfig
+from arcwright_ai.core.exceptions import AgentBudgetError
 from arcwright_ai.core.types import EpicId, StoryId
 from arcwright_ai.output.run_manager import generate_run_id
 
@@ -570,6 +571,23 @@ def test_epic_dispatch_budget_carry_forward(
     )
 
 
+def test_epic_dispatch_initial_budget_uses_config_invocation_ceiling(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Initial StoryState budget uses config.limits.tokens_per_story as max_invocations."""
+    results = [_make_story_result("success")]
+    _make_epic_project(tmp_path, epic_num="5", story_count=1)
+    call_log = _patch_epic_deps(monkeypatch, tmp_path, results)
+
+    result = runner.invoke(app, ["dispatch", "--epic", "5", "--yes"])
+
+    assert result.exit_code == 0, f"Unexpected exit {result.exit_code}:\n{result.output}"
+    assert len(call_log["invoke_calls"]) == 1
+    first_budget = call_log["invoke_calls"][0].budget  # type: ignore[attr-defined]
+    assert first_budget.max_invocations == 200_000
+
+
 def test_epic_dispatch_initializes_project_state_with_queued_stories(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -784,6 +802,66 @@ def test_epic_dispatch_exit_code_validation_failure(
 
     result = runner.invoke(app, ["dispatch", "--epic", "5", "--yes"])
     assert result.exit_code == 1, f"Validation failure should map to exit code 1, got {result.exit_code}"
+
+
+def test_epic_dispatch_budget_escalation_raises_agent_budget_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Budget-caused ESCALATED path raises AgentBudgetError with details and routes through halt exception flow."""
+    from arcwright_ai.core.types import BudgetState
+
+    story_result = _make_story_result("escalated", estimated_cost="10.00", total_tokens=1000)
+    story_result.budget = BudgetState(
+        invocation_count=1,
+        max_invocations=1,
+        total_tokens=1000,
+        estimated_cost=Decimal("10.00"),
+        max_cost=Decimal("10.00"),
+    )
+
+    _make_epic_project(tmp_path, epic_num="5", story_count=1)
+    _patch_epic_deps(monkeypatch, tmp_path, [story_result])
+
+    captured: dict[str, object] = {}
+
+    async def _capture_handle_halt(
+        self: object,
+        *,
+        story_id: object,
+        exception: Exception,
+        accumulated_budget: object,
+        completed_stories: object,
+        last_completed: object,
+    ) -> int:
+        captured["exception"] = exception
+        return 2
+
+    async def _fail_graph_halt(
+        self: object,
+        *,
+        story_state: object,
+        accumulated_budget: object,
+        completed_stories: object,
+        last_completed: object,
+    ) -> int:
+        pytest.fail("Budget escalation should route through handle_halt(exception=AgentBudgetError)")
+
+    monkeypatch.setattr("arcwright_ai.cli.dispatch.HaltController.handle_halt", _capture_handle_halt)
+    monkeypatch.setattr("arcwright_ai.cli.dispatch.HaltController.handle_graph_halt", _fail_graph_halt)
+
+    result = runner.invoke(app, ["dispatch", "--epic", "5", "--yes"])
+
+    assert result.exit_code == 2, f"Budget escalation should map to exit code 2, got {result.exit_code}"
+    assert isinstance(captured.get("exception"), AgentBudgetError)
+    exc = captured["exception"]
+    assert isinstance(exc, AgentBudgetError)
+    assert exc.details is not None
+    assert exc.details["breached_ceiling"] in {"invocation_ceiling", "cost_ceiling", "both"}
+    assert "invocation_count" in exc.details
+    assert "max_invocations" in exc.details
+    assert "estimated_cost" in exc.details
+    assert "max_cost" in exc.details
 
 
 def test_epic_dispatch_exit_code_config_error(

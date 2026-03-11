@@ -31,6 +31,8 @@ def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
     arcwright_vars = [
         "ARCWRIGHT_API_CLAUDE_API_KEY",
         "ARCWRIGHT_MODEL_VERSION",
+        "ARCWRIGHT_MODEL_PRICING_INPUT_RATE",
+        "ARCWRIGHT_MODEL_PRICING_OUTPUT_RATE",
         "ARCWRIGHT_LIMITS_TOKENS_PER_STORY",
         "ARCWRIGHT_LIMITS_COST_PER_RUN",
         "ARCWRIGHT_LIMITS_RETRY_BUDGET",
@@ -385,3 +387,60 @@ def test_load_config_no_project_config_file_uses_global(
     # No .arcwright-ai directory in project_root
     cfg = load_config(project_root=project_root)
     assert cfg.model.version == "v-global"
+
+
+# ---------------------------------------------------------------------------
+# ModelPricing — sub-model defaults, YAML override, env override
+# ---------------------------------------------------------------------------
+
+
+def test_model_pricing_defaults(api_key_env: None, global_config_dir: Path, clean_env: None) -> None:
+    """ModelPricing has sensible Opus 4.5 defaults without explicit config."""
+    from decimal import Decimal
+
+    cfg = load_config()
+    assert cfg.model.pricing.input_rate == Decimal("15.00")
+    assert cfg.model.pricing.output_rate == Decimal("75.00")
+
+
+def test_model_pricing_env_override_input_rate(
+    api_key_env: None,
+    global_config_dir: Path,
+    clean_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ARCWRIGHT_MODEL_PRICING_INPUT_RATE overrides the default input rate."""
+    from decimal import Decimal
+
+    monkeypatch.setenv("ARCWRIGHT_MODEL_PRICING_INPUT_RATE", "3.00")
+    cfg = load_config()
+    assert cfg.model.pricing.input_rate == Decimal("3.00")
+    # output_rate should still be default
+    assert cfg.model.pricing.output_rate == Decimal("75.00")
+
+
+def test_model_pricing_env_override_output_rate(
+    api_key_env: None,
+    global_config_dir: Path,
+    clean_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ARCWRIGHT_MODEL_PRICING_OUTPUT_RATE overrides the default output rate."""
+    from decimal import Decimal
+
+    monkeypatch.setenv("ARCWRIGHT_MODEL_PRICING_OUTPUT_RATE", "60.00")
+    cfg = load_config()
+    assert cfg.model.pricing.output_rate == Decimal("60.00")
+    assert cfg.model.pricing.input_rate == Decimal("15.00")
+
+
+def test_model_pricing_invalid_env_raises_config_error(
+    api_key_env: None,
+    global_config_dir: Path,
+    clean_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-numeric ARCWRIGHT_MODEL_PRICING_INPUT_RATE raises ConfigError."""
+    monkeypatch.setenv("ARCWRIGHT_MODEL_PRICING_INPUT_RATE", "not-a-number")
+    with pytest.raises(ConfigError, match=r"Invalid type.*pricing"):
+        load_config()

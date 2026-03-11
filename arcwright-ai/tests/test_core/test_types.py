@@ -15,7 +15,9 @@ from arcwright_ai.core.types import (
     EpicId,
     ProvenanceEntry,
     RunId,
+    StoryCost,
     StoryId,
+    calculate_invocation_cost,
 )
 
 # ---------------------------------------------------------------------------
@@ -172,6 +174,100 @@ def test_budget_state_is_frozen() -> None:
         budget.invocation_count = 5  # type: ignore[misc]
 
 
+def test_budget_state_new_fields_default_values() -> None:
+    budget = BudgetState()
+    assert budget.total_tokens_input == 0
+    assert budget.total_tokens_output == 0
+    assert budget.per_story == {}
+
+
+def test_budget_state_with_per_story() -> None:
+    sc = StoryCost(tokens_input=100, tokens_output=50, cost=Decimal("0.01"), invocations=1)
+    budget = BudgetState(per_story={"2-1-state-models": sc})
+    assert "2-1-state-models" in budget.per_story
+    assert budget.per_story["2-1-state-models"].tokens_input == 100
+
+
+def test_budget_state_model_copy_with_per_story() -> None:
+    """BudgetState.per_story can be updated via model_copy (frozen model pattern)."""
+    sc1 = StoryCost(tokens_input=100, tokens_output=50, cost=Decimal("0.01"), invocations=1)
+    budget = BudgetState(per_story={"s1": sc1})
+    sc2 = StoryCost(tokens_input=200, tokens_output=100, cost=Decimal("0.02"), invocations=1)
+    new_budget = budget.model_copy(update={"per_story": {**budget.per_story, "s2": sc2}})
+    assert "s1" in new_budget.per_story
+    assert "s2" in new_budget.per_story
+    assert new_budget.per_story["s2"].tokens_input == 200
+
+
+# ---------------------------------------------------------------------------
+# StoryCost
+# ---------------------------------------------------------------------------
+
+
+def test_story_cost_default_values() -> None:
+    sc = StoryCost()
+    assert sc.tokens_input == 0
+    assert sc.tokens_output == 0
+    assert sc.cost == Decimal("0")
+    assert sc.invocations == 0
+
+
+def test_story_cost_custom_values() -> None:
+    sc = StoryCost(tokens_input=500, tokens_output=200, cost=Decimal("0.05"), invocations=2)
+    assert sc.tokens_input == 500
+    assert sc.tokens_output == 200
+    assert sc.cost == Decimal("0.05")
+    assert sc.invocations == 2
+
+
+def test_story_cost_is_frozen() -> None:
+    sc = StoryCost()
+    with pytest.raises(PydanticValidationError):
+        sc.tokens_input = 99  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# calculate_invocation_cost
+# ---------------------------------------------------------------------------
+
+
+def test_calculate_invocation_cost_basic() -> None:
+    from arcwright_ai.core.config import ModelPricing
+
+    pricing = ModelPricing(input_rate=Decimal("15.00"), output_rate=Decimal("75.00"))
+    cost = calculate_invocation_cost(1_000_000, 1_000_000, pricing)
+    assert cost == Decimal("90.00")
+
+
+def test_calculate_invocation_cost_small_tokens() -> None:
+    from arcwright_ai.core.config import ModelPricing
+
+    pricing = ModelPricing(input_rate=Decimal("15.00"), output_rate=Decimal("75.00"))
+    # 500 input, 200 output — matches mock_invoke_result in nodes tests
+    cost = calculate_invocation_cost(500, 200, pricing)
+    expected = Decimal("500") / Decimal("1000000") * Decimal("15.00") + Decimal("200") / Decimal("1000000") * Decimal(
+        "75.00"
+    )
+    assert cost == expected
+
+
+def test_calculate_invocation_cost_zero_tokens() -> None:
+    from arcwright_ai.core.config import ModelPricing
+
+    pricing = ModelPricing(input_rate=Decimal("15.00"), output_rate=Decimal("75.00"))
+    cost = calculate_invocation_cost(0, 0, pricing)
+    assert cost == Decimal("0")
+
+
+def test_calculate_invocation_cost_custom_rates() -> None:
+    from arcwright_ai.core.config import ModelPricing
+
+    pricing = ModelPricing(input_rate=Decimal("3.00"), output_rate=Decimal("15.00"))
+    cost = calculate_invocation_cost(1_000_000, 500_000, pricing)
+    expected = Decimal("3.00") + Decimal("500000") / Decimal("1000000") * Decimal("15.00")
+    assert cost == expected
+
+
 # ---------------------------------------------------------------------------
 # ProvenanceEntry
 # ---------------------------------------------------------------------------
@@ -226,6 +322,8 @@ def test_all_symbols_exported() -> None:
         "EpicId",
         "ProvenanceEntry",
         "RunId",
+        "StoryCost",
         "StoryId",
+        "calculate_invocation_cost",
     }
     assert set(mod.__all__) == expected

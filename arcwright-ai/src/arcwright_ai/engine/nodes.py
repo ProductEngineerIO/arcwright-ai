@@ -26,7 +26,7 @@ from arcwright_ai.core.constants import (
 from arcwright_ai.core.exceptions import ContextError, ScmError, ValidationError
 from arcwright_ai.core.io import write_text_async
 from arcwright_ai.core.lifecycle import TaskState
-from arcwright_ai.core.types import ProvenanceEntry
+from arcwright_ai.core.types import BudgetState, ProvenanceEntry, StoryCost, calculate_invocation_cost
 from arcwright_ai.engine.state import StoryState  # noqa: TC001
 from arcwright_ai.output.provenance import append_entry, render_validation_row
 from arcwright_ai.output.run_manager import update_run_status, update_story_status
@@ -227,23 +227,101 @@ async def preflight_node(state: StoryState) -> StoryState:
     return updated
 
 
-async def budget_check_node(state: StoryState) -> StoryState:
-    """Placeholder budget check node — handles budget/execution status transitions.
+def _is_budget_exceeded(budget: BudgetState) -> bool:
+    """Check whether any budget ceiling has been breached.
 
-    If the budget is already exceeded, transitions to ESCALATED so the graph
-    can terminate in an explicit escalated state. If the incoming state is
-    RETRY (e.g., from a validation retry cycle), transitions back to RUNNING
-    so the agent can be re-invoked. Otherwise passes state through unchanged.
+    Args:
+        budget: Current budget state.
+
+    Returns:
+        True if invocation or cost ceiling is exceeded, False otherwise.
+    """
+    if budget.max_invocations > 0 and budget.invocation_count >= budget.max_invocations:
+        return True
+    return budget.max_cost > Decimal(0) and budget.estimated_cost >= budget.max_cost
+
+
+def _determine_breached_ceiling(budget: BudgetState) -> str:
+    """Determine which budget ceiling was breached.
+
+    Args:
+        budget: Current budget state with ceiling values.
+
+    Returns:
+        String identifying the breached ceiling: ``"invocation_ceiling"``,
+        ``"cost_ceiling"``, ``"both (invocation_ceiling and cost_ceiling)"``,
+        or ``"unknown"``.
+    """
+    invocation_breached = budget.max_invocations > 0 and budget.invocation_count >= budget.max_invocations
+    cost_breached = budget.max_cost > Decimal(0) and budget.estimated_cost >= budget.max_cost
+    if invocation_breached and cost_breached:
+        return "both (invocation_ceiling and cost_ceiling)"
+    if invocation_breached:
+        return "invocation_ceiling"
+    if cost_breached:
+        return "cost_ceiling"
+    return "unknown"
+
+
+async def budget_check_node(state: StoryState) -> StoryState:
+    """Budget check node — enforces dual ceiling enforcement before agent dispatch.
+
+    Checks both the invocation count ceiling and estimated cost ceiling per
+    the D2 dual budget model.  When either ceiling is breached, records a
+    provenance entry with the full budget state (including which ceiling was
+    breached) and transitions to ESCALATED so the graph routes to
+    ``finalize_node``.
+
+    If the incoming state is RETRY (from a validation retry cycle),
+    transitions back to RUNNING so the agent can be re-invoked.
+    Otherwise passes state through unchanged.
+
     The routing decision (ok vs exceeded) is made by ``route_budget_check``.
+
+    Note:
+        The node does NOT raise ``AgentBudgetError`` directly — LangGraph nodes
+        that raise exceptions abort graph execution, preventing ``finalize_node``
+        from running.  Instead, the ESCALATED status is returned and the CLI
+        dispatch layer (``HaltController``) maps it to exit code 2.
 
     Args:
         state: Current story execution state.
 
     Returns:
-        Updated state with status adjusted if coming from RETRY.
+        Updated state with status ESCALATED on budget exceeded, RUNNING on
+        retry transition, or unchanged otherwise.
     """
     logger.info("engine.node.enter", extra={"data": {"node": "budget_check", "story": str(state.story_id)}})
     if route_budget_check(state) == "exceeded":
+        budget = state.budget
+        breached_ceiling = _determine_breached_ceiling(budget)
+
+        # Record provenance entry (best-effort per Boundary #6)
+        try:
+            checkpoint_dir = (
+                state.project_root / DIR_ARCWRIGHT / DIR_RUNS / str(state.run_id) / DIR_STORIES / str(state.story_id)
+            )
+            provenance_path = checkpoint_dir / VALIDATION_FILENAME
+            entry = ProvenanceEntry(
+                decision="Budget ceiling exceeded \u2014 halting execution",
+                alternatives=["continue (would exceed budget)", "reduce scope"],
+                rationale=(
+                    f"Budget state at halt: "
+                    f"invocation_count={budget.invocation_count}/{budget.max_invocations}, "
+                    f"estimated_cost=${budget.estimated_cost}/{budget.max_cost}, "
+                    f"total_tokens={budget.total_tokens}. "
+                    f"Breached ceiling: {breached_ceiling}"
+                ),
+                ac_references=["FR25", "NFR10", "D2"],
+                timestamp=datetime.now(tz=UTC).isoformat(),
+            )
+            await append_entry(provenance_path, entry)
+        except Exception as exc:
+            logger.warning(
+                "budget_check.provenance_error",
+                extra={"data": {"story": str(state.story_id), "error": str(exc)}},
+            )
+
         updated = state.model_copy(update={"status": TaskState.ESCALATED})
         logger.info(
             "engine.node.exit",
@@ -365,12 +443,40 @@ async def agent_dispatch_node(state: StoryState) -> StoryState:
         )
         return state.model_copy(update={"status": TaskState.ESCALATED, "agent_output": ""})
 
-    # Update budget
+    # Update budget with per-story tracking and pricing-based cost
+    invocation_cost = calculate_invocation_cost(
+        result.tokens_input,
+        result.tokens_output,
+        state.config.model.pricing,
+    )
+    if invocation_cost != result.total_cost:
+        logger.info(
+            "budget.cost_variance",
+            extra={
+                "data": {
+                    "story": str(state.story_id),
+                    "pricing_cost": str(invocation_cost),
+                    "sdk_cost": str(result.total_cost),
+                }
+            },
+        )
+    story_slug = str(state.story_id)
+    existing_story_cost = state.budget.per_story.get(story_slug, StoryCost())
+    new_story_cost = StoryCost(
+        tokens_input=existing_story_cost.tokens_input + result.tokens_input,
+        tokens_output=existing_story_cost.tokens_output + result.tokens_output,
+        cost=existing_story_cost.cost + invocation_cost,
+        invocations=existing_story_cost.invocations + 1,
+    )
+    new_per_story = {**state.budget.per_story, story_slug: new_story_cost}
     new_budget = state.budget.model_copy(
         update={
             "invocation_count": state.budget.invocation_count + 1,
             "total_tokens": state.budget.total_tokens + result.tokens_input + result.tokens_output,
-            "estimated_cost": state.budget.estimated_cost + result.total_cost,
+            "total_tokens_input": state.budget.total_tokens_input + result.tokens_input,
+            "total_tokens_output": state.budget.total_tokens_output + result.tokens_output,
+            "estimated_cost": state.budget.estimated_cost + invocation_cost,
+            "per_story": new_per_story,
         }
     )
 
@@ -1110,13 +1216,20 @@ async def commit_node(state: StoryState) -> StoryState:
 def _derive_halt_reason(state: StoryState) -> str:
     """Derive the halt reason string from the terminal state.
 
+    Inspects ``BudgetState`` to detect budget-caused escalation regardless of
+    whether retry history is present (retries can also push budget over).
+    Falls back to validation-based reasons when budget ceilings are not
+    breached.
+
     Args:
         state: Story execution state in ESCALATED terminal status.
 
     Returns:
-        Halt reason string: "budget_exceeded", "v6_invariant_failure",
-        "max_retries_exhausted", or "validation_failure".
+        Halt reason string: ``"budget_exceeded"``, ``"v6_invariant_failure"``,
+        ``"max_retries_exhausted"``, or ``"validation_failure"``.
     """
+    if _is_budget_exceeded(state.budget):
+        return "budget_exceeded"
     if not state.retry_history:
         return "budget_exceeded"
     last = state.retry_history[-1]
@@ -1165,14 +1278,27 @@ def _build_validation_history_dicts(state: StoryState) -> list[dict[str, Any]]:
 def _derive_suggested_fix(state: StoryState) -> str:
     """Derive a suggested fix message from the terminal state.
 
+    When the halt is budget-related, includes budget consumption details
+    (invocation count, cost, tokens, and which ceiling was breached) to
+    help the operator decide whether to increase limits.
+
     Args:
         state: Story execution state in ESCALATED terminal status.
 
     Returns:
         Human-readable suggested fix string.
     """
-    if not state.retry_history:
-        return "Review the validation failures and address underlying issues."
+    budget = state.budget
+    if _is_budget_exceeded(budget) or not state.retry_history:
+        breached = _determine_breached_ceiling(budget)
+        return (
+            f"Budget ceiling exceeded ({breached}). "
+            f"Budget consumption: "
+            f"invocations={budget.invocation_count}/{budget.max_invocations}, "
+            f"cost=${budget.estimated_cost}/${budget.max_cost}, "
+            f"total_tokens={budget.total_tokens}. "
+            "Consider increasing `limits.cost_per_run` or `limits.tokens_per_story` in pyproject.toml."
+        )
     last = state.retry_history[-1]
     if last.outcome == PipelineOutcome.FAIL_V6:
         return "Fix the V6 invariant rule violations and re-run the story."
