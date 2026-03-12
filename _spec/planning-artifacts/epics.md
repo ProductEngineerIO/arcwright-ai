@@ -5,11 +5,13 @@ inputDocuments:
   - '_spec/planning-artifacts/architecture.md'
 date: 2026-03-02
 author: Ed
-epicCount: 7
-storyCount: 35
-totalPoints: 172
+epicCount: 8
+storyCount: 38
+totalPoints: 186
 frCoverage: '36/36'
 nfrCoverage: '20/20'
+amendedDate: 2026-03-11
+amendedBy: Bob (SM)
 ---
 
 # Arcwright AI - Epic Breakdown
@@ -240,6 +242,12 @@ Developer gets clean git branches per story, worktree lifecycle management, auto
 Developer has full visibility into API spend per story and per run, with budget enforcement that halts before overspending — economics are transparent and controllable.
 **FRs covered:** FR23, FR24, FR25
 **NFRs addressed:** NFR10, NFR12a, NFR12b
+
+### Epic 8: Role-Based Model Registry
+Developer can configure separate LLM models for code generation and code review, enabling adversarial quality patterns where a fast model writes code and a thorough model reviews it — optimizing both speed and cost.
+**Architecture Decision:** D9 (Role-Based Model Registry)
+**FRs covered:** FR22, FR30
+**NFRs addressed:** NFR12a, NFR12b
 
 ## Epic 1: Project Foundation & Configuration
 
@@ -1026,3 +1034,126 @@ So that cost data is always complete and trustworthy.
 **And** `run.yaml` budget section is updated at every state transition (not just at run completion) — crash recovery preserves cost data
 **And** if SDK doesn't report token counts (error scenario), log a warning and estimate from prompt length — never skip tracking, never leave a gap in the cost record
 **And** integration test verifies: 3-story run accumulates correct total across all stories, retry costs are included in both per-story and per-run totals, `run.yaml` reflects final cost accurately, zero invocations missed in tracking
+
+---
+
+## Epic 8: Role-Based Model Registry
+
+> **Value prop**: Developer can configure separate LLM models for code generation and code review, enabling adversarial quality patterns where a fast model writes code and a thorough model reviews it — optimizing both speed and cost.
+
+### Story 8.1: ModelRole Enum, ModelSpec, ModelRegistry & Config Migration
+
+**Priority**: HIGH | **Points**: 5
+**Requirements**: FR22, FR30, D9
+**Dependencies**: Story 1.3 (Configuration System)
+
+**Description:**
+As a developer configuring Arcwright AI,
+I want to assign different models to different pipeline roles (generation vs. review),
+So that I can optimize cost and quality by using a fast model for code generation and a thorough model for code review.
+
+**Acceptance Criteria:**
+
+**Given** `core/types.py` and `core/config.py` as the foundation for model configuration
+**When** the role-based model registry is implemented
+**Then** `ModelRole` is defined as a `StrEnum` in `core/config.py` with values `GENERATE = "generate"` and `REVIEW = "review"`
+**And** `ModelSpec` is a frozen Pydantic model with fields: `version` (str) and `pricing` (ModelPricing, default factory)
+**And** `ModelRegistry` is a frozen Pydantic model with a `roles: dict[str, ModelSpec]` field and a `get(role: ModelRole | str) -> ModelSpec` method that returns the spec for the requested role, falling back to the `generate` role if the requested role is not configured, raising `ConfigError` if no `generate` fallback exists
+**And** `RunConfig.model` (singular, `ModelConfig`) is replaced by `RunConfig.models` (`ModelRegistry`)
+**And** backward-compatible config migration is implemented: if `models` key exists in YAML → use new registry format; if `model` (singular) key exists → auto-migrate to `models.generate` with a `DeprecationWarning`; if neither → use defaults (`generate` role with `claude-sonnet-4-20250514`)
+**And** the config YAML format supports both minimal (just `generate`) and full (`generate` + `review`) configurations:
+```yaml
+# Full config
+models:
+  generate:
+    version: claude-sonnet-4-20250514
+    pricing:
+      input_rate: "3.00"
+      output_rate: "15.00"
+  review:
+    version: claude-opus-4-5
+    pricing:
+      input_rate: "15.00"
+      output_rate: "75.00"
+
+# Minimal config (review falls back to generate)
+models:
+  generate:
+    version: claude-sonnet-4-20250514
+```
+**And** environment variable overrides follow the pattern `ARCWRIGHT_AI_MODEL_{ROLE}_VERSION` and `ARCWRIGHT_AI_MODEL_{ROLE}_PRICING_{FIELD}` (e.g., `ARCWRIGHT_AI_MODEL_GENERATE_VERSION`, `ARCWRIGHT_AI_MODEL_REVIEW_VERSION`, `ARCWRIGHT_AI_MODEL_REVIEW_PRICING_INPUT_RATE`)
+**And** the existing `ARCWRIGHT_MODEL_VERSION` env var is treated as an alias for `ARCWRIGHT_AI_MODEL_GENERATE_VERSION` with a `DeprecationWarning`
+**And** `_KNOWN_SECTION_FIELDS` and `_KNOWN_SUBSECTION_FIELDS` are updated for unknown-key warnings on the new `models` structure
+**And** `core/constants.py` `__all__` is updated with new env var constant names; old `ENV_MODEL_*` constants are retained as deprecated aliases
+**And** unit tests in `tests/test_core/test_config.py` verify: (1) new `models` format loads correctly, (2) old `model` singular key auto-migrates with deprecation warning, (3) missing both keys uses defaults, (4) env var overrides with `ARCWRIGHT_AI_MODEL_{ROLE}_*` pattern, (5) fallback behavior when only `generate` is configured and `review` is requested, (6) `ConfigError` when `generate` role is missing and a role is requested
+**And** all existing tests that construct `RunConfig` are updated to use the new `models` field
+
+**Files touched:**
+- `core/config.py` — `ModelRole`, `ModelSpec`, `ModelRegistry`, `RunConfig`, `_apply_env_overrides()`, `_KNOWN_SECTION_FIELDS`, `_KNOWN_SUBSECTION_FIELDS`, backward-compat migration in `load_config()`
+- `core/constants.py` — New `ENV_MODEL_GENERATE_VERSION`, `ENV_MODEL_REVIEW_VERSION`, etc.; deprecation aliases
+- `core/types.py` — No structural changes; `ModelPricing` stays where it is
+- `tests/test_core/test_config.py` — New test cases + fixture updates
+
+### Story 8.2: Engine Node Wiring — Role-Based Model Resolution
+
+**Priority**: HIGH | **Points**: 5
+**Requirements**: FR22, D9
+**Dependencies**: Story 8.1
+
+**Description:**
+As a system running the execution pipeline,
+I want `agent_dispatch_node` to use the `generate` model role and `validate_node` to use the `review` model role,
+So that code generation and code review use their configured models independently.
+
+**Acceptance Criteria:**
+
+**Given** `ModelRegistry` is available on `state.config.models` (from Story 8.1)
+**When** the engine nodes resolve their model
+**Then** `agent_dispatch_node` in `engine/nodes.py` calls `state.config.models.get(ModelRole.GENERATE)` to obtain the `ModelSpec` and passes `spec.version` to `invoke_agent()` and `spec.pricing` to `calculate_invocation_cost()`
+**And** all 6 existing references to `state.config.model.version` and `state.config.model.pricing` in `agent_dispatch_node` (including error paths and provenance logging) are updated to use `state.config.models.get(ModelRole.GENERATE)`
+**And** `validate_node` in `engine/nodes.py` calls `state.config.models.get(ModelRole.REVIEW)` to obtain the `ModelSpec` and passes `spec.version` to `run_validation_pipeline()`
+**And** `validate_node` uses `spec.pricing` from the `REVIEW` role for cost tracking of validation invocations
+**And** `run_validation_pipeline()` in `validation/pipeline.py` receives the model version as before (no signature change) — the role resolution happens at the node level, not inside the pipeline
+**And** provenance entries that log model version now log both the role name and the resolved model version (e.g., `"model": "claude-sonnet-4-20250514", "role": "generate"`) for traceability
+**And** when only `generate` role is configured (no `review` role), `validate_node` falls back to the `generate` model via `ModelRegistry.get()` — no new fallback logic needed in nodes
+**And** unit tests in `tests/test_engine/test_nodes.py` verify: (1) `agent_dispatch_node` resolves `GENERATE` role, (2) `validate_node` resolves `REVIEW` role, (3) fallback to `generate` when `review` not configured, (4) cost tracking uses correct per-role pricing, (5) provenance entries include role metadata
+**And** all existing node tests that reference `state.config.model` are updated to use `state.config.models`
+
+**Files touched:**
+- `engine/nodes.py` — `agent_dispatch_node` (6 reference updates), `validate_node` (model + pricing references), provenance fields
+- `validation/pipeline.py` — No structural changes; receives model version string as before
+- `tests/test_engine/test_nodes.py` — Updated fixtures + new role-resolution tests
+
+### Story 8.3: Cost Display Per Role & Config Template Update
+
+**Priority**: MEDIUM | **Points**: 4
+**Requirements**: FR24, D9
+**Dependencies**: Story 8.2
+
+**Description:**
+As a developer reviewing run costs,
+I want cost breakdowns split by model role (generation cost vs. review cost),
+So that I can see exactly how much each phase of the pipeline costs and optimize model selection accordingly.
+
+**Acceptance Criteria:**
+
+**Given** cost data accumulated in `BudgetState` with per-invocation tracking and model role metadata
+**When** cost information is displayed in CLI status or run summaries
+**Then** `arcwright-ai status` includes a cost breakdown by role: "Generation cost: $X (N invocations)" and "Review cost: $Y (M invocations)" in addition to the existing total cost display
+**And** run summary (`summary.md`) includes a "Cost by Model Role" section with a table showing role, model version, invocations, tokens (in/out), and cost for each configured role
+**And** the per-story cost table in both status and summary distinguishes between generation and review costs when both are present
+**And** `BudgetState` or `StoryCost` in `core/types.py` is extended with per-role cost tracking fields (e.g., `cost_by_role: dict[str, Decimal]`) to support the breakdown without requiring schema-breaking changes
+**And** the `_serialize_budget()` function in `output/run_manager.py` correctly serializes the new per-role fields to `run.yaml`
+**And** `arcwright-ai init` generates an updated default config template that uses the new `models` format (with `generate` and `review` sections) instead of the old `model` format
+**And** the config template includes inline comments explaining model role configuration and how fallback works
+**And** cost formatting remains human-readable: "$1.17" not "0.00117 USD", "12,450 tokens" not "12450"
+**And** unit tests verify: (1) per-role cost display formatting, (2) summary table generation with role breakdown, (3) backward compat — runs with old single-model data display correctly without role breakdown, (4) config template generates valid YAML with models section
+
+**Files touched:**
+- `core/types.py` — `StoryCost` or `BudgetState` per-role tracking field
+- `output/summary.py` — Role-based cost formatting functions
+- `output/run_manager.py` — `_serialize_budget()` updates for per-role fields
+- `cli/status.py` — Role-based cost display in status output
+- `cli/init.py` — Updated config template with `models` format
+- `tests/test_output/` — Summary and cost display tests
+- `tests/test_cli/` — Status display and init template tests

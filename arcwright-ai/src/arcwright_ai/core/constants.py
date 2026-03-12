@@ -25,8 +25,14 @@ __all__: list[str] = [
     "ENV_LIMITS_TOKENS_PER_STORY",
     "ENV_METHODOLOGY_ARTIFACTS_PATH",
     "ENV_METHODOLOGY_TYPE",
+    "ENV_MODEL_GENERATE_PRICING_INPUT_RATE",
+    "ENV_MODEL_GENERATE_PRICING_OUTPUT_RATE",
+    "ENV_MODEL_GENERATE_VERSION",
     "ENV_MODEL_PRICING_INPUT_RATE",
     "ENV_MODEL_PRICING_OUTPUT_RATE",
+    "ENV_MODEL_REVIEW_PRICING_INPUT_RATE",
+    "ENV_MODEL_REVIEW_PRICING_OUTPUT_RATE",
+    "ENV_MODEL_REVIEW_VERSION",
     "ENV_MODEL_VERSION",
     "ENV_PREFIX",
     "ENV_REPRODUCIBILITY_ENABLED",
@@ -127,23 +133,45 @@ GLOBAL_CONFIG_DIR: str = ".arcwright-ai"
 #
 # Mapping:  ARCWRIGHT_<SECTION>_<FIELD>  →  RunConfig.<section>.<field>
 #
-#   ARCWRIGHT_API_CLAUDE_API_KEY          → api.claude_api_key        (str)
-#   ARCWRIGHT_MODEL_VERSION               → model.version             (str)
-#   ARCWRIGHT_LIMITS_TOKENS_PER_STORY     → limits.tokens_per_story   (int)
-#   ARCWRIGHT_LIMITS_COST_PER_RUN         → limits.cost_per_run       (float)
-#   ARCWRIGHT_LIMITS_RETRY_BUDGET         → limits.retry_budget       (int)
-#   ARCWRIGHT_LIMITS_TIMEOUT_PER_STORY    → limits.timeout_per_story  (int)
-#   ARCWRIGHT_METHODOLOGY_ARTIFACTS_PATH  → methodology.artifacts_path (str)
-#   ARCWRIGHT_METHODOLOGY_TYPE            → methodology.type          (str)
-#   ARCWRIGHT_SCM_BRANCH_TEMPLATE         → scm.branch_template       (str)
-#   ARCWRIGHT_REPRODUCIBILITY_ENABLED     → reproducibility.enabled   (bool)
-#   ARCWRIGHT_REPRODUCIBILITY_RETENTION   → reproducibility.retention (int)
+#   ARCWRIGHT_API_CLAUDE_API_KEY                    → api.claude_api_key                       (str)
+#   ARCWRIGHT_AI_MODEL_GENERATE_VERSION             → models.roles["generate"].version         (str)
+#   ARCWRIGHT_AI_MODEL_REVIEW_VERSION               → models.roles["review"].version           (str)
+#   ARCWRIGHT_AI_MODEL_GENERATE_PRICING_INPUT_RATE  → models.roles["generate"].pricing.input_rate  (Decimal)
+#   ARCWRIGHT_AI_MODEL_GENERATE_PRICING_OUTPUT_RATE → models.roles["generate"].pricing.output_rate (Decimal)
+#   ARCWRIGHT_AI_MODEL_REVIEW_PRICING_INPUT_RATE    → models.roles["review"].pricing.input_rate    (Decimal)
+#   ARCWRIGHT_AI_MODEL_REVIEW_PRICING_OUTPUT_RATE   → models.roles["review"].pricing.output_rate   (Decimal)
+#   ARCWRIGHT_LIMITS_TOKENS_PER_STORY               → limits.tokens_per_story                  (int)
+#   ARCWRIGHT_LIMITS_COST_PER_RUN                   → limits.cost_per_run                      (float)
+#   ARCWRIGHT_LIMITS_RETRY_BUDGET                   → limits.retry_budget                      (int)
+#   ARCWRIGHT_LIMITS_TIMEOUT_PER_STORY              → limits.timeout_per_story                 (int)
+#   ARCWRIGHT_METHODOLOGY_ARTIFACTS_PATH            → methodology.artifacts_path               (str)
+#   ARCWRIGHT_METHODOLOGY_TYPE                      → methodology.type                         (str)
+#   ARCWRIGHT_SCM_BRANCH_TEMPLATE                   → scm.branch_template                      (str)
+#   ARCWRIGHT_REPRODUCIBILITY_ENABLED               → reproducibility.enabled                  (bool)
+#   ARCWRIGHT_REPRODUCIBILITY_RETENTION             → reproducibility.retention                (int)
+#
+# Deprecated aliases (will be removed in a future version):
+#   ARCWRIGHT_MODEL_VERSION               → alias for ARCWRIGHT_AI_MODEL_GENERATE_VERSION
+#   ARCWRIGHT_MODEL_PRICING_INPUT_RATE    → alias for ARCWRIGHT_AI_MODEL_GENERATE_PRICING_INPUT_RATE
+#   ARCWRIGHT_MODEL_PRICING_OUTPUT_RATE   → alias for ARCWRIGHT_AI_MODEL_GENERATE_PRICING_OUTPUT_RATE
 
 ENV_PREFIX: str = "ARCWRIGHT_"
 ENV_API_CLAUDE_API_KEY: str = "ARCWRIGHT_API_CLAUDE_API_KEY"
-ENV_MODEL_VERSION: str = "ARCWRIGHT_MODEL_VERSION"
-ENV_MODEL_PRICING_INPUT_RATE: str = "ARCWRIGHT_MODEL_PRICING_INPUT_RATE"
-ENV_MODEL_PRICING_OUTPUT_RATE: str = "ARCWRIGHT_MODEL_PRICING_OUTPUT_RATE"
+
+# Role-based model env vars (preferred pattern: ARCWRIGHT_AI_MODEL_{ROLE}_{FIELD})
+ENV_MODEL_GENERATE_VERSION: str = "ARCWRIGHT_AI_MODEL_GENERATE_VERSION"
+ENV_MODEL_REVIEW_VERSION: str = "ARCWRIGHT_AI_MODEL_REVIEW_VERSION"
+ENV_MODEL_GENERATE_PRICING_INPUT_RATE: str = "ARCWRIGHT_AI_MODEL_GENERATE_PRICING_INPUT_RATE"
+ENV_MODEL_GENERATE_PRICING_OUTPUT_RATE: str = "ARCWRIGHT_AI_MODEL_GENERATE_PRICING_OUTPUT_RATE"
+ENV_MODEL_REVIEW_PRICING_INPUT_RATE: str = "ARCWRIGHT_AI_MODEL_REVIEW_PRICING_INPUT_RATE"
+ENV_MODEL_REVIEW_PRICING_OUTPUT_RATE: str = "ARCWRIGHT_AI_MODEL_REVIEW_PRICING_OUTPUT_RATE"
+
+# Deprecated aliases — retained for backward compatibility; will be removed in a future version.
+# Use ENV_MODEL_GENERATE_VERSION / ENV_MODEL_GENERATE_PRICING_* instead.
+ENV_MODEL_VERSION: str = "ARCWRIGHT_MODEL_VERSION"  # deprecated alias for ARCWRIGHT_AI_MODEL_GENERATE_VERSION
+ENV_MODEL_PRICING_INPUT_RATE: str = "ARCWRIGHT_MODEL_PRICING_INPUT_RATE"  # deprecated alias
+ENV_MODEL_PRICING_OUTPUT_RATE: str = "ARCWRIGHT_MODEL_PRICING_OUTPUT_RATE"  # deprecated alias
+
 ENV_LIMITS_TOKENS_PER_STORY: str = "ARCWRIGHT_LIMITS_TOKENS_PER_STORY"
 ENV_LIMITS_COST_PER_RUN: str = "ARCWRIGHT_LIMITS_COST_PER_RUN"
 ENV_LIMITS_RETRY_BUDGET: str = "ARCWRIGHT_LIMITS_RETRY_BUDGET"

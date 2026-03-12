@@ -5,10 +5,11 @@ from __future__ import annotations
 import os
 import warnings
 from decimal import Decimal
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from pydantic import ConfigDict, Field
+from pydantic import ConfigDict, Field, model_validator
 from pydantic import ValidationError as PydanticValidationError
 
 from arcwright_ai.core.constants import (
@@ -21,8 +22,14 @@ from arcwright_ai.core.constants import (
     ENV_LIMITS_TOKENS_PER_STORY,
     ENV_METHODOLOGY_ARTIFACTS_PATH,
     ENV_METHODOLOGY_TYPE,
+    ENV_MODEL_GENERATE_PRICING_INPUT_RATE,
+    ENV_MODEL_GENERATE_PRICING_OUTPUT_RATE,
+    ENV_MODEL_GENERATE_VERSION,
     ENV_MODEL_PRICING_INPUT_RATE,
     ENV_MODEL_PRICING_OUTPUT_RATE,
+    ENV_MODEL_REVIEW_PRICING_INPUT_RATE,
+    ENV_MODEL_REVIEW_PRICING_OUTPUT_RATE,
+    ENV_MODEL_REVIEW_VERSION,
     ENV_MODEL_VERSION,
     ENV_REPRODUCIBILITY_ENABLED,
     ENV_REPRODUCIBILITY_RETENTION,
@@ -39,6 +46,9 @@ __all__: list[str] = [
     "MethodologyConfig",
     "ModelConfig",
     "ModelPricing",
+    "ModelRegistry",
+    "ModelRole",
+    "ModelSpec",
     "ReproducibilityConfig",
     "RunConfig",
     "ScmConfig",
@@ -79,8 +89,89 @@ class ModelPricing(ArcwrightModel):
     output_rate: Decimal = Decimal("75.00")
 
 
+class ModelRole(StrEnum):
+    """Enumeration of model roles within the pipeline.
+
+    Attributes:
+        GENERATE: Model used for code generation (agent invocation).
+        REVIEW: Model used for reflexion-based validation review.
+    """
+
+    GENERATE = "generate"
+    REVIEW = "review"
+
+
+class ModelSpec(ArcwrightModel):
+    """Per-role model specification.
+
+    Attributes:
+        version: Claude model version identifier.
+        pricing: Per-model token pricing.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="ignore", str_strip_whitespace=True)
+
+    version: str = "claude-sonnet-4-20250514"
+    pricing: ModelPricing = Field(default_factory=ModelPricing)
+
+
+class ModelRegistry(ArcwrightModel):
+    """Registry mapping pipeline roles to model specifications.
+
+    Attributes:
+        roles: Mapping from role name to model specification.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="ignore", str_strip_whitespace=True)
+
+    roles: dict[str, ModelSpec]
+
+    @model_validator(mode="after")
+    def _require_generate_role(self) -> ModelRegistry:
+        """Validate that at least a 'generate' role is configured.
+
+        Returns:
+            Self after validation.
+
+        Raises:
+            ValueError: If roles is empty or missing the 'generate' role.
+        """
+        if not self.roles or ModelRole.GENERATE.value not in self.roles:
+            raise ValueError("ModelRegistry requires at least a 'generate' role")
+        return self
+
+    def get(self, role: ModelRole | str) -> ModelSpec:
+        """Return the ModelSpec for the requested role with generate fallback.
+
+        Args:
+            role: The pipeline role to look up.
+
+        Returns:
+            ModelSpec for the role, or the generate fallback if not configured.
+
+        Raises:
+            ConfigError: If the role is not found and no 'generate' fallback exists.
+        """
+        from arcwright_ai.core.exceptions import ConfigError
+
+        key = role.value if isinstance(role, ModelRole) else role
+        if key in self.roles:
+            return self.roles[key]
+        generate_key = ModelRole.GENERATE.value
+        if generate_key in self.roles:
+            return self.roles[generate_key]
+        raise ConfigError(
+            f"No model configured for role '{key}' and no 'generate' fallback",
+            details={"role": key, "available_roles": list(self.roles.keys())},
+        )
+
+
 class ModelConfig(ArcwrightModel):
     """Model selection and pricing configuration.
+
+    Deprecated:
+        Use :class:`ModelSpec` and :class:`ModelRegistry` via ``RunConfig.models``.
+        Retained for backward-compatibility migration logic only.
 
     Attributes:
         version: Claude model version identifier.
@@ -161,7 +252,7 @@ class RunConfig(ArcwrightModel):
 
     Attributes:
         api: API credentials.
-        model: Model selection.
+        models: Role-based model registry (generate and optional review roles).
         limits: Resource limits.
         methodology: BMAD methodology settings.
         scm: Source control settings.
@@ -171,22 +262,45 @@ class RunConfig(ArcwrightModel):
     model_config = ConfigDict(frozen=True, extra="ignore", str_strip_whitespace=True)
 
     api: ApiConfig
-    model: ModelConfig = Field(default_factory=ModelConfig)
+    models: ModelRegistry = Field(
+        default_factory=lambda: ModelRegistry(roles={"generate": ModelSpec(version="claude-sonnet-4-20250514")})
+    )
     limits: LimitsConfig = Field(default_factory=LimitsConfig)
     methodology: MethodologyConfig = Field(default_factory=MethodologyConfig)
     scm: ScmConfig = Field(default_factory=ScmConfig)
     reproducibility: ReproducibilityConfig = Field(default_factory=ReproducibilityConfig)
+
+    @property
+    def model(self) -> ModelSpec:
+        """Backward-compatible accessor returning the generate-role ModelSpec.
+
+        Deprecated:
+            Use ``models.get(ModelRole.GENERATE)`` instead.  This property will
+            be removed in Story 8.2 when engine nodes are updated.
+
+        Returns:
+            ModelSpec for the ``GENERATE`` role.
+        """
+        warnings.warn(
+            "RunConfig.model is deprecated. Use RunConfig.models.get(ModelRole.GENERATE) instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.models.get(ModelRole.GENERATE)
 
 
 # ---------------------------------------------------------------------------
 # Known-key sets for unknown-key detection (populated after class definitions)
 # ---------------------------------------------------------------------------
 
-_KNOWN_TOP_LEVEL: frozenset[str] = frozenset(RunConfig.model_fields.keys())
+# Include the legacy "model" key so old YAML doesn't trigger an unknown-key warning
+# before the migration block in load_config() has run.
+_KNOWN_TOP_LEVEL: frozenset[str] = frozenset(RunConfig.model_fields.keys()) | frozenset({"model"})
 
 _KNOWN_SECTION_FIELDS: dict[str, frozenset[str]] = {
     "api": frozenset(ApiConfig.model_fields.keys()),
-    "model": frozenset(ModelConfig.model_fields.keys()),
+    "model": frozenset(ModelConfig.model_fields.keys()),  # legacy; mapped by migration
+    "models": frozenset({"roles", ModelRole.GENERATE.value, ModelRole.REVIEW.value}),
     "limits": frozenset(LimitsConfig.model_fields.keys()),
     "methodology": frozenset(MethodologyConfig.model_fields.keys()),
     "scm": frozenset(ScmConfig.model_fields.keys()),
@@ -197,6 +311,10 @@ _KNOWN_SECTION_FIELDS: dict[str, frozenset[str]] = {
 _KNOWN_SUBSECTION_FIELDS: dict[str, dict[str, frozenset[str]]] = {
     "model": {
         "pricing": frozenset(ModelPricing.model_fields.keys()),
+    },
+    "models": {
+        ModelRole.GENERATE.value: frozenset(ModelSpec.model_fields.keys()),
+        ModelRole.REVIEW.value: frozenset(ModelSpec.model_fields.keys()),
     },
 }
 
@@ -221,6 +339,35 @@ def _warn_unknown_keys_recursive(data: dict[str, Any]) -> None:
                 section_name=key,
                 known_keys=set(_KNOWN_SECTION_FIELDS[key]),
             )
+            # Handle models.{role}.{field} nesting
+            if key == "models":
+                models_data = data[key]
+                role_section_name = "models"
+                role_map = models_data
+
+                # Support wrapped form: models.roles.{role} (accepted by Pydantic)
+                if isinstance(models_data.get("roles"), dict):
+                    role_section_name = "models.roles"
+                    role_map = models_data["roles"]
+
+                for role_key, role_data in role_map.items():
+                    if isinstance(role_data, dict):
+                        role_known = _KNOWN_SUBSECTION_FIELDS.get("models", {}).get(
+                            role_key, frozenset(ModelSpec.model_fields.keys())
+                        )
+                        _warn_unknown_keys(
+                            role_data,
+                            section_name=f"{role_section_name}.{role_key}",
+                            known_keys=set(role_known),
+                        )
+
+                        pricing_data = role_data.get("pricing")
+                        if isinstance(pricing_data, dict):
+                            _warn_unknown_keys(
+                                pricing_data,
+                                section_name=f"{role_section_name}.{role_key}.pricing",
+                                known_keys=set(ModelPricing.model_fields.keys()),
+                            )
 
 
 def _warn_unknown_keys(data: dict[str, Any], section_name: str, known_keys: set[str]) -> None:
@@ -423,7 +570,6 @@ def _apply_env_overrides(merged: dict[str, Any]) -> None:
         merged: Accumulated config dict to apply overrides to.
     """
     _env_set_str(merged, "api", "claude_api_key", ENV_API_CLAUDE_API_KEY)
-    _env_set_str(merged, "model", "version", ENV_MODEL_VERSION)
     _env_set_int(merged, "limits", "tokens_per_story", ENV_LIMITS_TOKENS_PER_STORY)
     _env_set_float(merged, "limits", "cost_per_run", ENV_LIMITS_COST_PER_RUN)
     _env_set_int(merged, "limits", "retry_budget", ENV_LIMITS_RETRY_BUDGET)
@@ -434,9 +580,78 @@ def _apply_env_overrides(merged: dict[str, Any]) -> None:
     _env_set_bool(merged, "reproducibility", "enabled", ENV_REPRODUCIBILITY_ENABLED)
     _env_set_int(merged, "reproducibility", "retention", ENV_REPRODUCIBILITY_RETENTION)
 
-    # Nested: model.pricing
-    _env_set_decimal(merged, "model", "pricing", "input_rate", ENV_MODEL_PRICING_INPUT_RATE)
-    _env_set_decimal(merged, "model", "pricing", "output_rate", ENV_MODEL_PRICING_OUTPUT_RATE)
+    # Role-based model env var overrides (new pattern: ARCWRIGHT_AI_MODEL_{ROLE}_{FIELD})
+    _role_version_env: list[tuple[str, str]] = [
+        (ModelRole.GENERATE.value, ENV_MODEL_GENERATE_VERSION),
+        (ModelRole.REVIEW.value, ENV_MODEL_REVIEW_VERSION),
+    ]
+    for role, env_var in _role_version_env:
+        raw = os.environ.get(env_var)
+        if raw is not None:
+            (merged.setdefault("models", {}).setdefault("roles", {}).setdefault(role, {}))["version"] = raw
+
+    _role_pricing_env: list[tuple[str, str, str]] = [
+        (ModelRole.GENERATE.value, ENV_MODEL_GENERATE_PRICING_INPUT_RATE, "input_rate"),
+        (ModelRole.GENERATE.value, ENV_MODEL_GENERATE_PRICING_OUTPUT_RATE, "output_rate"),
+        (ModelRole.REVIEW.value, ENV_MODEL_REVIEW_PRICING_INPUT_RATE, "input_rate"),
+        (ModelRole.REVIEW.value, ENV_MODEL_REVIEW_PRICING_OUTPUT_RATE, "output_rate"),
+    ]
+    for role, env_var, field in _role_pricing_env:
+        raw = os.environ.get(env_var)
+        if raw is not None:
+            try:
+                Decimal(raw)  # validate parseable
+            except Exception as err:
+                raise ConfigError(
+                    f"Invalid type for models.{role}.pricing.{field}: expected decimal, got str {raw!r}",
+                    details={"env_var": env_var, "value": raw},
+                ) from err
+            (merged.setdefault("models", {}).setdefault("roles", {}).setdefault(role, {}).setdefault("pricing", {}))[
+                field
+            ] = raw
+
+    # Legacy env var alias: ARCWRIGHT_MODEL_VERSION → generate.version
+    # Applied only when the new ARCWRIGHT_AI_MODEL_GENERATE_VERSION is NOT also set.
+    legacy_version = os.environ.get(ENV_MODEL_VERSION)
+    if legacy_version is not None and os.environ.get(ENV_MODEL_GENERATE_VERSION) is None:
+        warnings.warn(
+            "Environment variable 'ARCWRIGHT_MODEL_VERSION' is deprecated. "
+            "Use 'ARCWRIGHT_AI_MODEL_GENERATE_VERSION' instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        (merged.setdefault("models", {}).setdefault("roles", {}).setdefault(ModelRole.GENERATE.value, {}))[
+            "version"
+        ] = legacy_version
+
+    # Legacy pricing env var aliases → generate role
+    # Applied only when the new-style env var for the same field is NOT also set.
+    _legacy_pricing_env: list[tuple[str, str, str]] = [
+        (ENV_MODEL_PRICING_INPUT_RATE, ENV_MODEL_GENERATE_PRICING_INPUT_RATE, "input_rate"),
+        (ENV_MODEL_PRICING_OUTPUT_RATE, ENV_MODEL_GENERATE_PRICING_OUTPUT_RATE, "output_rate"),
+    ]
+    for legacy_var, new_var, field in _legacy_pricing_env:
+        legacy_raw = os.environ.get(legacy_var)
+        if legacy_raw is not None and os.environ.get(new_var) is None:
+            try:
+                Decimal(legacy_raw)  # validate parseable
+            except Exception as err:
+                raise ConfigError(
+                    f"Invalid type for models.generate.pricing.{field}: expected decimal, got str {legacy_raw!r}",
+                    details={"env_var": legacy_var, "value": legacy_raw},
+                ) from err
+            (
+                merged.setdefault("models", {})
+                .setdefault("roles", {})
+                .setdefault(ModelRole.GENERATE.value, {})
+                .setdefault("pricing", {})
+            )[field] = legacy_raw
+
+    # Guard: if env vars partially populated models.roles, ensure the generate role
+    # entry exists (even if empty) so that ModelRegistry validation passes.  The
+    # ModelSpec default version covers the empty-dict case.
+    if "models" in merged and "roles" in merged.get("models", {}):
+        merged["models"]["roles"].setdefault(ModelRole.GENERATE.value, {})
 
 
 def _translate_pydantic_error(exc: PydanticValidationError) -> None:
@@ -504,7 +719,8 @@ def load_config(project_root: Path | None = None) -> RunConfig:
     1. Built-in defaults (Pydantic field defaults)
     2. Global config: ``~/.arcwright-ai/config.yaml``
     3. Project config: ``<project_root>/.arcwright-ai/config.yaml``
-    4. Environment variables: ``ARCWRIGHT_*``
+    4. Backward-compatible migration (``model:`` → ``models.generate``)
+    5. Environment variables: ``ARCWRIGHT_*``
 
     Args:
         project_root: Optional path to the project root.  When provided, the
@@ -535,10 +751,33 @@ def load_config(project_root: Path | None = None) -> RunConfig:
             _warn_unknown_keys_recursive(project_data)
             merged = _deep_merge(merged, project_data)
 
-    # Tier 3: env var overrides
+    # Tier 3: backward-compatible model config migration
+    # Must run after deep merge and before env overrides so that env vars can
+    # target the migrated models.roles.{role}.* structure.
+    if "models" in merged:
+        models_data = merged["models"]
+        if isinstance(models_data, dict) and "roles" not in models_data:
+            # Flat YAML format { generate: {...}, review: {...} } → wrap in "roles"
+            merged["models"] = {"roles": models_data}
+    elif "model" in merged:
+        # Old singular "model:" key → migrate to models.generate with deprecation warning.
+        # Preserve whatever version was configured (or fall back to the old ModelConfig
+        # default of "claude-opus-4-5" if version was absent) so existing users are not
+        # silently downgraded.
+        model_data: dict[str, Any] = dict(merged.pop("model"))
+        if "version" not in model_data:
+            model_data["version"] = ModelConfig().version
+        warnings.warn(
+            "Config key 'model' is deprecated. Replace with 'models: { generate: ... }' in your config",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        merged["models"] = {"roles": {"generate": model_data}}
+
+    # Tier 4: env var overrides
     _apply_env_overrides(merged)
 
-    # Tier 4: Pydantic validation
+    # Tier 5: Pydantic validation
     try:
         return RunConfig.model_validate(merged)
     except PydanticValidationError as exc:
