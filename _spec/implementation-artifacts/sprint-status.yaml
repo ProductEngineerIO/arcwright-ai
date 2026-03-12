@@ -107,6 +107,6 @@ development_status:
   # Epic 8: Role-Based Model Registry (3 stories, 14 pts)
   epic-8: in-progress
   8-1-modelrole-enum-modelspec-modelregistry-and-config-migration: done
-  8-2-engine-node-wiring-role-based-model-resolution: backlog
+  8-2-engine-node-wiring-role-based-model-resolution: done
   8-3-cost-display-per-role-and-config-template-update: backlog
   epic-8-retrospective: optional
