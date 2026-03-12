@@ -270,24 +270,6 @@ class RunConfig(ArcwrightModel):
     scm: ScmConfig = Field(default_factory=ScmConfig)
     reproducibility: ReproducibilityConfig = Field(default_factory=ReproducibilityConfig)
 
-    @property
-    def model(self) -> ModelSpec:
-        """Backward-compatible accessor returning the generate-role ModelSpec.
-
-        Deprecated:
-            Use ``models.get(ModelRole.GENERATE)`` instead.  This property will
-            be removed in Story 8.2 when engine nodes are updated.
-
-        Returns:
-            ModelSpec for the ``GENERATE`` role.
-        """
-        warnings.warn(
-            "RunConfig.model is deprecated. Use RunConfig.models.get(ModelRole.GENERATE) instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.models.get(ModelRole.GENERATE)
-
 
 # ---------------------------------------------------------------------------
 # Known-key sets for unknown-key detection (populated after class definitions)

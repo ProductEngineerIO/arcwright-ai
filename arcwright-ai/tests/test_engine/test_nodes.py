@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from arcwright_ai.agent.invoker import InvocationResult
-from arcwright_ai.core.config import ApiConfig, LimitsConfig, RunConfig
+from arcwright_ai.core.config import ApiConfig, LimitsConfig, ModelRole, RunConfig
 from arcwright_ai.core.constants import (
     AGENT_OUTPUT_FILENAME,
     BRANCH_PREFIX,
@@ -917,7 +917,7 @@ async def test_agent_dispatch_node_updates_budget(
     expected_cost = calculate_invocation_cost(
         mock_invoke_result.tokens_input,
         mock_invoke_result.tokens_output,
-        dispatch_ready_state.config.model.pricing,
+        dispatch_ready_state.config.models.get(ModelRole.GENERATE).pricing,
     )
     assert result.budget.estimated_cost == expected_cost
 
@@ -943,7 +943,7 @@ async def test_agent_dispatch_node_updates_per_story_and_token_breakdown(
     expected_cost = calculate_invocation_cost(
         mock_invoke_result.tokens_input,
         mock_invoke_result.tokens_output,
-        dispatch_ready_state.config.model.pricing,
+        dispatch_ready_state.config.models.get(ModelRole.GENERATE).pricing,
     )
     assert sc.cost == expected_cost
 
@@ -1058,7 +1058,7 @@ async def test_agent_dispatch_node_calls_append_entry_with_provenance_entry(
     # Second positional arg is the ProvenanceEntry
     entry = call_args[0][1]
     assert str(dispatch_ready_state.story_id) in entry.decision
-    assert dispatch_ready_state.config.model.version in entry.alternatives
+    assert dispatch_ready_state.config.models.get(ModelRole.GENERATE).version in entry.alternatives
     assert "Prompt length:" in entry.rationale
     assert "retry_count:" in entry.rationale
     assert entry.timestamp != ""
@@ -1131,6 +1131,165 @@ async def test_validate_node_provenance_failure_does_not_raise(
 
     result = await validate_node(validate_ready_state)
     assert result.status == TaskState.SUCCESS
+
+
+# ---------------------------------------------------------------------------
+# Story 8.2: Role-based model resolution tests (AC: #15a-f)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_agent_dispatch_node_resolves_generate_role(
+    dispatch_ready_state: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """agent_dispatch_node passes GENERATE role model version to invoke_agent (AC: #15a)."""
+    from decimal import Decimal
+
+    captured_kwargs: dict[str, object] = {}
+
+    async def _capture_invoke(*args: object, **kwargs: object) -> InvocationResult:
+        captured_kwargs.update(kwargs)
+        return InvocationResult(
+            output_text="output",
+            tokens_input=100,
+            tokens_output=50,
+            total_cost=Decimal("0.001"),
+            duration_ms=100,
+            session_id="s-1",
+            num_turns=1,
+            is_error=False,
+        )
+
+    monkeypatch.setattr("arcwright_ai.engine.nodes.invoke_agent", _capture_invoke)
+    await agent_dispatch_node(dispatch_ready_state)
+
+    expected_version = dispatch_ready_state.config.models.get(ModelRole.GENERATE).version
+    assert captured_kwargs.get("model") == expected_version
+
+
+@pytest.mark.asyncio
+async def test_validate_node_resolves_review_role(
+    validate_ready_state: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """validate_node passes REVIEW role model version to run_validation_pipeline (AC: #15b)."""
+    captured_kwargs: dict[str, object] = {}
+
+    async def _capture_pipeline(*args: object, **kwargs: object) -> PipelineResult:
+        captured_kwargs.update(kwargs)
+        return _make_pass_result()
+
+    monkeypatch.setattr("arcwright_ai.engine.nodes.run_validation_pipeline", _capture_pipeline)
+    await validate_node(validate_ready_state)
+
+    expected_version = validate_ready_state.config.models.get(ModelRole.REVIEW).version
+    assert captured_kwargs.get("model") == expected_version
+
+
+@pytest.mark.asyncio
+async def test_validate_node_falls_back_to_generate_when_no_review(
+    validate_ready_state: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """validate_node falls back to GENERATE model when REVIEW is not configured (AC: #15c, Boundary #1).
+
+    make_run_config() creates a generate-only config, so ModelRegistry.get(REVIEW)
+    falls back to the generate model version.
+    """
+    captured_kwargs: dict[str, object] = {}
+
+    async def _capture_pipeline(*args: object, **kwargs: object) -> PipelineResult:
+        captured_kwargs.update(kwargs)
+        return _make_pass_result()
+
+    monkeypatch.setattr("arcwright_ai.engine.nodes.run_validation_pipeline", _capture_pipeline)
+    await validate_node(validate_ready_state)
+
+    generate_version = validate_ready_state.config.models.get(ModelRole.GENERATE).version
+    assert captured_kwargs.get("model") == generate_version
+
+
+@pytest.mark.asyncio
+async def test_agent_dispatch_cost_uses_generate_role_pricing(
+    dispatch_ready_state: StoryState,
+    mock_invoke_result: InvocationResult,
+) -> None:
+    """agent_dispatch_node uses GENERATE role pricing for cost calculation (AC: #15d)."""
+    from arcwright_ai.core.types import calculate_invocation_cost
+
+    result = await agent_dispatch_node(dispatch_ready_state)
+
+    gen_pricing = dispatch_ready_state.config.models.get(ModelRole.GENERATE).pricing
+    expected_cost = calculate_invocation_cost(
+        mock_invoke_result.tokens_input,
+        mock_invoke_result.tokens_output,
+        gen_pricing,
+    )
+    assert result.budget.estimated_cost == expected_cost
+
+
+@pytest.mark.asyncio
+async def test_agent_dispatch_provenance_includes_role(
+    dispatch_ready_state: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """agent_dispatch_node provenance entry includes role info in rationale (AC: #15e)."""
+    mock_append = AsyncMock()
+    monkeypatch.setattr("arcwright_ai.engine.nodes.append_entry", mock_append)
+
+    await agent_dispatch_node(dispatch_ready_state)
+
+    assert mock_append.call_count == 1
+    entry = mock_append.call_args[0][1]
+    assert "generate" in entry.rationale
+    gen_version = dispatch_ready_state.config.models.get(ModelRole.GENERATE).version
+    assert gen_version in entry.alternatives
+
+
+@pytest.mark.asyncio
+async def test_validate_node_with_dual_model_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """validate_node uses REVIEW model version (not GENERATE) with dual-role config (AC: #15f).
+
+    When both generate and review are configured with distinct versions,
+    validate_node must pass the review model version to run_validation_pipeline.
+    """
+    from arcwright_ai.core.config import ModelRegistry, ModelSpec
+
+    dual_config = RunConfig(
+        api=ApiConfig(claude_api_key="test-key"),
+        models=ModelRegistry(
+            roles={
+                "generate": ModelSpec(version="claude-sonnet-4-20250514"),
+                "review": ModelSpec(version="claude-opus-4-5"),
+            }
+        ),
+    )
+    state = StoryState(
+        story_id=StoryId("8-2-dual-model"),
+        epic_id=EpicId("epic-8"),
+        run_id=RunId("20260312-120000-abc1"),
+        story_path=tmp_path / "_spec" / "8-2.md",
+        project_root=tmp_path,
+        status=TaskState.VALIDATING,
+        agent_output="Mock output",
+        config=dual_config,
+    )
+
+    captured_kwargs: dict[str, object] = {}
+
+    async def _capture_pipeline(*args: object, **kwargs: object) -> PipelineResult:
+        captured_kwargs.update(kwargs)
+        return _make_pass_result()
+
+    monkeypatch.setattr("arcwright_ai.engine.nodes.run_validation_pipeline", _capture_pipeline)
+    await validate_node(state)
+
+    assert captured_kwargs.get("model") == "claude-opus-4-5"
+    assert captured_kwargs.get("model") != "claude-sonnet-4-20250514"
 
 
 # ---------------------------------------------------------------------------
@@ -2137,7 +2296,7 @@ async def test_agent_dispatch_node_persists_budget_to_run_yaml(
     expected_cost = calculate_invocation_cost(
         mock_invoke_result.tokens_input,
         mock_invoke_result.tokens_output,
-        dispatch_ready_state.config.model.pricing,
+        dispatch_ready_state.config.models.get(ModelRole.GENERATE).pricing,
     )
     assert persisted.estimated_cost == expected_cost
     assert persisted.total_tokens_input == mock_invoke_result.tokens_input
@@ -2458,7 +2617,8 @@ async def test_integration_three_story_run_accumulates_total_cost(
 
     # Verify total cost
     expected_cost = sum(
-        calculate_invocation_cost(i, o, run_with_yaml.config.model.pricing) for i, o in per_story_tokens
+        calculate_invocation_cost(i, o, run_with_yaml.config.models.get(ModelRole.GENERATE).pricing)
+        for i, o in per_story_tokens
     )
     assert final_budget.estimated_cost == expected_cost
 

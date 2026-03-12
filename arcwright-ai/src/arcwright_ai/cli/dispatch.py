@@ -18,7 +18,7 @@ from arcwright_ai.cli.resume import (
     _reconstruct_budget_from_dict,
     _show_resume_confirmation,
 )
-from arcwright_ai.core.config import RunConfig, load_config
+from arcwright_ai.core.config import ModelRole, RunConfig, load_config
 from arcwright_ai.core.constants import (
     DIR_ARCWRIGHT,
     EXIT_AGENT,
@@ -409,7 +409,7 @@ async def _dispatch_story_async(story_spec: str) -> int:
 
         typer.echo(f"▶ Dispatching story {story_id}...", err=True)
         typer.echo(f"  Run: {run_id}", err=True)
-        typer.echo(f"  🤖 Agent invoked ({config.model.version})", err=True)
+        typer.echo(f"  🤖 Agent invoked ({config.models.get(ModelRole.GENERATE).version})", err=True)
 
         initial_state = StoryState(
             story_id=story_id,

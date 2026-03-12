@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import ConfigDict
 from pydantic import ValidationError as PydanticValidationError
 
+from arcwright_ai.core.config import ModelRole
 from arcwright_ai.core.constants import (
     DIR_ARCWRIGHT,
     DIR_RUNS,
@@ -185,12 +186,14 @@ def _build_config_snapshot(config: RunConfig) -> dict[str, Any]:
         config: Fully-loaded ``RunConfig`` instance.
 
     Returns:
-        Flat dict with keys: ``model_version``, ``tokens_per_story``,
-        ``cost_per_run``, ``retry_budget``, ``timeout_per_story``,
-        ``methodology_type``, ``artifacts_path``, ``branch_template``.
+        Flat dict with keys: ``model_version``, ``review_model_version``,
+        ``tokens_per_story``, ``cost_per_run``, ``retry_budget``,
+        ``timeout_per_story``, ``methodology_type``, ``artifacts_path``,
+        ``branch_template``.
     """
     return {
-        "model_version": config.model.version,
+        "model_version": config.models.get(ModelRole.GENERATE).version,
+        "review_model_version": config.models.get(ModelRole.REVIEW).version,
         "tokens_per_story": config.limits.tokens_per_story,
         "cost_per_run": config.limits.cost_per_run,
         "retry_budget": config.limits.retry_budget,

@@ -13,6 +13,7 @@ from arcwright_ai.agent.invoker import invoke_agent
 from arcwright_ai.agent.prompt import build_prompt
 from arcwright_ai.agent.sandbox import validate_path
 from arcwright_ai.context.injector import build_context_bundle, serialize_bundle_to_markdown
+from arcwright_ai.core.config import ModelRole
 from arcwright_ai.core.constants import (
     AGENT_OUTPUT_FILENAME,
     BRANCH_PREFIX,
@@ -412,6 +413,7 @@ async def agent_dispatch_node(state: StoryState) -> StoryState:
     if state.context_bundle is None:
         raise ContextError("agent_dispatch_node requires context_bundle from preflight")
 
+    gen_spec = state.config.models.get(ModelRole.GENERATE)
     feedback = state.validation_result.feedback if state.validation_result is not None else None
     prompt = build_prompt(state.context_bundle, feedback=feedback)
     logger.info(
@@ -419,7 +421,8 @@ async def agent_dispatch_node(state: StoryState) -> StoryState:
         extra={
             "data": {
                 "story": str(state.story_id),
-                "model": state.config.model.version,
+                "model": gen_spec.version,
+                "role": "generate",
                 "prompt_length": len(prompt),
                 "retry_count": state.retry_count,
                 "has_feedback": feedback is not None,
@@ -443,7 +446,7 @@ async def agent_dispatch_node(state: StoryState) -> StoryState:
     try:
         result = await invoke_agent(
             prompt,
-            model=state.config.model.version,
+            model=gen_spec.version,
             cwd=agent_cwd,
             sandbox=validate_path,
         )
@@ -484,7 +487,7 @@ async def agent_dispatch_node(state: StoryState) -> StoryState:
         is_estimated = sdk_tokens_input == 0 and sdk_tokens_output == 0
         tokens_input = sdk_tokens_input if not is_estimated else len(prompt) // 4  # ~4 chars/token heuristic
         tokens_output = sdk_tokens_output if not is_estimated else 0
-        cost_estimate = calculate_invocation_cost(tokens_input, tokens_output, state.config.model.pricing)
+        cost_estimate = calculate_invocation_cost(tokens_input, tokens_output, gen_spec.pricing)
         error_story_slug = str(state.story_id)
         existing_error_story_cost = state.budget.per_story.get(error_story_slug, StoryCost())
         new_error_story_cost = StoryCost(
@@ -567,7 +570,7 @@ async def agent_dispatch_node(state: StoryState) -> StoryState:
     invocation_cost = calculate_invocation_cost(
         result.tokens_input,
         result.tokens_output,
-        state.config.model.pricing,
+        gen_spec.pricing,
     )
     if invocation_cost != result.total_cost:
         logger.info(
@@ -614,10 +617,10 @@ async def agent_dispatch_node(state: StoryState) -> StoryState:
             refs = re.findall(r"(?:FR|NFR)-?\d+", state.context_bundle.domain_requirements)
         provenance_entry = ProvenanceEntry(
             decision=f"Agent invoked for story {state.story_id} (attempt {state.retry_count + 1})",
-            alternatives=[state.config.model.version],
+            alternatives=[gen_spec.version],
             rationale=(
                 f"Prompt length: {len(prompt)} chars, retry_count: {state.retry_count},"
-                f" has_feedback: {feedback is not None}"
+                f" has_feedback: {feedback is not None}, role: generate"
             ),
             ac_references=refs,
             timestamp=datetime.now(tz=UTC).isoformat(),
@@ -853,12 +856,13 @@ async def validate_node(state: StoryState) -> StoryState:
         )
         return state
 
+    review_spec = state.config.models.get(ModelRole.REVIEW)
     try:
         pipeline_result = await run_validation_pipeline(
             agent_output=state.agent_output,
             story_path=state.story_path,
             project_root=state.project_root,
-            model=state.config.model.version,
+            model=review_spec.version,
             cwd=state.worktree_path or state.project_root,
             sandbox=validate_path,
             attempt_number=state.retry_count + 1,
@@ -960,8 +964,8 @@ async def validate_node(state: StoryState) -> StoryState:
 
         validation_provenance_entry = ProvenanceEntry(
             decision=f"Validation attempt {attempt_number}: {outcome_str}",
-            alternatives=[],
-            rationale=rationale,
+            alternatives=[review_spec.version],
+            rationale=f"{rationale}, model: {review_spec.version} (role: review)",
             ac_references=failed_acs,
             timestamp=datetime.now(tz=UTC).isoformat(),
         )
