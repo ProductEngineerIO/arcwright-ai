@@ -37,6 +37,7 @@ __all__: list[str] = [
     "commit_story",
     "create_branch",
     "delete_branch",
+    "delete_remote_branch",
     "list_branches",
     "push_branch",
 ]
@@ -351,6 +352,83 @@ async def push_branch(
                 "branch": branch_name,
                 "remote": remote,
                 "project_root": str(project_root),
+            }
+        },
+    )
+    return True
+
+
+# ---------------------------------------------------------------------------
+# delete_remote_branch
+# ---------------------------------------------------------------------------
+
+
+async def delete_remote_branch(
+    branch_name: str,
+    *,
+    project_root: Path,
+    remote: str = "origin",
+) -> bool:
+    """Delete a branch from a remote repository (best-effort).
+
+    Calls ``git push <remote> --delete <branch_name>`` to remove the remote
+    tracking branch.  This is used during stale worktree cleanup to prevent
+    non-fast-forward rejections when a fresh branch is later pushed to the
+    same remote ref.
+
+    Best-effort: :class:`~arcwright_ai.core.exceptions.ScmError` is caught,
+    logged as a warning, and not re-raised.  This mirrors the push_branch
+    contract — remote failures never halt execution.
+
+    Args:
+        branch_name: Full branch name to delete (e.g. ``arcwright/my-story``).
+        project_root: Absolute path to the root of the git repository.
+        remote: Remote name.  Defaults to ``"origin"``.
+
+    Returns:
+        ``True`` when the remote branch was deleted (or did not exist),
+        ``False`` when the deletion failed.
+    """
+    try:
+        await git("push", remote, "--delete", branch_name, cwd=project_root)
+    except ScmError as exc:
+        # "remote ref does not exist" means the branch is already gone — success.
+        stderr = ""
+        if exc.details and "stderr" in exc.details:
+            stderr = str(exc.details["stderr"]).lower()
+        if "remote ref does not exist" in stderr or "unable to delete" in stderr:
+            logger.info(
+                "git.remote_branch.delete",
+                extra={
+                    "data": {
+                        "branch": branch_name,
+                        "remote": remote,
+                        "already_absent": True,
+                    }
+                },
+            )
+            return True
+
+        logger.warning(
+            "git.remote_branch.delete.error",
+            extra={
+                "data": {
+                    "branch": branch_name,
+                    "remote": remote,
+                    "project_root": str(project_root),
+                    "error": exc.message,
+                    "details": exc.details,
+                }
+            },
+        )
+        return False
+
+    logger.info(
+        "git.remote_branch.delete",
+        extra={
+            "data": {
+                "branch": branch_name,
+                "remote": remote,
             }
         },
     )

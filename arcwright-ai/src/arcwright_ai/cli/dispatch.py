@@ -438,9 +438,7 @@ async def _dispatch_story_async(story_spec: str) -> int:
         typer.echo(f"  📁 Run: {run_dir}", err=True)
 
         # Transition run status based on terminal story status
-        terminal_run_status = (
-            RunStatusValue.COMPLETED if exit_code == EXIT_SUCCESS else RunStatusValue.HALTED
-        )
+        terminal_run_status = RunStatusValue.COMPLETED if exit_code == EXIT_SUCCESS else RunStatusValue.HALTED
         try:
             await update_run_status(
                 project_root,

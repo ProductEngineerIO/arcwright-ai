@@ -18,6 +18,7 @@ from arcwright_ai.scm.branch import (
     commit_story,
     create_branch,
     delete_branch,
+    delete_remote_branch,
     list_branches,
     push_branch,
 )
@@ -573,3 +574,87 @@ async def test_push_branch_logs_structured_event_on_success(
         await push_branch(_BRANCH, project_root=tmp_path)
 
     assert any("git.push" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# delete_remote_branch tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_delete_remote_branch_calls_git_push_delete(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """delete_remote_branch calls git push --delete with correct args."""
+    mock_git = AsyncMock(return_value=_ok())
+    monkeypatch.setattr("arcwright_ai.scm.branch.git", mock_git)
+
+    result = await delete_remote_branch(_BRANCH, project_root=tmp_path)
+
+    mock_git.assert_called_once_with("push", "origin", "--delete", _BRANCH, cwd=tmp_path)
+    assert result is True
+
+
+@pytest.mark.asyncio
+async def test_delete_remote_branch_uses_custom_remote(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """delete_remote_branch passes the remote argument to git."""
+    mock_git = AsyncMock(return_value=_ok())
+    monkeypatch.setattr("arcwright_ai.scm.branch.git", mock_git)
+
+    result = await delete_remote_branch(_BRANCH, project_root=tmp_path, remote="upstream")
+
+    mock_git.assert_called_once_with("push", "upstream", "--delete", _BRANCH, cwd=tmp_path)
+    assert result is True
+
+
+@pytest.mark.asyncio
+async def test_delete_remote_branch_returns_true_when_already_absent(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """delete_remote_branch returns True when remote branch does not exist."""
+    mock_git = AsyncMock(
+        side_effect=ScmError(
+            "push failed",
+            details={"stderr": "error: unable to delete 'arcwright/my-story': remote ref does not exist"},
+        )
+    )
+    monkeypatch.setattr("arcwright_ai.scm.branch.git", mock_git)
+
+    result = await delete_remote_branch(_BRANCH, project_root=tmp_path)
+
+    assert result is True
+
+
+@pytest.mark.asyncio
+async def test_delete_remote_branch_returns_false_on_network_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """delete_remote_branch swallows ScmError for non-trivial failures and returns False."""
+    mock_git = AsyncMock(side_effect=ScmError("network timeout", details={"stderr": "fatal: network error"}))
+    monkeypatch.setattr("arcwright_ai.scm.branch.git", mock_git)
+
+    result = await delete_remote_branch(_BRANCH, project_root=tmp_path)
+
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_delete_remote_branch_logs_warning_on_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    """delete_remote_branch logs git.remote_branch.delete.error at WARNING on failure."""
+    mock_git = AsyncMock(side_effect=ScmError("network timeout", details={"stderr": "fatal: network error"}))
+    monkeypatch.setattr("arcwright_ai.scm.branch.git", mock_git)
+
+    with caplog.at_level(logging.WARNING, logger="arcwright_ai.scm.branch"):
+        await delete_remote_branch(_BRANCH, project_root=tmp_path)
+
+    assert any("git.remote_branch.delete.error" in r.message for r in caplog.records)

@@ -79,6 +79,7 @@ def _mock_output_functions(monkeypatch: pytest.MonkeyPatch) -> None:
         AsyncMock(return_value=Path("/project/.arcwright-ai/worktrees/2-1-state-models")),
     )
     monkeypatch.setattr("arcwright_ai.engine.nodes.remove_worktree", AsyncMock())
+    monkeypatch.setattr("arcwright_ai.engine.nodes.delete_remote_branch", AsyncMock(return_value=True))
     monkeypatch.setattr("arcwright_ai.engine.nodes.commit_story", AsyncMock(return_value="abc1234"))
     # Story 6.7: push/PR mocks (non-fatal operations — default to success)
     monkeypatch.setattr("arcwright_ai.engine.nodes.push_branch", AsyncMock())
@@ -1676,8 +1677,10 @@ async def test_preflight_node_removes_stale_worktree_and_retries(
         return expected_path
 
     mock_remove = AsyncMock()
+    mock_delete_remote = AsyncMock(return_value=True)
     monkeypatch.setattr("arcwright_ai.engine.nodes.create_worktree", _create_worktree)
     monkeypatch.setattr("arcwright_ai.engine.nodes.remove_worktree", mock_remove)
+    monkeypatch.setattr("arcwright_ai.engine.nodes.delete_remote_branch", mock_delete_remote)
 
     result = await preflight_node(story_state_with_project)
 
@@ -1690,6 +1693,8 @@ async def test_preflight_node_removes_stale_worktree_and_retries(
         delete_branch=True,
         force=True,
     )
+    # Verify remote branch is also cleaned up to prevent non-fast-forward rejections
+    mock_delete_remote.assert_awaited_once()
 
 
 def test_route_budget_check_returns_exceeded_when_state_already_escalated(make_story_state: StoryState) -> None:
