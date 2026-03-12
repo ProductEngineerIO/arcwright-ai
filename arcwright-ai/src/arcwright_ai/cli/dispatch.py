@@ -437,6 +437,24 @@ async def _dispatch_story_async(story_spec: str) -> int:
             typer.echo(f"  💰 Cost: ${budget.estimated_cost} | Tokens: {budget.total_tokens}", err=True)
         typer.echo(f"  📁 Run: {run_dir}", err=True)
 
+        # Transition run status based on terminal story status
+        terminal_run_status = (
+            RunStatusValue.COMPLETED if exit_code == EXIT_SUCCESS else RunStatusValue.HALTED
+        )
+        try:
+            await update_run_status(
+                project_root,
+                str(run_id),
+                status=terminal_run_status,
+                last_completed_story=str(story_id) if exit_code == EXIT_SUCCESS else None,
+                budget=budget,
+            )
+        except Exception:
+            logger.warning(
+                "run_manager.write_error",
+                extra={"data": {"operation": "update_run_status", "status": terminal_run_status.value}},
+            )
+
         if exit_code != EXIT_SUCCESS:
             if final_status == TaskState.ESCALATED and budget is not None and _is_budget_exceeded(budget):
                 details = _build_budget_error_details(budget)

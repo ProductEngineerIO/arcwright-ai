@@ -22,6 +22,7 @@ from arcwright_ai.core.constants import (
     DIR_RUNS,
     DIR_STORIES,
     HALT_REPORT_FILENAME,
+    STORY_COPY_FILENAME,
     VALIDATION_FILENAME,
 )
 from arcwright_ai.core.exceptions import ContextError, ScmError, ValidationError
@@ -215,6 +216,22 @@ async def preflight_node(state: StoryState) -> StoryState:
     # Build checkpoint path and write
     serialised = serialize_bundle_to_markdown(bundle)
     await write_text_async(checkpoint_dir / CONTEXT_BUNDLE_FILENAME, serialised)
+
+    # Copy the original story file into the run directory for provenance
+    # (used by scm/pr.py to extract ACs when generating the PR body).
+    try:
+        story_content = await asyncio.to_thread(state.story_path.read_text, encoding="utf-8")
+        await write_text_async(checkpoint_dir / STORY_COPY_FILENAME, story_content)
+    except Exception as copy_exc:
+        logger.warning(
+            "preflight.story_copy_failed",
+            extra={
+                "data": {
+                    "story": str(state.story_id),
+                    "error": str(copy_exc),
+                }
+            },
+        )
 
     # Transition: PREFLIGHT → RUNNING
     updated = state.model_copy(

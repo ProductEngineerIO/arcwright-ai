@@ -313,9 +313,13 @@ def test_dispatch_story_end_to_end_with_mock_sdk(
     run_yamls = list(tmp_path.glob(".arcwright-ai/runs/*/run.yaml"))
     assert len(run_yamls) == 1, "Expected run.yaml to be created by single-story dispatch"
     run_data = yaml.safe_load(run_yamls[0].read_text(encoding="utf-8"))
-    assert run_data["status"] in ("running", "queued", "completed"), (
-        f"Unexpected run status in run.yaml: {run_data['status']}"
+    assert run_data["status"] == "completed", (
+        f"Expected run status 'completed' after successful single-story dispatch, got: {run_data['status']}"
     )
+
+    # Verify story.md copy written (guards against missing story copy regression)
+    story_copies = list(tmp_path.glob(".arcwright-ai/runs/*/stories/*/story.md"))
+    assert len(story_copies) == 1, "Expected exactly one story.md copy in run directory"
 
     # No run_manager write errors should appear in the log
     write_error_events = [e for e in entries if e.get("event") == "run_manager.write_error"]

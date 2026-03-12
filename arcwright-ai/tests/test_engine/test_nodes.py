@@ -19,6 +19,7 @@ from arcwright_ai.core.constants import (
     DIR_RUNS,
     DIR_STORIES,
     HALT_REPORT_FILENAME,
+    STORY_COPY_FILENAME,
     VALIDATION_FILENAME,
 )
 from arcwright_ai.core.exceptions import (
@@ -755,6 +756,27 @@ async def test_preflight_node_writes_checkpoint_file(
     )
     assert checkpoint_file.exists()
     assert "# Context Bundle" in checkpoint_file.read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_preflight_node_copies_story_file(
+    story_state_with_project: StoryState,
+) -> None:
+    """Story file is copied into the run checkpoint directory for provenance."""
+    await preflight_node(story_state_with_project)
+
+    story_copy = (
+        story_state_with_project.project_root
+        / DIR_ARCWRIGHT
+        / DIR_RUNS
+        / str(story_state_with_project.run_id)
+        / DIR_STORIES
+        / str(story_state_with_project.story_id)
+        / STORY_COPY_FILENAME
+    )
+    assert story_copy.exists(), "story.md should be copied into checkpoint directory"
+    original = story_state_with_project.story_path.read_text(encoding="utf-8")
+    assert story_copy.read_text(encoding="utf-8") == original
 
 
 @pytest.mark.asyncio
