@@ -342,6 +342,53 @@ async def budget_check_node(state: StoryState) -> StoryState:
     return state
 
 
+def _extract_sdk_usage_from_error(exc: Exception) -> tuple[int, int]:
+    """Extract token usage from an SDK error object when available.
+
+    Attempts multiple known shapes for usage metadata:
+    - ``exc.details["usage"]`` (AgentError wrapping)
+    - ``exc.usage``
+    - ``exc.result_message.usage``
+
+    Returns:
+        Tuple of ``(tokens_input, tokens_output)``. Missing values default to 0.
+    """
+
+    def _to_int(value: Any) -> int:
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            return 0
+
+    usage_candidates: list[Any] = []
+
+    details = getattr(exc, "details", None)
+    if isinstance(details, dict):
+        usage_candidates.append(details.get("usage"))
+        usage_candidates.append(
+            {
+                "input_tokens": details.get("tokens_input", 0),
+                "output_tokens": details.get("tokens_output", 0),
+            }
+        )
+
+    usage_candidates.append(getattr(exc, "usage", None))
+
+    result_message = getattr(exc, "result_message", None)
+    if result_message is not None:
+        usage_candidates.append(getattr(result_message, "usage", None))
+
+    for usage in usage_candidates:
+        if not isinstance(usage, dict):
+            continue
+        tokens_input = _to_int(usage.get("input_tokens", 0))
+        tokens_output = _to_int(usage.get("output_tokens", 0))
+        if tokens_input > 0 or tokens_output > 0:
+            return (tokens_input, tokens_output)
+
+    return (0, 0)
+
+
 async def agent_dispatch_node(state: StoryState) -> StoryState:
     """Agent dispatch node — invokes Claude Code SDK with assembled context.
 
@@ -431,6 +478,79 @@ async def agent_dispatch_node(state: StoryState) -> StoryState:
         )
         halt_report = _generate_halt_report(state, synthetic_pipeline, state.retry_history, reason="agent_sdk_error")
         await write_text_async(checkpoint_dir / HALT_REPORT_FILENAME, halt_report)
+        # Track token consumption for budget integrity on SDK error paths.
+        # Prefer SDK-reported usage when available; estimate only as fallback.
+        sdk_tokens_input, sdk_tokens_output = _extract_sdk_usage_from_error(exc)
+        is_estimated = sdk_tokens_input == 0 and sdk_tokens_output == 0
+        tokens_input = sdk_tokens_input if not is_estimated else len(prompt) // 4  # ~4 chars/token heuristic
+        tokens_output = sdk_tokens_output if not is_estimated else 0
+        cost_estimate = calculate_invocation_cost(tokens_input, tokens_output, state.config.model.pricing)
+        error_story_slug = str(state.story_id)
+        existing_error_story_cost = state.budget.per_story.get(error_story_slug, StoryCost())
+        new_error_story_cost = StoryCost(
+            tokens_input=existing_error_story_cost.tokens_input + tokens_input,
+            tokens_output=existing_error_story_cost.tokens_output + tokens_output,
+            cost=existing_error_story_cost.cost + cost_estimate,
+            invocations=existing_error_story_cost.invocations + 1,
+        )
+        new_per_story_error = {**state.budget.per_story, error_story_slug: new_error_story_cost}
+        new_budget_error = state.budget.model_copy(
+            update={
+                "invocation_count": state.budget.invocation_count + 1,
+                "total_tokens": state.budget.total_tokens + tokens_input + tokens_output,
+                "total_tokens_input": state.budget.total_tokens_input + tokens_input,
+                "total_tokens_output": state.budget.total_tokens_output + tokens_output,
+                "estimated_cost": state.budget.estimated_cost + cost_estimate,
+                "per_story": new_per_story_error,
+            }
+        )
+        if is_estimated:
+            logger.warning(
+                "budget.estimated_from_prompt",
+                extra={
+                    "data": {
+                        "story": str(state.story_id),
+                        "estimated": True,
+                        "estimated_input": tokens_input,
+                        "estimated_output": tokens_output,
+                        "estimated_cost": str(cost_estimate),
+                        "reason": "sdk_error",
+                    }
+                },
+            )
+        else:
+            logger.info(
+                "budget.sdk_error_usage_fallback",
+                extra={
+                    "data": {
+                        "story": str(state.story_id),
+                        "estimated": False,
+                        "tokens_input": tokens_input,
+                        "tokens_output": tokens_output,
+                        "estimated_cost": str(cost_estimate),
+                        "reason": "sdk_error_partial_usage",
+                    }
+                },
+            )
+        # Persist budget to run.yaml (best-effort per Boundary #1)
+        try:
+            await update_run_status(
+                state.project_root,
+                str(state.run_id),
+                budget=new_budget_error,
+            )
+        except Exception as persist_exc:
+            logger.warning(
+                "run_manager.write_error",
+                extra={
+                    "data": {
+                        "node": "agent_dispatch",
+                        "story": str(state.story_id),
+                        "operation": "persist_budget_post_dispatch_error",
+                        "error": str(persist_exc),
+                    }
+                },
+            )
         logger.info(
             "engine.node.exit",
             extra={
@@ -441,7 +561,7 @@ async def agent_dispatch_node(state: StoryState) -> StoryState:
                 }
             },
         )
-        return state.model_copy(update={"status": TaskState.ESCALATED, "agent_output": ""})
+        return state.model_copy(update={"status": TaskState.ESCALATED, "agent_output": "", "budget": new_budget_error})
 
     # Update budget with per-story tracking and pricing-based cost
     invocation_cost = calculate_invocation_cost(
@@ -511,6 +631,26 @@ async def agent_dispatch_node(state: StoryState) -> StoryState:
                 "data": {
                     "node": "agent_dispatch",
                     "story": str(state.story_id),
+                    "error": str(exc),
+                }
+            },
+        )
+
+    # Persist budget to run.yaml (best-effort per Boundary #1)
+    try:
+        await update_run_status(
+            state.project_root,
+            str(state.run_id),
+            budget=new_budget,
+        )
+    except Exception as exc:
+        logger.warning(
+            "run_manager.write_error",
+            extra={
+                "data": {
+                    "node": "agent_dispatch",
+                    "story": str(state.story_id),
+                    "operation": "persist_budget_post_dispatch",
                     "error": str(exc),
                 }
             },
@@ -755,6 +895,26 @@ async def validate_node(state: StoryState) -> StoryState:
             "estimated_cost": state.budget.estimated_cost + pipeline_result.cost,
         }
     )
+
+    # Persist budget to run.yaml (best-effort per Boundary #1)
+    try:
+        await update_run_status(
+            state.project_root,
+            str(state.run_id),
+            budget=new_budget,
+        )
+    except Exception as exc:
+        logger.warning(
+            "run_manager.write_error",
+            extra={
+                "data": {
+                    "node": "validate",
+                    "story": str(state.story_id),
+                    "operation": "persist_budget_post_validation",
+                    "error": str(exc),
+                }
+            },
+        )
 
     # Accumulate retry history
     new_retry_history = [*state.retry_history, pipeline_result]
@@ -1348,6 +1508,26 @@ async def finalize_node(state: StoryState) -> StoryState:
                 suggested_fix=suggested_fix,
                 worktree_path=str(state.worktree_path) if state.worktree_path is not None else None,
             )
+
+            # Persist budget to run.yaml on ESCALATED (best-effort per Boundary #1)
+            try:
+                await update_run_status(
+                    project_root,
+                    run_id,
+                    budget=state.budget,
+                )
+            except Exception as persist_exc:
+                logger.warning(
+                    "run_manager.write_error",
+                    extra={
+                        "data": {
+                            "node": "finalize",
+                            "story": story_slug,
+                            "operation": "persist_budget_on_halt",
+                            "error": str(persist_exc),
+                        }
+                    },
+                )
 
             # Preserve worktree on ESCALATED — do NOT remove (AC: #4)
             if state.worktree_path is not None:

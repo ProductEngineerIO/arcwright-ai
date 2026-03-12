@@ -2105,3 +2105,566 @@ def test_agent_budget_error_carries_details() -> None:
     assert err.details is not None
     assert err.details["breached_ceiling"] == "invocation_ceiling"
     assert err.details["invocation_count"] == 5
+
+
+# ---------------------------------------------------------------------------
+# Story 7.4: Budget persistence unit tests (AC: #10a-#10f, #10k, #10l)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_agent_dispatch_node_persists_budget_to_run_yaml(
+    dispatch_ready_state: StoryState,
+    mock_invoke_result: InvocationResult,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """agent_dispatch_node calls update_run_status with updated budget after success (AC: #10a)."""
+    from arcwright_ai.core.types import calculate_invocation_cost
+
+    captured: list[BudgetState] = []
+
+    async def _capture(project_root: object, run_id: object, **kwargs: object) -> None:
+        if "budget" in kwargs:
+            captured.append(kwargs["budget"])  # type: ignore[arg-type]
+
+    monkeypatch.setattr("arcwright_ai.engine.nodes.update_run_status", _capture)
+    result = await agent_dispatch_node(dispatch_ready_state)
+
+    assert result.status == TaskState.VALIDATING
+    assert len(captured) == 1, "update_run_status should be called once with budget"
+    persisted = captured[0]
+    assert persisted.invocation_count == 1
+    expected_cost = calculate_invocation_cost(
+        mock_invoke_result.tokens_input,
+        mock_invoke_result.tokens_output,
+        dispatch_ready_state.config.model.pricing,
+    )
+    assert persisted.estimated_cost == expected_cost
+    assert persisted.total_tokens_input == mock_invoke_result.tokens_input
+    assert persisted.total_tokens_output == mock_invoke_result.tokens_output
+
+
+@pytest.mark.asyncio
+async def test_agent_dispatch_node_persists_budget_on_sdk_error(
+    dispatch_ready_state: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """agent_dispatch_node calls update_run_status with estimated budget after SDK failure (AC: #10b)."""
+    captured: list[BudgetState] = []
+
+    async def _raise_agent_error(*args: object, **kwargs: object) -> InvocationResult:
+        raise AgentError("SDK connection failed")
+
+    async def _capture(project_root: object, run_id: object, **kwargs: object) -> None:
+        if "budget" in kwargs:
+            captured.append(kwargs["budget"])  # type: ignore[arg-type]
+
+    monkeypatch.setattr("arcwright_ai.engine.nodes.invoke_agent", _raise_agent_error)
+    monkeypatch.setattr("arcwright_ai.engine.nodes.update_run_status", _capture)
+
+    result = await agent_dispatch_node(dispatch_ready_state)
+
+    assert result.status == TaskState.ESCALATED
+    assert len(captured) == 1, "update_run_status should be called once on SDK error path"
+    persisted = captured[0]
+    # Estimated: must have non-zero input tokens from prompt estimation
+    assert persisted.invocation_count == 1
+    assert persisted.total_tokens_input > 0  # estimated from prompt length
+    assert persisted.total_tokens_output == 0  # no output on error
+
+
+@pytest.mark.asyncio
+async def test_agent_dispatch_node_sdk_error_estimates_tokens_from_prompt(
+    dispatch_ready_state: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SDK error path estimates input tokens as len(prompt) // 4 (AC: #10c)."""
+    from arcwright_ai.agent.prompt import build_prompt
+
+    async def _raise(*args: object, **kwargs: object) -> InvocationResult:
+        raise AgentError("SDK crashed")
+
+    monkeypatch.setattr("arcwright_ai.engine.nodes.invoke_agent", _raise)
+
+    # Compute the expected prompt length the same way agent_dispatch_node does
+    assert dispatch_ready_state.context_bundle is not None
+    prompt = build_prompt(dispatch_ready_state.context_bundle, feedback=None)
+    expected_estimated_input = len(prompt) // 4
+
+    result = await agent_dispatch_node(dispatch_ready_state)
+
+    assert result.status == TaskState.ESCALATED
+    assert result.budget.total_tokens_input == expected_estimated_input
+
+
+@pytest.mark.asyncio
+async def test_agent_dispatch_node_sdk_error_logs_estimation_warning(
+    dispatch_ready_state: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """SDK error path emits budget.estimated_from_prompt warning (AC: #10d)."""
+
+    async def _raise(*args: object, **kwargs: object) -> InvocationResult:
+        raise AgentError("SDK crashed")
+
+    monkeypatch.setattr("arcwright_ai.engine.nodes.invoke_agent", _raise)
+
+    with caplog.at_level(logging.WARNING):
+        await agent_dispatch_node(dispatch_ready_state)
+
+    estimation_records = [r for r in caplog.records if r.message == "budget.estimated_from_prompt"]
+    assert estimation_records, "Expected budget.estimated_from_prompt warning"
+    assert estimation_records[0].data["estimated"] is True
+
+
+@pytest.mark.asyncio
+async def test_agent_dispatch_node_sdk_error_prefers_partial_usage_over_estimate(
+    dispatch_ready_state: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SDK error path uses partial SDK usage tokens when provided (Boundary #5)."""
+
+    async def _raise_with_partial_usage(*args: object, **kwargs: object) -> InvocationResult:
+        raise AgentError(
+            "SDK crashed after partial usage",
+            details={"usage": {"input_tokens": 123, "output_tokens": 0}},
+        )
+
+    monkeypatch.setattr("arcwright_ai.engine.nodes.invoke_agent", _raise_with_partial_usage)
+    result = await agent_dispatch_node(dispatch_ready_state)
+
+    assert result.status == TaskState.ESCALATED
+    assert result.budget.total_tokens_input == 123
+    assert result.budget.total_tokens_output == 0
+
+
+@pytest.mark.asyncio
+async def test_validate_node_persists_budget_to_run_yaml(
+    validate_ready_state: StoryState,
+    mock_pipeline_pass: PipelineResult,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """validate_node calls update_run_status with updated budget after validation (AC: #10e)."""
+    captured: list[BudgetState] = []
+
+    async def _capture(project_root: object, run_id: object, **kwargs: object) -> None:
+        if "budget" in kwargs:
+            captured.append(kwargs["budget"])  # type: ignore[arg-type]
+
+    monkeypatch.setattr("arcwright_ai.engine.nodes.update_run_status", _capture)
+
+    result = await validate_node(validate_ready_state)
+
+    assert result.status == TaskState.SUCCESS
+    assert len(captured) >= 1, "update_run_status should be called with budget"
+    persisted = captured[0]
+    assert persisted.total_tokens == mock_pipeline_pass.tokens_used
+    assert persisted.estimated_cost == mock_pipeline_pass.cost
+
+
+@pytest.mark.asyncio
+async def test_finalize_node_persists_budget_on_escalated(
+    make_story_state: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """finalize_node calls update_run_status with budget on ESCALATED path (AC: #10f)."""
+    from arcwright_ai.core.types import StoryCost
+
+    captured_budgets: list[BudgetState] = []
+
+    async def _capture(project_root: object, run_id: object, **kwargs: object) -> None:
+        if "budget" in kwargs:
+            captured_budgets.append(kwargs["budget"])  # type: ignore[arg-type]
+
+    monkeypatch.setattr("arcwright_ai.engine.nodes.update_run_status", _capture)
+
+    story_slug = str(make_story_state.story_id)
+    expected_budget = BudgetState(
+        invocation_count=2,
+        total_tokens=1500,
+        estimated_cost=Decimal("0.03"),
+        per_story={story_slug: StoryCost(tokens_input=800, tokens_output=700, cost=Decimal("0.03"), invocations=2)},
+    )
+    escalated_state = make_story_state.model_copy(
+        update={
+            "status": TaskState.ESCALATED,
+            "agent_output": "partial output",
+            "budget": expected_budget,
+        }
+    )
+
+    result = await finalize_node(escalated_state)
+
+    assert result.status == TaskState.ESCALATED
+    assert any(b.invocation_count == 2 for b in captured_budgets), (
+        "update_run_status should be called with the escalated budget"
+    )
+
+
+@pytest.mark.asyncio
+async def test_agent_dispatch_run_yaml_write_failure_does_not_halt(
+    dispatch_ready_state: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """run.yaml write failure in agent_dispatch_node does not halt execution (Boundary #1, AC: #10g)."""
+    call_count = 0
+
+    async def _raise_on_budget(*args: object, **kwargs: object) -> None:
+        nonlocal call_count
+        call_count += 1
+        if "budget" in kwargs:
+            raise OSError("disk full")
+
+    monkeypatch.setattr("arcwright_ai.engine.nodes.update_run_status", _raise_on_budget)
+
+    result = await agent_dispatch_node(dispatch_ready_state)
+
+    # Node must complete normally despite persistence failure
+    assert result.status == TaskState.VALIDATING
+    assert call_count >= 1
+
+
+@pytest.mark.asyncio
+async def test_validate_node_run_yaml_write_failure_does_not_halt(
+    validate_ready_state: StoryState,
+    mock_pipeline_pass: PipelineResult,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """run.yaml write failure in validate_node does not halt execution (Boundary #1, AC: #10l)."""
+    call_count = 0
+
+    async def _raise_on_budget(*args: object, **kwargs: object) -> None:
+        nonlocal call_count
+        call_count += 1
+        if "budget" in kwargs:
+            raise OSError("disk full")
+
+    monkeypatch.setattr("arcwright_ai.engine.nodes.update_run_status", _raise_on_budget)
+
+    result = await validate_node(validate_ready_state)
+
+    assert result.status == TaskState.SUCCESS
+    assert call_count >= 1
+
+
+# ---------------------------------------------------------------------------
+# Story 7.4: Integration tests - multi-story cost accumulation (AC: #10g-#10j)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def run_with_yaml(
+    story_state_with_project: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> StoryState:
+    """Set up a real run.yaml and restore the real update_run_status for integration tests."""
+    from arcwright_ai.output.run_manager import create_run
+    from arcwright_ai.output.run_manager import update_run_status as real_update_run_status
+
+    story_slug = str(story_state_with_project.story_id)
+    await create_run(
+        story_state_with_project.project_root,
+        story_state_with_project.run_id,
+        story_state_with_project.config,
+        [story_slug],
+    )
+    monkeypatch.setattr("arcwright_ai.engine.nodes.update_run_status", real_update_run_status)
+    return story_state_with_project
+
+
+def _state_from_graph_result(result: StoryState | dict[str, object], template: StoryState) -> StoryState:
+    """Normalize LangGraph invoke results to StoryState for assertions."""
+    if isinstance(result, StoryState):
+        return result
+    return template.model_copy(update=result)
+
+
+@pytest.mark.asyncio
+async def test_integration_three_story_run_accumulates_total_cost(
+    run_with_yaml: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """3 sequential stories through full graph accumulate correct totals (AC: #10g)."""
+    from arcwright_ai.core.types import calculate_invocation_cost
+    from arcwright_ai.engine.graph import build_story_graph
+
+    graph = build_story_graph()
+
+    per_story_tokens = [
+        (100, 50),  # story 1: input=100, output=50
+        (200, 80),  # story 2: input=200, output=80
+        (150, 60),  # story 3: input=150, output=60
+    ]
+
+    # Keep validation cost neutral for this accumulation assertion.
+    v6 = V6ValidationResult(passed=True, results=[V6CheckResult(check_name="file_existence", passed=True)])
+
+    async def _mock_pipeline_pass(*args: object, **kwargs: object) -> PipelineResult:
+        return PipelineResult(
+            passed=True,
+            outcome=PipelineOutcome.PASS,
+            v6_result=v6,
+            tokens_used=0,
+            cost=Decimal("0"),
+        )
+
+    monkeypatch.setattr("arcwright_ai.engine.nodes.run_validation_pipeline", _mock_pipeline_pass)
+
+    current_budget = run_with_yaml.budget
+    for i, (inp, out) in enumerate(per_story_tokens):
+        story_slug = f"story-{i + 1}"
+
+        async def _mock_invoke(
+            *args: object,
+            _inp: int = inp,
+            _out: int = out,
+            _slug: str = story_slug,
+            **kwargs: object,
+        ) -> InvocationResult:
+            return InvocationResult(
+                output_text="done",
+                tokens_input=_inp,
+                tokens_output=_out,
+                total_cost=Decimal("0.001"),
+                duration_ms=100,
+                session_id=f"s-{_slug}",
+                num_turns=1,
+                is_error=False,
+            )
+
+        monkeypatch.setattr("arcwright_ai.engine.nodes.invoke_agent", _mock_invoke)
+        initial_state = run_with_yaml.model_copy(
+            update={
+                "story_id": story_slug,
+                "budget": current_budget,
+                "status": TaskState.QUEUED,
+                "retry_count": 0,
+                "validation_result": None,
+                "retry_history": [],
+                "agent_output": None,
+                "worktree_path": None,
+            }
+        )
+        graph_result = await graph.ainvoke(initial_state)
+        completed_state = _state_from_graph_result(graph_result, initial_state)
+        current_budget = completed_state.budget
+
+    final_budget = current_budget
+    assert final_budget.invocation_count == 3
+    # Verify total tokens: sum of all inputs + outputs
+    expected_total = sum(i + o for i, o in per_story_tokens)
+    assert final_budget.total_tokens == expected_total
+
+    # Verify total cost
+    expected_cost = sum(
+        calculate_invocation_cost(i, o, run_with_yaml.config.model.pricing) for i, o in per_story_tokens
+    )
+    assert final_budget.estimated_cost == expected_cost
+
+
+@pytest.mark.asyncio
+async def test_integration_retry_costs_in_per_story_and_run_totals(
+    run_with_yaml: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Retry invocations appear in per_story.invocations and run-level totals (AC: #10h)."""
+    from arcwright_ai.engine.graph import build_story_graph
+
+    graph = build_story_graph()
+    story_slug = str(run_with_yaml.story_id)
+
+    async def _mock_invoke(*args: object, **kwargs: object) -> InvocationResult:
+        return InvocationResult(
+            output_text="attempt",
+            tokens_input=300,
+            tokens_output=100,
+            total_cost=Decimal("0.005"),
+            duration_ms=200,
+            session_id="s-1",
+            num_turns=1,
+            is_error=False,
+        )
+
+    v6 = V6ValidationResult(passed=True, results=[V6CheckResult(check_name="file_existence", passed=True)])
+    feedback = ReflexionFeedback(
+        passed=False,
+        unmet_criteria=["1"],
+        feedback_per_criterion={"1": "Fix required"},
+        attempt_number=1,
+    )
+    fail_v3 = PipelineResult(
+        passed=False,
+        outcome=PipelineOutcome.FAIL_V3,
+        v6_result=v6,
+        v3_result=V3ReflexionResult(
+            validation_result=ValidationResult(
+                passed=False,
+                ac_results=[ACResult(ac_id="1", passed=False, rationale="Missing impl")],
+            ),
+            feedback=feedback,
+            tokens_used=0,
+            cost=Decimal("0"),
+        ),
+        feedback=feedback,
+        tokens_used=0,
+        cost=Decimal("0"),
+    )
+    pass_result = PipelineResult(
+        passed=True,
+        outcome=PipelineOutcome.PASS,
+        v6_result=v6,
+        tokens_used=0,
+        cost=Decimal("0"),
+    )
+
+    validation_call_count = 0
+
+    async def _mock_pipeline_retry(*args: object, **kwargs: object) -> PipelineResult:
+        nonlocal validation_call_count
+        validation_call_count += 1
+        if validation_call_count == 1:
+            return fail_v3
+        return pass_result
+
+    monkeypatch.setattr("arcwright_ai.engine.nodes.invoke_agent", _mock_invoke)
+    monkeypatch.setattr("arcwright_ai.engine.nodes.run_validation_pipeline", _mock_pipeline_retry)
+
+    graph_result = await graph.ainvoke(run_with_yaml)
+    final_state = _state_from_graph_result(graph_result, run_with_yaml)
+    final_budget = final_state.budget
+
+    # Total invocations = 2
+    assert final_budget.invocation_count == 2
+    # per_story shows 2 invocations
+    assert story_slug in final_budget.per_story
+    assert final_budget.per_story[story_slug].invocations == 2
+    # Tokens doubled
+    assert final_budget.total_tokens_input == 600
+    assert final_budget.total_tokens_output == 200
+
+
+@pytest.mark.asyncio
+async def test_integration_run_yaml_reflects_final_cost(
+    run_with_yaml: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """run.yaml budget matches in-memory state after full graph story execution (AC: #10i)."""
+    import yaml
+
+    from arcwright_ai.core.constants import DIR_ARCWRIGHT, DIR_RUNS, RUN_METADATA_FILENAME
+    from arcwright_ai.engine.graph import build_story_graph
+
+    graph = build_story_graph()
+
+    v6 = V6ValidationResult(passed=True, results=[V6CheckResult(check_name="file_existence", passed=True)])
+
+    async def _mock_pipeline_pass(*args: object, **kwargs: object) -> PipelineResult:
+        return PipelineResult(
+            passed=True,
+            outcome=PipelineOutcome.PASS,
+            v6_result=v6,
+            tokens_used=0,
+            cost=Decimal("0"),
+        )
+
+    async def _mock_invoke(*args: object, **kwargs: object) -> InvocationResult:
+        return InvocationResult(
+            output_text="done",
+            tokens_input=400,
+            tokens_output=150,
+            total_cost=Decimal("0.007"),
+            duration_ms=300,
+            session_id="s-int",
+            num_turns=2,
+            is_error=False,
+        )
+
+    monkeypatch.setattr("arcwright_ai.engine.nodes.invoke_agent", _mock_invoke)
+    monkeypatch.setattr("arcwright_ai.engine.nodes.run_validation_pipeline", _mock_pipeline_pass)
+    graph_result = await graph.ainvoke(run_with_yaml)
+    final_state = _state_from_graph_result(graph_result, run_with_yaml)
+
+    # Read run.yaml from disk
+    run_yaml_path = (
+        run_with_yaml.project_root / DIR_ARCWRIGHT / DIR_RUNS / str(run_with_yaml.run_id) / RUN_METADATA_FILENAME
+    )
+    assert run_yaml_path.exists(), "run.yaml must exist after full graph execution"
+    with run_yaml_path.open(encoding="utf-8") as fh:
+        data = yaml.safe_load(fh)
+
+    budget_section = data["budget"]
+    assert budget_section["invocation_count"] == 1
+    assert budget_section["total_tokens_input"] == 400
+    assert budget_section["total_tokens_output"] == 150
+    # estimated_cost stored as str
+    assert Decimal(budget_section["estimated_cost"]) == final_state.budget.estimated_cost
+
+
+@pytest.mark.asyncio
+async def test_integration_zero_invocations_missed(
+    run_with_yaml: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every SDK invocation increments invocation_count — zero are missed (AC: #10j)."""
+    from arcwright_ai.engine.graph import build_story_graph
+
+    n_stories = 4
+    graph = build_story_graph()
+    current_budget = run_with_yaml.budget
+
+    v6 = V6ValidationResult(passed=True, results=[V6CheckResult(check_name="file_existence", passed=True)])
+
+    async def _mock_pipeline_pass(*args: object, **kwargs: object) -> PipelineResult:
+        return PipelineResult(
+            passed=True,
+            outcome=PipelineOutcome.PASS,
+            v6_result=v6,
+            tokens_used=0,
+            cost=Decimal("0"),
+        )
+
+    monkeypatch.setattr("arcwright_ai.engine.nodes.run_validation_pipeline", _mock_pipeline_pass)
+
+    for i in range(n_stories):
+        story_slug = f"story-{i + 1}"
+
+        async def _mock_invoke(*args: object, _i: int = i, **kwargs: object) -> InvocationResult:
+            return InvocationResult(
+                output_text="done",
+                tokens_input=50,
+                tokens_output=20,
+                total_cost=Decimal("0.001"),
+                duration_ms=50,
+                session_id=f"s-{_i}",
+                num_turns=1,
+                is_error=False,
+            )
+
+        monkeypatch.setattr("arcwright_ai.engine.nodes.invoke_agent", _mock_invoke)
+        initial_state = run_with_yaml.model_copy(
+            update={
+                "story_id": story_slug,
+                "budget": current_budget,
+                "status": TaskState.QUEUED,
+                "retry_count": 0,
+                "validation_result": None,
+                "retry_history": [],
+                "agent_output": None,
+                "worktree_path": None,
+            }
+        )
+        graph_result = await graph.ainvoke(initial_state)
+        completed_state = _state_from_graph_result(graph_result, initial_state)
+        current_budget = completed_state.budget
+
+    assert current_budget.invocation_count == n_stories, (
+        f"Expected {n_stories} invocations tracked, got {current_budget.invocation_count}"
+    )
+    assert len(current_budget.per_story) == n_stories, (
+        f"Expected {n_stories} per-story entries, got {len(current_budget.per_story)}"
+    )
+    for i in range(n_stories):
+        slug = f"story-{i + 1}"
+        assert slug in current_budget.per_story
+        assert current_budget.per_story[slug].invocations == 1
