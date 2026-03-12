@@ -155,6 +155,8 @@ def _make_pass_result() -> PipelineResult:
         outcome=PipelineOutcome.PASS,
         v6_result=v6,
         tokens_used=300,
+        tokens_input=200,
+        tokens_output=100,
         cost=Decimal("0.005"),
     )
 
@@ -193,6 +195,8 @@ def _make_fail_v3_result() -> PipelineResult:
         v3_result=v3,
         feedback=feedback,
         tokens_used=500,
+        tokens_input=320,
+        tokens_output=180,
         cost=Decimal("0.01"),
     )
 
@@ -456,6 +460,23 @@ async def test_validate_node_updates_budget_with_pipeline_costs(
     result = await validate_node(validate_ready_state)
     assert result.budget.total_tokens == mock_pipeline_pass.tokens_used
     assert result.budget.estimated_cost == mock_pipeline_pass.cost
+
+
+@pytest.mark.asyncio
+async def test_validate_node_populates_cost_by_role_review(
+    validate_ready_state: StoryState,
+    mock_pipeline_pass: PipelineResult,
+) -> None:
+    """validate_node records validation cost under cost_by_role['review'] in per_story."""
+    result = await validate_node(validate_ready_state)
+    story_slug = str(validate_ready_state.story_id)
+    assert story_slug in result.budget.per_story
+    sc = result.budget.per_story[story_slug]
+    assert "review" in sc.cost_by_role
+    assert sc.cost_by_role["review"] == mock_pipeline_pass.cost
+    assert sc.invocations_by_role.get("review") == 1
+    assert sc.tokens_input_by_role.get("review") == mock_pipeline_pass.tokens_input
+    assert sc.tokens_output_by_role.get("review") == mock_pipeline_pass.tokens_output
 
 
 @pytest.mark.asyncio
@@ -950,6 +971,31 @@ async def test_agent_dispatch_node_updates_per_story_and_token_breakdown(
     # Token breakdown
     assert result.budget.total_tokens_input == mock_invoke_result.tokens_input
     assert result.budget.total_tokens_output == mock_invoke_result.tokens_output
+
+
+@pytest.mark.asyncio
+async def test_agent_dispatch_node_populates_cost_by_role_generate(
+    dispatch_ready_state: StoryState,
+    mock_invoke_result: InvocationResult,
+) -> None:
+    """agent_dispatch_node records invocation cost under cost_by_role['generate']."""
+    from arcwright_ai.core.types import calculate_invocation_cost
+
+    result = await agent_dispatch_node(dispatch_ready_state)
+    story_slug = str(dispatch_ready_state.story_id)
+    sc = result.budget.per_story[story_slug]
+    expected_cost = calculate_invocation_cost(
+        mock_invoke_result.tokens_input,
+        mock_invoke_result.tokens_output,
+        dispatch_ready_state.config.models.get(ModelRole.GENERATE).pricing,
+    )
+    assert "generate" in sc.cost_by_role
+    assert sc.cost_by_role["generate"] == expected_cost
+    assert sc.invocations_by_role.get("generate") == 1
+    assert sc.tokens_input_by_role.get("generate") == mock_invoke_result.tokens_input
+    assert sc.tokens_output_by_role.get("generate") == mock_invoke_result.tokens_output
+    # Should not have a review cost
+    assert "review" not in sc.cost_by_role
 
 
 @pytest.mark.asyncio
@@ -2694,11 +2740,13 @@ async def test_integration_retry_costs_in_per_story_and_run_totals(
     final_state = _state_from_graph_result(graph_result, run_with_yaml)
     final_budget = final_state.budget
 
-    # Total invocations = 2
-    assert final_budget.invocation_count == 2
-    # per_story shows 2 invocations
+    # Total invocations = 3 (2 generate dispatches + 1 review validation)
+    assert final_budget.invocation_count == 3
+    # per_story shows aggregate invocations across roles
     assert story_slug in final_budget.per_story
-    assert final_budget.per_story[story_slug].invocations == 2
+    assert final_budget.per_story[story_slug].invocations == 3
+    assert final_budget.per_story[story_slug].invocations_by_role.get("generate") == 2
+    assert final_budget.per_story[story_slug].invocations_by_role.get("review") == 1
     # Tokens doubled
     assert final_budget.total_tokens_input == 600
     assert final_budget.total_tokens_output == 200

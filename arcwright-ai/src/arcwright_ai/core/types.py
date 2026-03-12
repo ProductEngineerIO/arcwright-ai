@@ -112,12 +112,21 @@ class StoryCost(ArcwrightModel):
         tokens_output: Total output tokens consumed for this story.
         cost: Estimated cost in USD (exact Decimal).
         invocations: Number of SDK invocations for this story.
+        cost_by_role: Per-role cost breakdown mapping role name
+            (e.g. ``"generate"``, ``"review"``) to cost in USD (Decimal).
+        invocations_by_role: Per-role SDK invocation counts.
+        tokens_input_by_role: Per-role input token totals.
+        tokens_output_by_role: Per-role output token totals.
     """
 
     tokens_input: int = 0
     tokens_output: int = 0
     cost: Decimal = Decimal("0")
     invocations: int = 0
+    cost_by_role: dict[str, Decimal] = Field(default_factory=dict)
+    invocations_by_role: dict[str, int] = Field(default_factory=dict)
+    tokens_input_by_role: dict[str, int] = Field(default_factory=dict)
+    tokens_output_by_role: dict[str, int] = Field(default_factory=dict)
 
 
 class BudgetState(ArcwrightModel):

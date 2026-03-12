@@ -315,6 +315,114 @@ def _format_resume_epic_target(epic_num: str) -> str:
     return f"EPIC-{epic_num}"
 
 
+def _build_per_story_cost_lines(per_story: dict[str, Any]) -> list[str]:
+    """Build per-story cost table lines for a summary section.
+
+    When any story has ``cost_by_role`` data, renders a table with separate
+    Gen and Review cost columns.  Falls back to the simple 5-column table
+    when no role data is present (backward compatibility).
+
+    Args:
+        per_story: The ``per_story`` dict from a serialized ``BudgetState``.
+
+    Returns:
+        List of markdown table lines (header + data rows), or an empty list
+        when *per_story* is empty.
+    """
+    if not per_story:
+        return []
+    has_roles = any(bool(e.get("cost_by_role") or {}) for e in per_story.values())
+    lines: list[str] = []
+    if has_roles:
+        lines.append("| Story | Tokens In | Tokens Out | Gen Cost | Rev Cost | Total | Inv |")
+        lines.append("| --- | --- | --- | --- | --- | --- | --- |")
+        for _slug, _entry in per_story.items():
+            _cbr = _entry.get("cost_by_role") or {}
+            _gen = format_cost(str(_cbr.get("generate", "0")))
+            _rev = format_cost(str(_cbr.get("review", "0")))
+            _tok_in = format_tokens(_entry.get("tokens_input", 0))
+            _tok_out = format_tokens(_entry.get("tokens_output", 0))
+            _cost = format_cost(_entry.get("cost", "0"))
+            _inv = _entry.get("invocations", 1)
+            lines.append(f"| {_slug} | {_tok_in} | {_tok_out} | {_gen} | {_rev} | {_cost} | {_inv} |")
+    else:
+        lines.append("| Story | Tokens In | Tokens Out | Cost | Invocations |")
+        lines.append("| --- | --- | --- | --- | --- |")
+        for _slug, _entry in per_story.items():
+            _tok_in = format_tokens(_entry.get("tokens_input", 0))
+            _tok_out = format_tokens(_entry.get("tokens_output", 0))
+            _cost = format_cost(_entry.get("cost", "0"))
+            _inv = _entry.get("invocations", 1)
+            lines.append(f"| {_slug} | {_tok_in} | {_tok_out} | {_cost} | {_inv} |")
+    return lines
+
+
+def _build_cost_by_role_section(
+    per_story: dict[str, Any],
+    config_snapshot: dict[str, Any] | None = None,
+) -> list[str]:
+    """Build a "Cost by Model Role" markdown subsection.
+
+    Aggregates ``cost_by_role`` across all per-story entries.  Returns an
+    empty list when no role data is present (backward compatibility — old
+    ``run.yaml`` files without ``cost_by_role``).
+
+    Args:
+        per_story: The ``per_story`` dict from a serialized ``BudgetState``.
+        config_snapshot: Optional config snapshot dict with ``model_version``
+            and ``review_model_version`` keys.
+
+    Returns:
+        List of markdown lines for the subsection, or an empty list when no
+        role cost data is available.
+    """
+    role_costs: dict[str, dict[str, Any]] = {}
+    for _slug, entry in per_story.items():
+        cost_by_role = entry.get("cost_by_role") or {}
+        invocations_by_role = entry.get("invocations_by_role") or {}
+        tokens_input_by_role = entry.get("tokens_input_by_role") or {}
+        tokens_output_by_role = entry.get("tokens_output_by_role") or {}
+        for role, cost_val in cost_by_role.items():
+            if role not in role_costs:
+                role_costs[role] = {
+                    "cost": Decimal("0"),
+                    "invocations": 0,
+                    "tokens_input": 0,
+                    "tokens_output": 0,
+                }
+            role_costs[role]["cost"] += Decimal(str(cost_val))
+            explicit_role_invocations = int(invocations_by_role.get(role, 0) or 0)
+            role_costs[role]["invocations"] += explicit_role_invocations if explicit_role_invocations > 0 else 1
+            role_costs[role]["tokens_input"] += int(tokens_input_by_role.get(role, 0) or 0)
+            role_costs[role]["tokens_output"] += int(tokens_output_by_role.get(role, 0) or 0)
+    # Filter to non-zero roles
+    role_costs = {r: d for r, d in role_costs.items() if d["cost"] > Decimal("0")}
+    if not role_costs:
+        return []
+
+    snapshot = config_snapshot or {}
+    role_model_map = {
+        "generate": snapshot.get("model_version", "—"),
+        "review": snapshot.get("review_model_version", "—"),
+    }
+    role_label_map = {"generate": "Generation", "review": "Review"}
+
+    lines: list[str] = []
+    lines.append("")
+    lines.append("### Cost by Model Role")
+    lines.append("")
+    lines.append("| Role | Model Version | Invocations | Tokens (In/Out) | Cost |")
+    lines.append("| --- | --- | --- | --- | --- |")
+    for role, data in role_costs.items():
+        label = role_label_map.get(role, role.capitalize())
+        model_ver = role_model_map.get(role, "—")
+        tokens_in_out = f"{format_tokens(data['tokens_input'])} / {format_tokens(data['tokens_output'])}"
+        lines.append(
+            f"| {label} | {model_ver} | {data['invocations']} | {tokens_in_out} | {format_cost(str(data['cost']))} |"
+        )
+    return lines
+
+
 # ---------------------------------------------------------------------------
 # Public async write functions
 # ---------------------------------------------------------------------------
@@ -410,18 +518,13 @@ async def write_success_summary(
         f"{format_budget_remaining(budget.get('estimated_cost', '0'), _max_cost_ss, budget.get('max_invocations'))}"
     )
     _per_story_ss: dict[str, Any] = budget.get("per_story", {}) or {}
-    if _per_story_ss:
+    _per_story_lines_ss = _build_per_story_cost_lines(_per_story_ss)
+    if _per_story_lines_ss:
         lines.append("")
-        lines.append("| Story | Tokens In | Tokens Out | Cost | Invocations |")
-        lines.append("| --- | --- | --- | --- | --- |")
-        for _slug, _entry in _per_story_ss.items():
-            _tok_in = format_tokens(_entry.get("tokens_input", 0))
-            _tok_out = format_tokens(_entry.get("tokens_output", 0))
-            _cost = format_cost(_entry.get("cost", "0"))
-            _inv = _entry.get("invocations", 1)
-            lines.append(f"| {_slug} | {_tok_in} | {_tok_out} | {_cost} | {_inv} |")
+        lines.extend(_per_story_lines_ss)
     else:
         lines.append("- No per-story data yet")
+    lines.extend(_build_cost_by_role_section(_per_story_ss, run_status.config_snapshot))
     lines.append(f"- **Retry Overhead:** {format_retry_overhead(_per_story_ss)}")
     lines.append("")
 
@@ -668,18 +771,13 @@ async def write_halt_report(
         f"{format_budget_remaining(budget.get('estimated_cost', '0'), _max_cost_hr, budget.get('max_invocations'))}"
     )
     _per_story_hr: dict[str, Any] = budget.get("per_story", {}) or {}
-    if _per_story_hr:
+    _per_story_lines_hr = _build_per_story_cost_lines(_per_story_hr)
+    if _per_story_lines_hr:
         lines.append("")
-        lines.append("| Story | Tokens In | Tokens Out | Cost | Invocations |")
-        lines.append("| --- | --- | --- | --- | --- |")
-        for _slug, _entry in _per_story_hr.items():
-            _tok_in = format_tokens(_entry.get("tokens_input", 0))
-            _tok_out = format_tokens(_entry.get("tokens_output", 0))
-            _cost = format_cost(_entry.get("cost", "0"))
-            _inv = _entry.get("invocations", 1)
-            lines.append(f"| {_slug} | {_tok_in} | {_tok_out} | {_cost} | {_inv} |")
+        lines.extend(_per_story_lines_hr)
     else:
         lines.append("- No per-story data yet")
+    lines.extend(_build_cost_by_role_section(_per_story_hr, run_status.config_snapshot))
     lines.append(f"- **Retry Overhead:** {format_retry_overhead(_per_story_hr)}")
     lines.append("")
 
@@ -814,18 +912,13 @@ async def write_timeout_summary(project_root: Path, run_id: str) -> Path:
         f"{format_budget_remaining(budget.get('estimated_cost', '0'), _max_cost_to, budget.get('max_invocations'))}"
     )
     _per_story_to: dict[str, Any] = budget.get("per_story", {}) or {}
-    if _per_story_to:
+    _per_story_lines_to = _build_per_story_cost_lines(_per_story_to)
+    if _per_story_lines_to:
         lines.append("")
-        lines.append("| Story | Tokens In | Tokens Out | Cost | Invocations |")
-        lines.append("| --- | --- | --- | --- | --- |")
-        for _slug, _entry in _per_story_to.items():
-            _tok_in = format_tokens(_entry.get("tokens_input", 0))
-            _tok_out = format_tokens(_entry.get("tokens_output", 0))
-            _cost = format_cost(_entry.get("cost", "0"))
-            _inv = _entry.get("invocations", 1)
-            lines.append(f"| {_slug} | {_tok_in} | {_tok_out} | {_cost} | {_inv} |")
+        lines.extend(_per_story_lines_to)
     else:
         lines.append("- No per-story data yet")
+    lines.extend(_build_cost_by_role_section(_per_story_to, run_status.config_snapshot))
     lines.append(f"- **Retry Overhead:** {format_retry_overhead(_per_story_to)}")
     lines.append("")
 

@@ -490,11 +490,35 @@ async def agent_dispatch_node(state: StoryState) -> StoryState:
         cost_estimate = calculate_invocation_cost(tokens_input, tokens_output, gen_spec.pricing)
         error_story_slug = str(state.story_id)
         existing_error_story_cost = state.budget.per_story.get(error_story_slug, StoryCost())
+        _existing_err_gen_cost = existing_error_story_cost.cost_by_role.get("generate", Decimal("0"))
+        _existing_err_gen_invocations = existing_error_story_cost.invocations_by_role.get("generate", 0)
+        _existing_err_gen_tokens_in = existing_error_story_cost.tokens_input_by_role.get("generate", 0)
+        _existing_err_gen_tokens_out = existing_error_story_cost.tokens_output_by_role.get("generate", 0)
+        _new_cost_by_role_err = {
+            **existing_error_story_cost.cost_by_role,
+            "generate": _existing_err_gen_cost + cost_estimate,
+        }
+        _new_invocations_by_role_err = {
+            **existing_error_story_cost.invocations_by_role,
+            "generate": _existing_err_gen_invocations + 1,
+        }
+        _new_tokens_input_by_role_err = {
+            **existing_error_story_cost.tokens_input_by_role,
+            "generate": _existing_err_gen_tokens_in + tokens_input,
+        }
+        _new_tokens_output_by_role_err = {
+            **existing_error_story_cost.tokens_output_by_role,
+            "generate": _existing_err_gen_tokens_out + tokens_output,
+        }
         new_error_story_cost = StoryCost(
             tokens_input=existing_error_story_cost.tokens_input + tokens_input,
             tokens_output=existing_error_story_cost.tokens_output + tokens_output,
             cost=existing_error_story_cost.cost + cost_estimate,
             invocations=existing_error_story_cost.invocations + 1,
+            cost_by_role=_new_cost_by_role_err,
+            invocations_by_role=_new_invocations_by_role_err,
+            tokens_input_by_role=_new_tokens_input_by_role_err,
+            tokens_output_by_role=_new_tokens_output_by_role_err,
         )
         new_per_story_error = {**state.budget.per_story, error_story_slug: new_error_story_cost}
         new_budget_error = state.budget.model_copy(
@@ -585,11 +609,35 @@ async def agent_dispatch_node(state: StoryState) -> StoryState:
         )
     story_slug = str(state.story_id)
     existing_story_cost = state.budget.per_story.get(story_slug, StoryCost())
+    _existing_gen_cost = existing_story_cost.cost_by_role.get("generate", Decimal("0"))
+    _existing_gen_invocations = existing_story_cost.invocations_by_role.get("generate", 0)
+    _existing_gen_tokens_in = existing_story_cost.tokens_input_by_role.get("generate", 0)
+    _existing_gen_tokens_out = existing_story_cost.tokens_output_by_role.get("generate", 0)
+    _new_cost_by_role = {
+        **existing_story_cost.cost_by_role,
+        "generate": _existing_gen_cost + invocation_cost,
+    }
+    _new_invocations_by_role = {
+        **existing_story_cost.invocations_by_role,
+        "generate": _existing_gen_invocations + 1,
+    }
+    _new_tokens_input_by_role = {
+        **existing_story_cost.tokens_input_by_role,
+        "generate": _existing_gen_tokens_in + result.tokens_input,
+    }
+    _new_tokens_output_by_role = {
+        **existing_story_cost.tokens_output_by_role,
+        "generate": _existing_gen_tokens_out + result.tokens_output,
+    }
     new_story_cost = StoryCost(
         tokens_input=existing_story_cost.tokens_input + result.tokens_input,
         tokens_output=existing_story_cost.tokens_output + result.tokens_output,
         cost=existing_story_cost.cost + invocation_cost,
         invocations=existing_story_cost.invocations + 1,
+        cost_by_role=_new_cost_by_role,
+        invocations_by_role=_new_invocations_by_role,
+        tokens_input_by_role=_new_tokens_input_by_role,
+        tokens_output_by_role=_new_tokens_output_by_role,
     )
     new_per_story = {**state.budget.per_story, story_slug: new_story_cost}
     new_budget = state.budget.model_copy(
@@ -892,11 +940,53 @@ async def validate_node(state: StoryState) -> StoryState:
             v6_result=synthetic_v6,
         )
 
-    # Update budget with validation costs
+    # Update budget with validation costs, including per-story review role metrics
+    _validate_story_slug = str(state.story_id)
+    _existing_story_cost_v = state.budget.per_story.get(_validate_story_slug, StoryCost())
+    _existing_review_cost = _existing_story_cost_v.cost_by_role.get("review", Decimal("0"))
+    _existing_review_invocations = _existing_story_cost_v.invocations_by_role.get("review", 0)
+    _existing_review_tokens_in = _existing_story_cost_v.tokens_input_by_role.get("review", 0)
+    _existing_review_tokens_out = _existing_story_cost_v.tokens_output_by_role.get("review", 0)
+    _had_review_activity = (
+        pipeline_result.cost > Decimal("0") or pipeline_result.tokens_used > 0 or pipeline_result.v3_result is not None
+    )
+    _new_cost_by_role_v = {
+        **_existing_story_cost_v.cost_by_role,
+        "review": _existing_review_cost + pipeline_result.cost,
+    }
+    _new_invocations_by_role_v = {
+        **_existing_story_cost_v.invocations_by_role,
+        "review": _existing_review_invocations + (1 if _had_review_activity else 0),
+    }
+    _new_tokens_input_by_role_v = {
+        **_existing_story_cost_v.tokens_input_by_role,
+        "review": _existing_review_tokens_in + pipeline_result.tokens_input,
+    }
+    _new_tokens_output_by_role_v = {
+        **_existing_story_cost_v.tokens_output_by_role,
+        "review": _existing_review_tokens_out + pipeline_result.tokens_output,
+    }
+    _new_story_cost_v = _existing_story_cost_v.model_copy(
+        update={
+            "tokens_input": _existing_story_cost_v.tokens_input + pipeline_result.tokens_input,
+            "tokens_output": _existing_story_cost_v.tokens_output + pipeline_result.tokens_output,
+            "cost": _existing_story_cost_v.cost + pipeline_result.cost,
+            "invocations": _existing_story_cost_v.invocations + (1 if _had_review_activity else 0),
+            "cost_by_role": _new_cost_by_role_v,
+            "invocations_by_role": _new_invocations_by_role_v,
+            "tokens_input_by_role": _new_tokens_input_by_role_v,
+            "tokens_output_by_role": _new_tokens_output_by_role_v,
+        }
+    )
+    _new_per_story_v = {**state.budget.per_story, _validate_story_slug: _new_story_cost_v}
     new_budget = state.budget.model_copy(
         update={
+            "invocation_count": state.budget.invocation_count + (1 if _had_review_activity else 0),
             "total_tokens": state.budget.total_tokens + pipeline_result.tokens_used,
+            "total_tokens_input": state.budget.total_tokens_input + pipeline_result.tokens_input,
+            "total_tokens_output": state.budget.total_tokens_output + pipeline_result.tokens_output,
             "estimated_cost": state.budget.estimated_cost + pipeline_result.cost,
+            "per_story": _new_per_story_v,
         }
     )
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import os
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -67,8 +68,16 @@ _DEFAULT_CONFIG_YAML: str = """# Arcwright AI Project Configuration
 # Or in the global config file: ~/.arcwright-ai/config.yaml
 # The api section must NEVER appear in project-level config files.
 
-model:
-  version: "claude-opus-4-5"
+# Model Configuration
+# Each pipeline phase uses a model "role" for LLM selection.
+# Available roles: generate (code writing), review (code review/validation)
+# If "review" is not configured, it falls back to the "generate" model.
+models:
+  generate:
+    version: "claude-sonnet-4-20250514"
+  # Uncomment to use a different model for code review:
+  # review:
+  #   version: "claude-opus-4-5"
 
 limits:
   tokens_per_story: 200000
@@ -92,6 +101,32 @@ reproducibility:
 # ---------------------------------------------------------------------------
 # Helper functions
 # ---------------------------------------------------------------------------
+
+
+def _aggregate_role_costs(per_story: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Aggregate ``cost_by_role`` across all per-story entries.
+
+    Args:
+        per_story: The ``per_story`` dict from a serialized ``BudgetState``,
+            keyed by story slug with each value being a dict of story cost fields.
+
+    Returns:
+        Dict keyed by role name (e.g. ``"generate"``, ``"review"``), each
+        value being a dict with keys ``"cost"`` (``Decimal``) and
+        ``"invocations"`` (``int``).  Only roles with non-zero cost are included.
+    """
+    roles: dict[str, dict[str, Any]] = {}
+    for _slug, entry in per_story.items():
+        cost_by_role = entry.get("cost_by_role", {}) or {}
+        invocations_by_role = entry.get("invocations_by_role", {}) or {}
+        for role, cost_val in cost_by_role.items():
+            if role not in roles:
+                roles[role] = {"cost": Decimal("0"), "invocations": 0}
+            roles[role]["cost"] += Decimal(str(cost_val))
+            explicit_role_invocations = int(invocations_by_role.get(role, 0) or 0)
+            roles[role]["invocations"] += explicit_role_invocations if explicit_role_invocations > 0 else 1
+    # Remove roles with zero cost
+    return {role: data for role, data in roles.items() if data["cost"] > Decimal("0")}
 
 
 def _scaffold_directories(project_root: Path) -> list[str]:
@@ -796,20 +831,49 @@ async def _status_async(project_root: Path, run_id: str | None) -> None:
     typer.echo(f"  Est. Cost:   {_est_cost}", err=True)
     typer.echo(f"  Remaining:   {_remaining_display}", err=True)
     _per_story: dict[str, Any] = budget.get("per_story", {}) or {}
+    # Role-based cost breakdown (shown when role data present)
+    _role_costs = _aggregate_role_costs(_per_story)
+    if _role_costs:
+        _role_label_map = {"generate": "Generation", "review": "Review"}
+        for _role, _role_data in _role_costs.items():
+            _role_label = _role_label_map.get(_role, _role.capitalize())
+            _role_cost_str = format_cost(str(_role_data["cost"]))
+            _role_inv = _role_data["invocations"]
+            typer.echo(f"  {_role_label + ':':<14} {_role_cost_str} ({_role_inv} inv)", err=True)
     if _per_story:
         typer.echo("", err=True)
         typer.echo("Per-Story Breakdown:", err=True)
-        _hdr = f"  {'Story':<22} {'Tokens':<10} {'Cost':<8} {'Invocations'}"
-        _sep = "  " + "\u2500" * 51
-        typer.echo(_hdr, err=True)
-        typer.echo(_sep, err=True)
-        for _slug, _entry in _per_story.items():
-            _display_slug = _slug[:19] + "..." if len(_slug) > 22 else _slug
-            _tok_total = int(_entry.get("tokens_input", 0) or 0) + int(_entry.get("tokens_output", 0) or 0)
-            _entry_cost = format_cost(_entry.get("cost", "0"))
-            _entry_inv = _entry.get("invocations", 1)
-            _row = f"  {_display_slug:<22} {format_tokens(_tok_total):<10} {_entry_cost:<8} {_entry_inv}"
-            typer.echo(_row, err=True)
+        _has_roles = any(bool(e.get("cost_by_role") or {}) for e in _per_story.values())
+        if _has_roles:
+            _hdr = f"  {'Story':<22} {'Tokens':<10} {'Gen Cost':<10} {'Rev Cost':<10} {'Total':<8} Inv"
+            _sep = "  " + "\u2500" * 64
+            typer.echo(_hdr, err=True)
+            typer.echo(_sep, err=True)
+            for _slug, _entry in _per_story.items():
+                _display_slug = _slug[:19] + "..." if len(_slug) > 22 else _slug
+                _tok_total = int(_entry.get("tokens_input", 0) or 0) + int(_entry.get("tokens_output", 0) or 0)
+                _cbr = _entry.get("cost_by_role") or {}
+                _gen_cost = format_cost(str(_cbr.get("generate", "0")))
+                _rev_cost = format_cost(str(_cbr.get("review", "0")))
+                _entry_cost = format_cost(_entry.get("cost", "0"))
+                _entry_inv = _entry.get("invocations", 1)
+                _row = (
+                    f"  {_display_slug:<22} {format_tokens(_tok_total):<10}"
+                    f" {_gen_cost:<10} {_rev_cost:<10} {_entry_cost:<8} {_entry_inv}"
+                )
+                typer.echo(_row, err=True)
+        else:
+            _hdr = f"  {'Story':<22} {'Tokens':<10} {'Cost':<8} {'Invocations'}"
+            _sep = "  " + "\u2500" * 51
+            typer.echo(_hdr, err=True)
+            typer.echo(_sep, err=True)
+            for _slug, _entry in _per_story.items():
+                _display_slug = _slug[:19] + "..." if len(_slug) > 22 else _slug
+                _tok_total = int(_entry.get("tokens_input", 0) or 0) + int(_entry.get("tokens_output", 0) or 0)
+                _entry_cost = format_cost(_entry.get("cost", "0"))
+                _entry_inv = _entry.get("invocations", 1)
+                _row = f"  {_display_slug:<22} {format_tokens(_tok_total):<10} {_entry_cost:<8} {_entry_inv}"
+                typer.echo(_row, err=True)
     typer.echo("", err=True)
 
 

@@ -538,3 +538,78 @@ def test_serialize_budget_yaml_safe_dump() -> None:
     # Should not raise — all Decimals are strings
     yaml_str = yaml.safe_dump(data, default_flow_style=False)
     assert "estimated_cost" in yaml_str
+
+
+def test_serialize_budget_cost_by_role_decimal_to_str() -> None:
+    """_serialize_budget converts cost_by_role Decimal values to strings for YAML safety."""
+    import yaml
+
+    from arcwright_ai.core.types import StoryCost
+    from arcwright_ai.output.run_manager import _serialize_budget
+
+    budget = BudgetState(
+        invocation_count=2,
+        estimated_cost=Decimal("1.50"),
+        per_story={
+            "2-1-slug": StoryCost(
+                tokens_input=500,
+                tokens_output=200,
+                cost=Decimal("1.50"),
+                invocations=1,
+                cost_by_role={"generate": Decimal("1.00"), "review": Decimal("0.50")},
+            ),
+        },
+    )
+    data = _serialize_budget(budget)
+    sc = data["per_story"]["2-1-slug"]
+    assert sc["cost"] == "1.50"
+    assert sc["cost_by_role"]["generate"] == "1.00"
+    assert sc["cost_by_role"]["review"] == "0.50"
+    # Verify YAML-safe
+    yaml_str = yaml.safe_dump(data, default_flow_style=False)
+    assert "generate: '1.00'" in yaml_str or 'generate: "1.00"' in yaml_str or "generate: 1.00" not in yaml_str
+
+
+def test_serialize_budget_cost_by_role_empty_dict() -> None:
+    """_serialize_budget handles empty cost_by_role dict cleanly."""
+    from arcwright_ai.core.types import StoryCost
+    from arcwright_ai.output.run_manager import _serialize_budget
+
+    budget = BudgetState(
+        estimated_cost=Decimal("0.05"),
+        per_story={
+            "5-1-slug": StoryCost(
+                tokens_input=100,
+                tokens_output=50,
+                cost=Decimal("0.05"),
+                invocations=1,
+                cost_by_role={},
+            ),
+        },
+    )
+    data = _serialize_budget(budget)
+    sc = data["per_story"]["5-1-slug"]
+    assert sc["cost_by_role"] == {}
+    assert sc["cost"] == "0.05"
+
+
+def test_serialize_budget_cost_by_role_backward_compat_no_field() -> None:
+    """_serialize_budget handles StoryCost without cost_by_role (backward compat)."""
+    import yaml
+
+    from arcwright_ai.core.types import StoryCost
+    from arcwright_ai.output.run_manager import _serialize_budget
+
+    budget = BudgetState(
+        estimated_cost=Decimal("0.01"),
+        per_story={
+            "1-1-slug": StoryCost(tokens_input=200, tokens_output=100, cost=Decimal("0.01"), invocations=1),
+        },
+    )
+    data = _serialize_budget(budget)
+    sc = data["per_story"]["1-1-slug"]
+    assert sc["cost"] == "0.01"
+    # cost_by_role present as empty dict (field has default_factory)
+    assert sc.get("cost_by_role") == {}
+    # Should not raise in yaml.safe_dump
+    yaml.safe_dump(data, default_flow_style=False)

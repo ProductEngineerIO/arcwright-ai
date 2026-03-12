@@ -1146,3 +1146,192 @@ async def test_write_halt_report_budget_utilization_unlimited_when_max_invocatio
     content = path.read_text(encoding="utf-8")
 
     assert "**Budget Utilization:** unlimited" in content
+
+
+# ---------------------------------------------------------------------------
+# _build_per_story_cost_lines helper
+# ---------------------------------------------------------------------------
+
+
+def test_build_per_story_cost_lines_empty() -> None:
+    """Returns empty list when per_story dict is empty."""
+    from arcwright_ai.output.summary import _build_per_story_cost_lines
+
+    result = _build_per_story_cost_lines({})
+    assert result == []
+
+
+def test_build_per_story_cost_lines_no_role_data() -> None:
+    """Returns simple 5-column table when no cost_by_role data present."""
+    from arcwright_ai.output.summary import _build_per_story_cost_lines
+
+    per_story = {
+        "1-1-slug": {
+            "tokens_input": 100,
+            "tokens_output": 50,
+            "cost": "0.05",
+            "invocations": 1,
+            "cost_by_role": {},
+        }
+    }
+    lines = _build_per_story_cost_lines(per_story)
+    assert lines
+    header = lines[0]
+    assert "Gen Cost" not in header
+    assert "Tokens In" in header
+    assert "Invocations" in header
+
+
+def test_build_per_story_cost_lines_with_role_data() -> None:
+    """Returns extended 7-column table when cost_by_role data is present."""
+    from arcwright_ai.output.summary import _build_per_story_cost_lines
+
+    per_story = {
+        "2-1-slug": {
+            "tokens_input": 500,
+            "tokens_output": 200,
+            "cost": "1.50",
+            "invocations": 1,
+            "cost_by_role": {"generate": "1.00", "review": "0.50"},
+        }
+    }
+    lines = _build_per_story_cost_lines(per_story)
+    assert lines
+    header = lines[0]
+    assert "Gen Cost" in header
+    assert "Rev Cost" in header
+    # Data row contains costs
+    data_row = lines[2]
+    assert "$1.00" in data_row
+    assert "$0.50" in data_row
+
+
+# ---------------------------------------------------------------------------
+# _build_cost_by_role_section helper
+# ---------------------------------------------------------------------------
+
+
+def test_build_cost_by_role_section_empty() -> None:
+    """Returns empty list when no cost_by_role data present."""
+    from arcwright_ai.output.summary import _build_cost_by_role_section
+
+    result = _build_cost_by_role_section({})
+    assert result == []
+
+
+def test_build_cost_by_role_section_no_role_data_in_entries() -> None:
+    """Returns empty list when all entries have empty cost_by_role."""
+    from arcwright_ai.output.summary import _build_cost_by_role_section
+
+    per_story = {
+        "1-1-slug": {"tokens_input": 100, "tokens_output": 50, "cost": "0.05", "invocations": 1, "cost_by_role": {}}
+    }
+    result = _build_cost_by_role_section(per_story)
+    assert result == []
+
+
+def test_build_cost_by_role_section_with_role_data() -> None:
+    """Returns subsection lines including markdown table when role data present."""
+    from arcwright_ai.output.summary import _build_cost_by_role_section
+
+    per_story = {
+        "2-1-slug": {
+            "tokens_input": 500,
+            "tokens_output": 200,
+            "cost": "1.50",
+            "invocations": 1,
+            "cost_by_role": {"generate": "1.00", "review": "0.50"},
+            "invocations_by_role": {"generate": 2, "review": 1},
+            "tokens_input_by_role": {"generate": 300, "review": 120},
+            "tokens_output_by_role": {"generate": 80, "review": 60},
+        }
+    }
+    config_snapshot = {
+        "model_version": "claude-sonnet-4-20250514",
+        "review_model_version": "claude-opus-4-5",
+    }
+    lines = _build_cost_by_role_section(per_story, config_snapshot)
+    combined = "\n".join(lines)
+    assert "### Cost by Model Role" in combined
+    assert "Generation" in combined
+    assert "Review" in combined
+    assert "claude-sonnet-4-20250514" in combined
+    assert "claude-opus-4-5" in combined
+    assert "$1.00" in combined
+    assert "$0.50" in combined
+    assert "Tokens (In/Out)" in combined
+    assert "300 / 80" in combined
+    assert "120 / 60" in combined
+    assert "| Generation | claude-sonnet-4-20250514 | 2 |" in combined
+
+
+# ---------------------------------------------------------------------------
+# write_success_summary — role cost integration
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_write_success_summary_cost_by_role_table_present(tmp_path: Path, run_dir: str) -> None:
+    """write_success_summary includes 'Cost by Model Role' table when role data present."""
+    from decimal import Decimal
+
+    from arcwright_ai.core.types import BudgetState, StoryCost
+    from arcwright_ai.output.run_manager import update_run_status
+
+    run_id = run_dir
+    b = BudgetState(
+        invocation_count=1,
+        total_tokens=700,
+        estimated_cost=Decimal("1.50"),
+        per_story={
+            "4-3-run-summary": StoryCost(
+                tokens_input=500,
+                tokens_output=200,
+                cost=Decimal("1.50"),
+                invocations=1,
+                cost_by_role={"generate": Decimal("1.00"), "review": Decimal("0.50")},
+                invocations_by_role={"generate": 2, "review": 1},
+                tokens_input_by_role={"generate": 350, "review": 100},
+                tokens_output_by_role={"generate": 90, "review": 60},
+            ),
+        },
+    )
+    await update_run_status(tmp_path, run_id, budget=b)
+    path = await write_success_summary(tmp_path, run_id)
+    content = path.read_text(encoding="utf-8")
+    assert "### Cost by Model Role" in content
+    assert "Generation" in content
+    assert "Review" in content
+    assert "Tokens (In/Out)" in content
+    assert "350 / 90" in content
+    assert "100 / 60" in content
+
+
+@pytest.mark.asyncio
+async def test_write_success_summary_no_role_table_backward_compat(tmp_path: Path, run_dir: str) -> None:
+    """write_success_summary omits role table when cost_by_role is absent/empty."""
+    from decimal import Decimal
+
+    from arcwright_ai.core.types import BudgetState, StoryCost
+    from arcwright_ai.output.run_manager import update_run_status
+
+    run_id = run_dir
+    b = BudgetState(
+        invocation_count=1,
+        total_tokens=700,
+        estimated_cost=Decimal("0.05"),
+        per_story={
+            "4-3-run-summary": StoryCost(
+                tokens_input=500,
+                tokens_output=200,
+                cost=Decimal("0.05"),
+                invocations=1,
+                # cost_by_role left as default empty dict
+            ),
+        },
+    )
+    await update_run_status(tmp_path, run_id, budget=b)
+    path = await write_success_summary(tmp_path, run_id)
+    content = path.read_text(encoding="utf-8")
+    assert "### Cost by Model Role" not in content
+    assert "## Cost Summary" in content

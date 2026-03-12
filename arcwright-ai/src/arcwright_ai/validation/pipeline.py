@@ -64,6 +64,8 @@ class PipelineResult(ArcwrightModel):
         feedback: V3 reflexion feedback for retry prompt injection
             (None if V6 short-circuited or V3 passed).
         tokens_used: Total tokens consumed across all validation steps.
+        tokens_input: Total input tokens consumed across validation steps.
+        tokens_output: Total output tokens consumed across validation steps.
         cost: Total estimated cost across all validation steps.
     """
 
@@ -73,6 +75,8 @@ class PipelineResult(ArcwrightModel):
     v3_result: V3ReflexionResult | None = None
     feedback: ReflexionFeedback | None = None
     tokens_used: int = 0
+    tokens_input: int = 0
+    tokens_output: int = 0
     cost: Decimal = Decimal("0")
 
 
@@ -151,6 +155,8 @@ async def run_validation_pipeline(
             v3_result=None,
             feedback=None,
             tokens_used=0,
+            tokens_input=0,
+            tokens_output=0,
             cost=Decimal("0"),
         )
 
@@ -196,6 +202,8 @@ async def run_validation_pipeline(
             v3_result=v3_result,
             feedback=None,
             tokens_used=v3_result.tokens_used,
+            tokens_input=v3_result.tokens_input,
+            tokens_output=v3_result.tokens_output,
             cost=v3_result.cost,
         )
 
@@ -217,5 +225,7 @@ async def run_validation_pipeline(
         v3_result=v3_result,
         feedback=v3_result.feedback,
         tokens_used=v3_result.tokens_used,
+        tokens_input=v3_result.tokens_input,
+        tokens_output=v3_result.tokens_output,
         cost=v3_result.cost,
     )

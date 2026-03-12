@@ -226,6 +226,10 @@ def _serialize_budget(budget: BudgetState) -> dict[str, Any]:
         for _slug, story_cost in data["per_story"].items():
             if isinstance(story_cost, dict) and isinstance(story_cost.get("cost"), Decimal):
                 story_cost["cost"] = str(story_cost["cost"])
+            if isinstance(story_cost, dict) and isinstance(story_cost.get("cost_by_role"), dict):
+                story_cost["cost_by_role"] = {
+                    k: str(v) if isinstance(v, Decimal) else v for k, v in story_cost["cost_by_role"].items()
+                }
     return data
 
 

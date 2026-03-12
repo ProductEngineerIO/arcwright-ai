@@ -118,12 +118,16 @@ class V3ReflexionResult(ArcwrightModel):
         validation_result: The detailed per-AC validation results.
         feedback: Structured feedback for retry prompt injection.
         tokens_used: Total tokens consumed (input + output) by reflexion.
+        tokens_input: Input tokens consumed by reflexion.
+        tokens_output: Output tokens consumed by reflexion.
         cost: Estimated cost in USD for the reflexion invocation.
     """
 
     validation_result: ValidationResult
     feedback: ReflexionFeedback
     tokens_used: int = 0
+    tokens_input: int = 0
+    tokens_output: int = 0
     cost: Decimal = Decimal("0")
 
 
@@ -416,5 +420,7 @@ async def run_v3_reflexion(
         validation_result=validation_result,
         feedback=feedback,
         tokens_used=tokens_used,
+        tokens_input=result.tokens_input,
+        tokens_output=result.tokens_output,
         cost=result.total_cost,
     )

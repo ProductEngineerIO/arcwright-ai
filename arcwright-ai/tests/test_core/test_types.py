@@ -226,6 +226,45 @@ def test_story_cost_is_frozen() -> None:
         sc.tokens_input = 99  # type: ignore[misc]
 
 
+def test_story_cost_cost_by_role_default_empty() -> None:
+    """StoryCost() initialises with an empty cost_by_role dict."""
+    sc = StoryCost()
+    assert sc.cost_by_role == {}
+    assert sc.invocations_by_role == {}
+    assert sc.tokens_input_by_role == {}
+    assert sc.tokens_output_by_role == {}
+
+
+def test_story_cost_cost_by_role_with_values() -> None:
+    """StoryCost accepts cost_by_role with Decimal values."""
+    sc = StoryCost(
+        cost_by_role={"generate": Decimal("1.50"), "review": Decimal("0.75")},
+        invocations_by_role={"generate": 2, "review": 1},
+        tokens_input_by_role={"generate": 1200, "review": 400},
+        tokens_output_by_role={"generate": 300, "review": 150},
+    )
+    assert sc.cost_by_role["generate"] == Decimal("1.50")
+    assert sc.cost_by_role["review"] == Decimal("0.75")
+    assert sc.invocations_by_role["generate"] == 2
+    assert sc.tokens_input_by_role["review"] == 400
+    assert sc.tokens_output_by_role["generate"] == 300
+
+
+def test_story_cost_cost_by_role_backward_compat() -> None:
+    """All existing StoryCost() constructions work without cost_by_role."""
+    sc = StoryCost(tokens_input=100, tokens_output=50, cost=Decimal("0.01"), invocations=1)
+    assert sc.cost_by_role == {}
+
+
+def test_story_cost_model_copy_updates_cost_by_role() -> None:
+    """model_copy(update={...}) correctly updates cost_by_role on frozen StoryCost."""
+    sc = StoryCost(cost_by_role={"generate": Decimal("1.00")})
+    new_sc = sc.model_copy(update={"cost_by_role": {"generate": Decimal("1.00"), "review": Decimal("0.50")}})
+    assert new_sc.cost_by_role["review"] == Decimal("0.50")
+    # Original unchanged (frozen)
+    assert "review" not in sc.cost_by_role
+
+
 # ---------------------------------------------------------------------------
 # calculate_invocation_cost
 # ---------------------------------------------------------------------------

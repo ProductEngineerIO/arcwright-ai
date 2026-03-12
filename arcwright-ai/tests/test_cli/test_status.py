@@ -495,3 +495,203 @@ def test_status_per_story_empty_no_table(tmp_path, monkeypatch: pytest.MonkeyPat
 
     assert result.exit_code == 0
     assert "Per-Story Breakdown:" not in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# Role-based cost breakdown display
+# ---------------------------------------------------------------------------
+
+
+def test_status_role_cost_breakdown_displayed_when_role_data_present(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Status display shows Generation/Review breakdown lines when cost_by_role data present."""
+    budget = {
+        "invocation_count": 2,
+        "total_tokens": 12000,
+        "estimated_cost": "1.50",
+        "max_cost": "10.0",
+        "per_story": {
+            "8-1-model-registry": {
+                "tokens_input": 2000,
+                "tokens_output": 800,
+                "cost": "1.00",
+                "invocations": 1,
+                "cost_by_role": {"generate": "1.00"},
+            },
+            "8-2-engine-wiring": {
+                "tokens_input": 3000,
+                "tokens_output": 1200,
+                "cost": "0.50",
+                "invocations": 1,
+                "cost_by_role": {"generate": "0.25", "review": "0.25"},
+            },
+        },
+    }
+    run_status = _make_run_status(budget=budget)
+    summary = _make_run_summary()
+
+    monkeypatch.setattr("arcwright_ai.cli.status.list_runs", _make_async_return([summary]))
+    monkeypatch.setattr("arcwright_ai.cli.status.get_run_status", _make_async_return(run_status))
+
+    result = runner.invoke(app, ["status", "--path", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "Generation:" in result.stderr
+    assert "Review:" in result.stderr
+    assert "$1.25" in result.stderr  # aggregate generate cost
+    assert "$0.25" in result.stderr  # aggregate review cost
+
+
+def test_status_no_role_breakdown_when_cost_by_role_absent(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Status display omits role breakdown lines when cost_by_role is absent (backward compat)."""
+    budget = {
+        "invocation_count": 1,
+        "total_tokens": 5000,
+        "estimated_cost": "0.50",
+        "max_cost": "10.0",
+        "per_story": {
+            "1-1-scaffold": {
+                "tokens_input": 3000,
+                "tokens_output": 2000,
+                "cost": "0.50",
+                "invocations": 1,
+                # No cost_by_role field — old format
+            }
+        },
+    }
+    run_status = _make_run_status(budget=budget)
+    summary = _make_run_summary()
+
+    monkeypatch.setattr("arcwright_ai.cli.status.list_runs", _make_async_return([summary]))
+    monkeypatch.setattr("arcwright_ai.cli.status.get_run_status", _make_async_return(run_status))
+
+    result = runner.invoke(app, ["status", "--path", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "Generation:" not in result.stderr
+    assert "Review:" not in result.stderr
+
+
+def test_status_per_story_table_uses_role_columns_when_role_data_present(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Per-story table uses Gen/Rev columns when any story has cost_by_role data."""
+    budget = {
+        "invocation_count": 1,
+        "total_tokens": 5000,
+        "estimated_cost": "1.50",
+        "max_cost": "10.0",
+        "per_story": {
+            "8-3-cost-display": {
+                "tokens_input": 3000,
+                "tokens_output": 2000,
+                "cost": "1.50",
+                "invocations": 1,
+                "cost_by_role": {"generate": "1.00", "review": "0.50"},
+            }
+        },
+    }
+    run_status = _make_run_status(budget=budget)
+    summary = _make_run_summary()
+
+    monkeypatch.setattr("arcwright_ai.cli.status.list_runs", _make_async_return([summary]))
+    monkeypatch.setattr("arcwright_ai.cli.status.get_run_status", _make_async_return(run_status))
+
+    result = runner.invoke(app, ["status", "--path", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "Gen Cost" in result.stderr
+    assert "Rev Cost" in result.stderr
+    assert "$1.00" in result.stderr
+    assert "$0.50" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# Config template — models format
+# ---------------------------------------------------------------------------
+
+
+def test_aggregate_role_costs_sums_across_stories() -> None:
+    """_aggregate_role_costs aggregates cost_by_role correctly across all per_story entries."""
+    from decimal import Decimal
+
+    from arcwright_ai.cli.status import _aggregate_role_costs
+
+    per_story = {
+        "story-a": {"cost_by_role": {"generate": "1.00"}},
+        "story-b": {"cost_by_role": {"generate": "0.50", "review": "0.25"}},
+        "story-c": {"cost_by_role": {}},
+    }
+    result = _aggregate_role_costs(per_story)
+    assert "generate" in result
+    assert result["generate"]["cost"] == Decimal("1.50")
+    assert result["generate"]["invocations"] == 2
+    assert "review" in result
+    assert result["review"]["cost"] == Decimal("0.25")
+    assert result["review"]["invocations"] == 1
+
+
+def test_aggregate_role_costs_uses_explicit_invocations_by_role() -> None:
+    """_aggregate_role_costs uses per-role invocation counts when provided."""
+    from decimal import Decimal
+
+    from arcwright_ai.cli.status import _aggregate_role_costs
+
+    per_story = {
+        "story-retry": {
+            "cost_by_role": {"generate": "1.20", "review": "0.40"},
+            "invocations_by_role": {"generate": 3, "review": 2},
+        },
+        "story-single": {
+            "cost_by_role": {"generate": "0.30"},
+            "invocations_by_role": {"generate": 1},
+        },
+    }
+    result = _aggregate_role_costs(per_story)
+    assert result["generate"]["cost"] == Decimal("1.50")
+    assert result["generate"]["invocations"] == 4
+    assert result["review"]["cost"] == Decimal("0.40")
+    assert result["review"]["invocations"] == 2
+
+
+def test_aggregate_role_costs_empty_per_story() -> None:
+    """_aggregate_role_costs returns empty dict for empty per_story."""
+    from arcwright_ai.cli.status import _aggregate_role_costs
+
+    result = _aggregate_role_costs({})
+    assert result == {}
+
+
+def test_init_config_template_uses_models_format(tmp_path) -> None:
+    """init generates config.yaml with 'models:' section instead of old 'model:'."""
+    from arcwright_ai.cli.app import app as cli_app
+
+    result = runner.invoke(cli_app, ["init", "--path", str(tmp_path)], catch_exceptions=False)
+    assert result.exit_code == 0
+
+    from arcwright_ai.core.constants import CONFIG_FILENAME, DIR_ARCWRIGHT
+
+    config_path = tmp_path / DIR_ARCWRIGHT / CONFIG_FILENAME
+    content = config_path.read_text(encoding="utf-8")
+    assert "models:" in content
+    assert "generate:" in content
+    assert "model:" not in content.split("models:")[1]  # old singular 'model:' key gone
+
+
+def test_init_config_template_is_valid_yaml(tmp_path) -> None:
+    """init generates a syntactically valid YAML config file."""
+    import yaml
+
+    from arcwright_ai.cli.app import app as cli_app
+
+    result = runner.invoke(cli_app, ["init", "--path", str(tmp_path)], catch_exceptions=False)
+    assert result.exit_code == 0
+
+    from arcwright_ai.core.constants import CONFIG_FILENAME, DIR_ARCWRIGHT
+
+    config_path = tmp_path / DIR_ARCWRIGHT / CONFIG_FILENAME
+    content = config_path.read_text(encoding="utf-8")
+    parsed = yaml.safe_load(content)
+    assert "models" in parsed
+    assert "generate" in parsed["models"]
+    assert "version" in parsed["models"]["generate"]
+    assert "api" not in parsed
