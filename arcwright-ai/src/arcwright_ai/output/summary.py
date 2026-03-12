@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from decimal import ROUND_HALF_UP, Decimal
 from typing import TYPE_CHECKING, Any
 
 from arcwright_ai.core.constants import DIR_ARCWRIGHT, DIR_RUNS, SUMMARY_FILENAME
@@ -22,6 +23,10 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 __all__: list[str] = [
+    "format_budget_remaining",
+    "format_cost",
+    "format_retry_overhead",
+    "format_tokens",
     "write_halt_report",
     "write_success_summary",
     "write_timeout_summary",
@@ -76,6 +81,156 @@ def _format_budget_field(value: Any) -> str:
     if value is None or value == 0 or value == "0" or value == "":
         return "N/A"
     return str(value)
+
+
+def format_cost(value: Decimal | str | int | float | None) -> str:
+    """Format a monetary cost value as a human-readable dollar string.
+
+    All rounding uses ``Decimal.quantize`` to ``0.01`` with ``ROUND_HALF_UP``
+    to avoid float imprecision.  String inputs are parsed to ``Decimal``
+    before formatting so both ``Decimal`` and ``str`` budget dict values
+    (from ``_serialize_budget``) are handled correctly.
+
+    Args:
+        value: Cost amount as ``Decimal``, ``str``, ``int``, ``float``, or
+            ``None``.  ``None`` and all zero variants return ``"$0.00"``.
+
+    Returns:
+        Human-readable dollar string such as ``"$1.17"`` or ``"$0.00"``.
+
+    Examples:
+        >>> format_cost(Decimal("1.17"))
+        '$1.17'
+        >>> format_cost("0.005")
+        '$0.01'
+        >>> format_cost(None)
+        '$0.00'
+    """
+    if value is None:
+        return "$0.00"
+    d = Decimal(str(value))
+    quantized = d.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return f"${quantized:,.2f}"
+
+
+def format_tokens(value: int | str | None) -> str:
+    """Format a token count as a comma-separated integer string.
+
+    String inputs are parsed to ``int`` before formatting so both integer
+    and string budget dict values are handled correctly.
+
+    Args:
+        value: Token count as ``int``, ``str``, or ``None``.  ``None``
+            returns ``"0"``.
+
+    Returns:
+        Comma-separated integer string such as ``"12,450"`` or ``"0"``.
+
+    Examples:
+        >>> format_tokens(12450)
+        '12,450'
+        >>> format_tokens(0)
+        '0'
+        >>> format_tokens(None)
+        '0'
+        >>> format_tokens(1000000)
+        '1,000,000'
+    """
+    if value is None:
+        return "0"
+    return f"{int(value):,}"
+
+
+def format_budget_remaining(
+    current: Decimal | str,
+    ceiling: Decimal | str,
+    max_invocations: int | str | None = None,
+) -> str:
+    """Format remaining budget as a percentage and absolute amount string.
+
+    When *ceiling* is zero the budget is unlimited.  When *max_invocations*
+    is provided and equals zero, budget is also treated as unlimited per
+    story display requirements. When budget is not unlimited and *ceiling* > 0,
+    calculates remaining = ceiling - current and returns
+    ``"X% ($Y.YY of $Z.ZZ)"``.
+
+    Args:
+        current: Amount of budget already spent, as ``Decimal`` or ``str``.
+        ceiling: Maximum budget ceiling, as ``Decimal`` or ``str``.
+            Pass ``"0"`` or ``Decimal("0")`` for unlimited budgets.
+        max_invocations: Optional invocation ceiling. When provided as
+            ``0``/``"0"``, returns ``"unlimited"``.
+
+    Returns:
+        ``"unlimited"`` when *ceiling* is zero; otherwise a percentage
+        and absolute string such as ``"73% ($7.30 of $10.00)"``.
+
+    Examples:
+        >>> format_budget_remaining("2.70", "10.00")
+        '73% ($7.30 of $10.00)'
+        >>> format_budget_remaining("0", "0")
+        'unlimited'
+        >>> format_budget_remaining("2.70", "10.00", 0)
+        'unlimited'
+        >>> format_budget_remaining("10.00", "10.00")
+        '0% ($0.00 of $10.00)'
+    """
+    c_ceil = Decimal(str(ceiling))
+    if c_ceil == Decimal("0"):
+        return "unlimited"
+    if max_invocations is not None and int(max_invocations) == 0:
+        return "unlimited"
+    c_curr = Decimal(str(current))
+    remaining = c_ceil - c_curr
+    pct = (remaining / c_ceil * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    return f"{int(pct)}% ({format_cost(remaining)} of {format_cost(c_ceil)})"
+
+
+def format_retry_overhead(per_story: dict[str, Any]) -> str:
+    """Format retry overhead cost as a dollar amount and percentage string.
+
+    Computes the first-pass cost (one invocation per story at the
+    per-invocation rate) versus total cost.  The difference is the
+    retry overhead.
+
+    Args:
+        per_story: Per-story cost dict from the budget, keyed by story slug.
+            Each value must have ``"cost"`` (str or Decimal),
+            ``"invocations"`` (int), and is typically sourced from
+            ``_serialize_budget``.
+
+    Returns:
+        ``"$0.00 (no retries)"`` when no stories have more than one
+        invocation, otherwise ``"$X.XX (Y% overhead)"`` where X.XX is the
+        retry overhead cost and Y is the overhead percentage relative to
+        first-pass cost.
+
+    Examples:
+        >>> format_retry_overhead({})
+        '$0.00 (no retries)'
+        >>> format_retry_overhead({"s": {"cost": "1.50", "invocations": 3}})
+        '$1.00 (200% overhead)'
+    """
+    if not per_story:
+        return "$0.00 (no retries)"
+    first_pass_total = Decimal("0")
+    total_cost = Decimal("0")
+    has_retries = False
+    for entry in per_story.values():
+        cost = Decimal(str(entry.get("cost", "0")))
+        invocations = int(entry.get("invocations", 1))
+        cost_per_invocation = cost / invocations if invocations > 0 else cost
+        first_pass_total += cost_per_invocation
+        total_cost += cost
+        if invocations > 1:
+            has_retries = True
+    if not has_retries:
+        return "$0.00 (no retries)"
+    retry_cost = total_cost - first_pass_total
+    if first_pass_total > 0:
+        pct = (retry_cost / first_pass_total * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+        return f"{format_cost(retry_cost)} ({int(pct)}% overhead)"
+    return f"{format_cost(retry_cost)} (overhead)"
 
 
 def _truncate_output(text: str, max_chars: int = 2000) -> tuple[str, bool]:
@@ -240,9 +395,34 @@ async def write_success_summary(
     budget = run_status.budget
     lines.append("## Cost Summary")
     lines.append("")
-    lines.append(f"- **Invocations:** {_format_budget_field(budget.get('invocation_count', 0))}")
-    lines.append(f"- **Total Tokens:** {_format_budget_field(budget.get('total_tokens', 0))}")
-    lines.append(f"- **Estimated Cost:** {_format_budget_field(budget.get('estimated_cost', '0'))}")
+    lines.append(f"- **Total Cost:** {format_cost(budget.get('estimated_cost', '0'))}")
+    _tokens_in = int(budget.get("total_tokens_input", 0) or 0)
+    _tokens_out = int(budget.get("total_tokens_output", 0) or 0)
+    _total_tok = int(budget.get("total_tokens", 0) or 0) or (_tokens_in + _tokens_out)
+    lines.append(
+        f"- **Total Tokens:** {format_tokens(_total_tok)}"
+        f" (input: {format_tokens(_tokens_in)} / output: {format_tokens(_tokens_out)})"
+    )
+    lines.append(f"- **Total Invocations:** {budget.get('invocation_count', 0) or 0}")
+    _max_cost_ss = budget.get("max_cost", "0")
+    lines.append(
+        f"- **Budget Utilization:** "
+        f"{format_budget_remaining(budget.get('estimated_cost', '0'), _max_cost_ss, budget.get('max_invocations'))}"
+    )
+    _per_story_ss: dict[str, Any] = budget.get("per_story", {}) or {}
+    if _per_story_ss:
+        lines.append("")
+        lines.append("| Story | Tokens In | Tokens Out | Cost | Invocations |")
+        lines.append("| --- | --- | --- | --- | --- |")
+        for _slug, _entry in _per_story_ss.items():
+            _tok_in = format_tokens(_entry.get("tokens_input", 0))
+            _tok_out = format_tokens(_entry.get("tokens_output", 0))
+            _cost = format_cost(_entry.get("cost", "0"))
+            _inv = _entry.get("invocations", 1)
+            lines.append(f"| {_slug} | {_tok_in} | {_tok_out} | {_cost} | {_inv} |")
+    else:
+        lines.append("- No per-story data yet")
+    lines.append(f"- **Retry Overhead:** {format_retry_overhead(_per_story_ss)}")
     lines.append("")
 
     # Provenance References
@@ -467,10 +647,40 @@ async def write_halt_report(
     ]
     lines.append(f"- **Stories Completed:** {len(completed_stories)}")
     lines.append(f"- **Stories Remaining:** {len(remaining_stories)}")
+    lines.append("")
+
+    # Cost Summary
     budget = run_status.budget
-    lines.append(f"- **Invocations at Halt:** {_format_budget_field(budget.get('invocation_count', 0))}")
-    lines.append(f"- **Tokens at Halt:** {_format_budget_field(budget.get('total_tokens', 0))}")
-    lines.append(f"- **Cost at Halt:** {_format_budget_field(budget.get('estimated_cost', '0'))}")
+    lines.append("## Cost Summary")
+    lines.append("")
+    lines.append(f"- **Total Cost:** {format_cost(budget.get('estimated_cost', '0'))}")
+    _tokens_in_hr = int(budget.get("total_tokens_input", 0) or 0)
+    _tokens_out_hr = int(budget.get("total_tokens_output", 0) or 0)
+    _total_tok_hr = int(budget.get("total_tokens", 0) or 0) or (_tokens_in_hr + _tokens_out_hr)
+    lines.append(
+        f"- **Total Tokens:** {format_tokens(_total_tok_hr)}"
+        f" (input: {format_tokens(_tokens_in_hr)} / output: {format_tokens(_tokens_out_hr)})"
+    )
+    lines.append(f"- **Total Invocations:** {budget.get('invocation_count', 0) or 0}")
+    _max_cost_hr = budget.get("max_cost", "0")
+    lines.append(
+        f"- **Budget Utilization:** "
+        f"{format_budget_remaining(budget.get('estimated_cost', '0'), _max_cost_hr, budget.get('max_invocations'))}"
+    )
+    _per_story_hr: dict[str, Any] = budget.get("per_story", {}) or {}
+    if _per_story_hr:
+        lines.append("")
+        lines.append("| Story | Tokens In | Tokens Out | Cost | Invocations |")
+        lines.append("| --- | --- | --- | --- | --- |")
+        for _slug, _entry in _per_story_hr.items():
+            _tok_in = format_tokens(_entry.get("tokens_input", 0))
+            _tok_out = format_tokens(_entry.get("tokens_output", 0))
+            _cost = format_cost(_entry.get("cost", "0"))
+            _inv = _entry.get("invocations", 1)
+            lines.append(f"| {_slug} | {_tok_in} | {_tok_out} | {_cost} | {_inv} |")
+    else:
+        lines.append("- No per-story data yet")
+    lines.append(f"- **Retry Overhead:** {format_retry_overhead(_per_story_hr)}")
     lines.append("")
 
     content = "\n".join(lines)
@@ -589,9 +799,34 @@ async def write_timeout_summary(project_root: Path, run_id: str) -> Path:
     budget = run_status.budget
     lines.append("## Cost Summary")
     lines.append("")
-    lines.append(f"- **Invocations:** {_format_budget_field(budget.get('invocation_count', 0))}")
-    lines.append(f"- **Total Tokens:** {_format_budget_field(budget.get('total_tokens', 0))}")
-    lines.append(f"- **Estimated Cost:** {_format_budget_field(budget.get('estimated_cost', '0'))}")
+    lines.append(f"- **Total Cost:** {format_cost(budget.get('estimated_cost', '0'))}")
+    _tokens_in_to = int(budget.get("total_tokens_input", 0) or 0)
+    _tokens_out_to = int(budget.get("total_tokens_output", 0) or 0)
+    _total_tok_to = int(budget.get("total_tokens", 0) or 0) or (_tokens_in_to + _tokens_out_to)
+    lines.append(
+        f"- **Total Tokens:** {format_tokens(_total_tok_to)}"
+        f" (input: {format_tokens(_tokens_in_to)} / output: {format_tokens(_tokens_out_to)})"
+    )
+    lines.append(f"- **Total Invocations:** {budget.get('invocation_count', 0) or 0}")
+    _max_cost_to = budget.get("max_cost", "0")
+    lines.append(
+        f"- **Budget Utilization:** "
+        f"{format_budget_remaining(budget.get('estimated_cost', '0'), _max_cost_to, budget.get('max_invocations'))}"
+    )
+    _per_story_to: dict[str, Any] = budget.get("per_story", {}) or {}
+    if _per_story_to:
+        lines.append("")
+        lines.append("| Story | Tokens In | Tokens Out | Cost | Invocations |")
+        lines.append("| --- | --- | --- | --- | --- |")
+        for _slug, _entry in _per_story_to.items():
+            _tok_in = format_tokens(_entry.get("tokens_input", 0))
+            _tok_out = format_tokens(_entry.get("tokens_output", 0))
+            _cost = format_cost(_entry.get("cost", "0"))
+            _inv = _entry.get("invocations", 1)
+            lines.append(f"| {_slug} | {_tok_in} | {_tok_out} | {_cost} | {_inv} |")
+    else:
+        lines.append("- No per-story data yet")
+    lines.append(f"- **Retry Overhead:** {format_retry_overhead(_per_story_to)}")
     lines.append("")
 
     # Next Steps

@@ -215,7 +215,7 @@ def test_status_story_breakdown_categorization(tmp_path, monkeypatch: pytest.Mon
 
 
 def test_status_budget_cost_display(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Status command displays budget/cost fields from run.yaml."""
+    """Status command displays budget/cost fields with proper formatting from run.yaml."""
     budget = {
         "invocation_count": 12,
         "total_tokens": 145230,
@@ -232,8 +232,8 @@ def test_status_budget_cost_display(tmp_path, monkeypatch: pytest.MonkeyPatch) -
 
     assert result.exit_code == 0
     assert "12" in result.stderr
-    assert "145230" in result.stderr
-    assert "3.42" in result.stderr
+    assert "145,230" in result.stderr
+    assert "$3.42" in result.stderr
 
 
 # ---------------------------------------------------------------------------
@@ -241,8 +241,8 @@ def test_status_budget_cost_display(tmp_path, monkeypatch: pytest.MonkeyPatch) -
 # ---------------------------------------------------------------------------
 
 
-def test_status_budget_zero_values_display_na(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Status command shows N/A for zero or null budget values."""
+def test_status_budget_zero_values_display_formatted(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Status command shows $0.00 and 0 for zero budget values (not N/A)."""
     budget = {
         "invocation_count": 0,
         "total_tokens": 0,
@@ -258,7 +258,32 @@ def test_status_budget_zero_values_display_na(tmp_path, monkeypatch: pytest.Monk
     result = runner.invoke(app, ["status", "--path", str(tmp_path)])
 
     assert result.exit_code == 0
-    assert "N/A" in result.stderr
+    assert "$0.00" in result.stderr
+
+
+def test_status_budget_remaining_unlimited_when_max_invocations_zero(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Status shows 'unlimited' remaining when invocation ceiling is configured as unlimited."""
+    budget = {
+        "invocation_count": 12,
+        "total_tokens": 145230,
+        "estimated_cost": "3.42",
+        "max_cost": "10.0",
+        "max_invocations": 0,
+    }
+    run_status = _make_run_status(budget=budget)
+    summary = _make_run_summary()
+
+    monkeypatch.setattr("arcwright_ai.cli.status.list_runs", _make_async_return([summary]))
+    monkeypatch.setattr("arcwright_ai.cli.status.get_run_status", _make_async_return(run_status))
+
+    result = runner.invoke(app, ["status", "--path", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "Remaining:" in result.stderr
+    assert "unlimited" in result.stderr
 
 
 # ---------------------------------------------------------------------------
@@ -402,3 +427,71 @@ def test_status_command_appears_in_help() -> None:
     """The status command appears in arcwright-ai --help output."""
     result = runner.invoke(app, ["--help"])
     assert "status" in result.output
+
+
+# ---------------------------------------------------------------------------
+# AC #1 — per-story breakdown table displayed when per_story is non-empty
+# ---------------------------------------------------------------------------
+
+
+def test_status_per_story_breakdown_displayed(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Per-story cost table appears when budget has per_story data."""
+    budget = {
+        "invocation_count": 4,
+        "total_tokens": 12350,
+        "estimated_cost": "1.17",
+        "max_cost": "10.0",
+        "per_story": {
+            "7-1-budgetstate": {
+                "tokens_input": 2100,
+                "tokens_output": 2100,
+                "cost": "0.39",
+                "invocations": 1,
+            },
+            "7-2-budget-check": {
+                "tokens_input": 4125,
+                "tokens_output": 4025,
+                "cost": "0.78",
+                "invocations": 3,
+            },
+        },
+    }
+    run_status = _make_run_status(budget=budget)
+    summary = _make_run_summary()
+
+    monkeypatch.setattr("arcwright_ai.cli.status.list_runs", _make_async_return([summary]))
+    monkeypatch.setattr("arcwright_ai.cli.status.get_run_status", _make_async_return(run_status))
+
+    result = runner.invoke(app, ["status", "--path", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "Per-Story Breakdown:" in result.stderr
+    assert "7-1-budgetstate" in result.stderr
+    assert "$0.39" in result.stderr
+    assert "$0.78" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# AC #1 — per-story table hidden when per_story is empty or missing
+# ---------------------------------------------------------------------------
+
+
+def test_status_per_story_empty_no_table(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Per-story breakdown section is absent when budget has empty per_story."""
+    budget = {
+        "invocation_count": 0,
+        "total_tokens": 0,
+        "estimated_cost": "0",
+        "max_cost": "10.0",
+        "per_story": {},
+    }
+    run_status = _make_run_status(budget=budget)
+    summary = _make_run_summary()
+
+    monkeypatch.setattr("arcwright_ai.cli.status.list_runs", _make_async_return([summary]))
+    monkeypatch.setattr("arcwright_ai.cli.status.get_run_status", _make_async_return(run_status))
+
+    result = runner.invoke(app, ["status", "--path", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "Per-Story Breakdown:" not in result.stderr

@@ -32,6 +32,7 @@ from arcwright_ai.core.constants import (
 from arcwright_ai.core.exceptions import ConfigError, RunError
 from arcwright_ai.core.io import load_yaml
 from arcwright_ai.output.run_manager import RunStatusValue, get_run_status, list_runs
+from arcwright_ai.output.summary import format_budget_remaining, format_cost, format_tokens
 
 __all__: list[str] = [
     "init_command",
@@ -748,9 +749,20 @@ async def _status_async(project_root: Path, run_id: str | None) -> None:
 
     # Format budget/cost fields
     budget = run_status.budget
-    invocation_count = _format_cost_value(budget.get("invocation_count"))
-    total_tokens = _format_cost_value(budget.get("total_tokens"))
-    estimated_cost = _format_cost_value(budget.get("estimated_cost"))
+    _inv_count = budget.get("invocation_count", 0) or 0
+    _total_tok = int(budget.get("total_tokens", 0) or 0)
+    _tok_in = int(budget.get("total_tokens_input", 0) or 0)
+    _tok_out = int(budget.get("total_tokens_output", 0) or 0)
+    if _total_tok == 0:
+        _total_tok = _tok_in + _tok_out
+    _est_cost = format_cost(budget.get("estimated_cost", "0"))
+    _tokens_display = f"{format_tokens(_total_tok)} (in: {format_tokens(_tok_in)} / out: {format_tokens(_tok_out)})"
+    _max_cost = budget.get("max_cost", "0")
+    _remaining_display = format_budget_remaining(
+        budget.get("estimated_cost", "0"),
+        _max_cost,
+        budget.get("max_invocations"),
+    )
 
     # Build output
     separator = "\u2500" * 38
@@ -779,9 +791,25 @@ async def _status_async(project_root: Path, run_id: str | None) -> None:
         typer.echo("  \u25e6 0 pending", err=True)
     typer.echo("", err=True)
     typer.echo("Cost:", err=True)
-    typer.echo(f"  Invocations: {invocation_count}", err=True)
-    typer.echo(f"  Tokens:      {total_tokens}", err=True)
-    typer.echo(f"  Est. Cost:   {estimated_cost}", err=True)
+    typer.echo(f"  Invocations: {_inv_count}", err=True)
+    typer.echo(f"  Tokens:      {_tokens_display}", err=True)
+    typer.echo(f"  Est. Cost:   {_est_cost}", err=True)
+    typer.echo(f"  Remaining:   {_remaining_display}", err=True)
+    _per_story: dict[str, Any] = budget.get("per_story", {}) or {}
+    if _per_story:
+        typer.echo("", err=True)
+        typer.echo("Per-Story Breakdown:", err=True)
+        _hdr = f"  {'Story':<22} {'Tokens':<10} {'Cost':<8} {'Invocations'}"
+        _sep = "  " + "\u2500" * 51
+        typer.echo(_hdr, err=True)
+        typer.echo(_sep, err=True)
+        for _slug, _entry in _per_story.items():
+            _display_slug = _slug[:19] + "..." if len(_slug) > 22 else _slug
+            _tok_total = int(_entry.get("tokens_input", 0) or 0) + int(_entry.get("tokens_output", 0) or 0)
+            _entry_cost = format_cost(_entry.get("cost", "0"))
+            _entry_inv = _entry.get("invocations", 1)
+            _row = f"  {_display_slug:<22} {format_tokens(_tok_total):<10} {_entry_cost:<8} {_entry_inv}"
+            typer.echo(_row, err=True)
     typer.echo("", err=True)
 
 

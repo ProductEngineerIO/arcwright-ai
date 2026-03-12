@@ -193,13 +193,13 @@ async def test_write_success_summary_stories_with_status(tmp_path: Path, run_dir
 
 
 @pytest.mark.asyncio
-async def test_write_success_summary_zero_budget_shows_na(tmp_path: Path, run_dir: str) -> None:
-    """(9c) write_success_summary shows N/A for zero budget fields."""
+async def test_write_success_summary_zero_budget_shows_formatted_zeros(tmp_path: Path, run_dir: str) -> None:
+    """(9c) write_success_summary shows $0.00 and 0 tokens for zero budget fields."""
     path = await write_success_summary(tmp_path, run_dir)
     content = path.read_text(encoding="utf-8")
 
-    # Fresh run has 0/empty budget fields
-    assert "N/A" in content
+    # Fresh run has 0/empty budget fields — should display as formatted zeros, not N/A
+    assert "$0.00" in content
 
 
 @pytest.mark.asyncio
@@ -933,3 +933,216 @@ async def test_write_success_summary_omits_pull_request_section_when_no_pr_url(
     content = path.read_text(encoding="utf-8")
 
     assert "## Pull Request" not in content
+
+
+# ---------------------------------------------------------------------------
+# Story 7.3 — per-story cost table in write_success_summary (AC: #9g)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_write_success_summary_per_story_table(tmp_path: Path) -> None:
+    """(9g) write_success_summary includes per-story markdown table when per_story is set."""
+    from decimal import Decimal
+
+    from arcwright_ai.core.types import BudgetState, StoryCost
+    from arcwright_ai.output.run_manager import update_run_status
+
+    run_id = _make_run_id()
+    config = _make_config()
+    await create_run(tmp_path, run_id, config, STORY_SLUGS_SINGLE)
+
+    budget = BudgetState(
+        total_tokens=4200,
+        total_tokens_input=2100,
+        total_tokens_output=2100,
+        estimated_cost=Decimal("0.39"),
+        max_cost=Decimal("5.0"),
+        invocation_count=1,
+        per_story={
+            "4-3-run-summary": StoryCost(
+                tokens_input=2100,
+                tokens_output=2100,
+                cost=Decimal("0.39"),
+                invocations=1,
+            ),
+        },
+    )
+    await update_run_status(tmp_path, run_id, budget=budget)
+
+    path = await write_success_summary(tmp_path, run_id)
+    content = path.read_text(encoding="utf-8")
+
+    assert "| Story | Tokens In | Tokens Out | Cost | Invocations |" in content
+    assert "4-3-run-summary" in content
+    assert "$0.39" in content
+
+
+# ---------------------------------------------------------------------------
+# Story 7.3 — retry overhead in write_success_summary (AC: #9h)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_write_success_summary_retry_overhead(tmp_path: Path) -> None:
+    """(9h) write_success_summary includes retry overhead line in cost section."""
+    from decimal import Decimal
+
+    from arcwright_ai.core.types import BudgetState, StoryCost
+    from arcwright_ai.output.run_manager import update_run_status
+
+    run_id = _make_run_id()
+    config = _make_config()
+    await create_run(tmp_path, run_id, config, STORY_SLUGS_SINGLE)
+
+    # Story with 3 invocations: total $1.50, first-pass $0.50, overhead $1.00 (200%)
+    budget = BudgetState(
+        total_tokens=12600,
+        total_tokens_input=6300,
+        total_tokens_output=6300,
+        estimated_cost=Decimal("1.50"),
+        max_cost=Decimal("10.0"),
+        invocation_count=3,
+        per_story={
+            "4-3-run-summary": StoryCost(
+                tokens_input=6300,
+                tokens_output=6300,
+                cost=Decimal("1.50"),
+                invocations=3,
+            ),
+        },
+    )
+    await update_run_status(tmp_path, run_id, budget=budget)
+
+    path = await write_success_summary(tmp_path, run_id)
+    content = path.read_text(encoding="utf-8")
+
+    assert "**Retry Overhead:**" in content
+    assert "200% overhead" in content
+
+
+# ---------------------------------------------------------------------------
+# Story 7.3 — halt report Run Context shows formatted cost (AC: #9i)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_write_halt_report_run_context_shows_formatted_cost(tmp_path: Path) -> None:
+    """(9i) write_halt_report Run Context section shows $-formatted cost values."""
+    from decimal import Decimal
+
+    from arcwright_ai.core.types import BudgetState
+    from arcwright_ai.output.run_manager import update_run_status
+
+    run_id = _make_run_id()
+    config = _make_config()
+    await create_run(tmp_path, run_id, config, STORY_SLUGS_SINGLE)
+
+    budget = BudgetState(
+        total_tokens=50000,
+        estimated_cost=Decimal("1.50"),
+        max_cost=Decimal("10.0"),
+        invocation_count=5,
+    )
+    await update_run_status(tmp_path, run_id, budget=budget)
+
+    path = await write_halt_report(
+        tmp_path,
+        run_id,
+        halted_story="4-3-run-summary",
+        halt_reason="test",
+        validation_history=[],
+        last_agent_output="output",
+        suggested_fix="fix",
+    )
+    content = path.read_text(encoding="utf-8")
+
+    assert "## Run Context" in content
+    assert "$1.50" in content
+    assert "50,000" in content
+    assert "## Cost Summary" in content
+    assert "**Budget Utilization:**" in content
+
+
+@pytest.mark.asyncio
+async def test_write_halt_report_cost_summary_includes_per_story_table_and_retry_overhead(tmp_path: Path) -> None:
+    """Halt report Cost Summary includes per-story markdown table and retry overhead."""
+    from decimal import Decimal
+
+    from arcwright_ai.core.types import BudgetState, StoryCost
+    from arcwright_ai.output.run_manager import update_run_status
+
+    run_id = _make_run_id()
+    config = _make_config()
+    await create_run(tmp_path, run_id, config, STORY_SLUGS_SINGLE)
+
+    budget = BudgetState(
+        total_tokens=12600,
+        total_tokens_input=6300,
+        total_tokens_output=6300,
+        estimated_cost=Decimal("1.50"),
+        max_cost=Decimal("10.0"),
+        invocation_count=3,
+        per_story={
+            "4-3-run-summary": StoryCost(
+                tokens_input=6300,
+                tokens_output=6300,
+                cost=Decimal("1.50"),
+                invocations=3,
+            ),
+        },
+    )
+    await update_run_status(tmp_path, run_id, budget=budget)
+
+    path = await write_halt_report(
+        tmp_path,
+        run_id,
+        halted_story="4-3-run-summary",
+        halt_reason="test",
+        validation_history=[],
+        last_agent_output="output",
+        suggested_fix="fix",
+    )
+    content = path.read_text(encoding="utf-8")
+
+    assert "## Cost Summary" in content
+    assert "| Story | Tokens In | Tokens Out | Cost | Invocations |" in content
+    assert "4-3-run-summary" in content
+    assert "$1.50" in content
+    assert "**Retry Overhead:**" in content
+    assert "200% overhead" in content
+
+
+@pytest.mark.asyncio
+async def test_write_halt_report_budget_utilization_unlimited_when_max_invocations_zero(tmp_path: Path) -> None:
+    """Halt report shows unlimited budget utilization when max_invocations is 0."""
+    from decimal import Decimal
+
+    from arcwright_ai.core.types import BudgetState
+    from arcwright_ai.output.run_manager import update_run_status
+
+    run_id = _make_run_id()
+    config = _make_config()
+    await create_run(tmp_path, run_id, config, STORY_SLUGS_SINGLE)
+
+    budget = BudgetState(
+        total_tokens=50000,
+        estimated_cost=Decimal("1.50"),
+        max_cost=Decimal("10.0"),
+        max_invocations=0,
+        invocation_count=5,
+    )
+    await update_run_status(tmp_path, run_id, budget=budget)
+
+    path = await write_halt_report(
+        tmp_path,
+        run_id,
+        halted_story="4-3-run-summary",
+        halt_reason="test",
+        validation_history=[],
+        last_agent_output="output",
+        suggested_fix="fix",
+    )
+    content = path.read_text(encoding="utf-8")
+
+    assert "**Budget Utilization:** unlimited" in content

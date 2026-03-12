@@ -99,7 +99,7 @@ development_status:
   # Epic 7: Cost Tracking & Budget Enforcement (4 stories, 16 pts)
   epic-7: in-progress
   7-1-budgetstate-model-and-cost-accumulation: done
-  7-2-budget-check-node-dual-ceiling-enforcement: review
-  7-3-cost-display-in-cli-status-and-run-summary: backlog
+  7-2-budget-check-node-dual-ceiling-enforcement: done
+  7-3-cost-display-in-cli-status-and-run-summary: done
   7-4-cost-tracking-integration-with-engine-pipeline: backlog
   epic-7-retrospective: optional
