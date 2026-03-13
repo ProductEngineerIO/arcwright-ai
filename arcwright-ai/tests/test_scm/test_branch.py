@@ -576,6 +576,93 @@ async def test_push_branch_logs_structured_event_on_success(
     assert any("git.push" in r.message for r in caplog.records)
 
 
+@pytest.mark.asyncio
+async def test_push_branch_retries_with_force_with_lease_on_non_fast_forward(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """push_branch retries with --force-with-lease when non-fast-forward is detected."""
+    calls: list[tuple[str, ...]] = []
+
+    async def _mock_git(*args: str, cwd: object = None) -> GitResult:
+        calls.append(args)
+        if "--force-with-lease" not in args:
+            raise ScmError(
+                "git push failed (exit 1)",
+                details={"stderr": "! [rejected] (non-fast-forward)\nerror: failed to push"},
+            )
+        return _ok()
+
+    monkeypatch.setattr("arcwright_ai.scm.branch.git", _mock_git)
+
+    result = await push_branch(_BRANCH, project_root=tmp_path)
+
+    assert result is True
+    assert len(calls) == 2
+    assert calls[0] == ("push", "origin", _BRANCH)
+    assert calls[1] == ("push", "--force-with-lease", "origin", _BRANCH)
+
+
+@pytest.mark.asyncio
+async def test_push_branch_force_with_lease_retry_returns_false_on_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """push_branch returns False when --force-with-lease retry also fails."""
+    mock_git = AsyncMock(
+        side_effect=ScmError(
+            "git push failed (exit 1)",
+            details={"stderr": "! [rejected] (non-fast-forward)\nerror: failed to push"},
+        )
+    )
+    monkeypatch.setattr("arcwright_ai.scm.branch.git", mock_git)
+
+    result = await push_branch(_BRANCH, project_root=tmp_path)
+
+    assert result is False
+    assert mock_git.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_push_branch_does_not_retry_on_non_fast_forward_unrelated_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """push_branch does NOT retry with --force-with-lease for non-network errors."""
+    mock_git = AsyncMock(side_effect=ScmError("network timeout", details={"stderr": "fatal: unable to access remote"}))
+    monkeypatch.setattr("arcwright_ai.scm.branch.git", mock_git)
+
+    result = await push_branch(_BRANCH, project_root=tmp_path)
+
+    assert result is False
+    mock_git.assert_called_once()  # No retry
+
+
+@pytest.mark.asyncio
+async def test_push_branch_force_with_lease_retry_logs_info(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    """push_branch logs git.push.retry_force_with_lease before the retry."""
+
+    async def _mock_git(*args: str, cwd: object = None) -> GitResult:
+        if "--force-with-lease" not in args:
+            raise ScmError(
+                "git push failed (exit 1)",
+                details={"stderr": "! [rejected] (non-fast-forward)"},
+            )
+        return _ok()
+
+    monkeypatch.setattr("arcwright_ai.scm.branch.git", _mock_git)
+
+    with caplog.at_level(logging.INFO, logger="arcwright_ai.scm.branch"):
+        result = await push_branch(_BRANCH, project_root=tmp_path)
+
+    assert result is True
+    assert any("git.push.retry_force_with_lease" in r.message for r in caplog.records)
+
+
 # ---------------------------------------------------------------------------
 # delete_remote_branch tests
 # ---------------------------------------------------------------------------

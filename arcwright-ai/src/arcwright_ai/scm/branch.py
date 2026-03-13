@@ -11,6 +11,13 @@ isolated from any human-created branches.  Example: ``arcwright/my-story``.
 No ``--force``, ``reset --hard``, or rebase commands are used.  An existing
 branch is an error, not a silent overwrite.
 
+**Exception: ``--force-with-lease`` for Arcwright-Owned Branches**
+``push_branch`` uses ``--force-with-lease`` as a retry strategy when a
+non-fast-forward rejection is detected on an ``arcwright/`` branch from a
+prior run.  ``--force-with-lease`` is safe — it only succeeds when the
+remote ref has not been updated by another actor since the last fetch.
+This prevents stale remote branches from blocking fresh dispatches.
+
 **Push/PR Integration**
 Branches may be pushed to a configured remote as a best-effort step after
 successful local commits.
@@ -312,7 +319,11 @@ async def push_branch(
     """Push a local branch to a remote repository (best-effort).
 
     Calls ``git push <remote> <branch_name>`` via the :func:`~arcwright_ai.scm.git.git`
-    wrapper.  :class:`~arcwright_ai.core.exceptions.ScmError` is caught, logged as a
+    wrapper.  On a non-fast-forward rejection (stale remote branch from a prior
+    run), retries once with ``--force-with-lease`` which is safe — it only
+    succeeds when the remote ref has not been updated by another actor.
+
+    :class:`~arcwright_ai.core.exceptions.ScmError` is caught, logged as a
     warning, and not re-raised so that push failures never halt story execution
     (AC: #1, #2).
 
@@ -331,19 +342,54 @@ async def push_branch(
     try:
         await git("push", remote, branch_name, cwd=project_root)
     except ScmError as exc:
-        logger.warning(
-            "git.push.error",
-            extra={
-                "data": {
-                    "branch": branch_name,
-                    "remote": remote,
-                    "project_root": str(project_root),
-                    "error": exc.message,
-                    "details": exc.details,
-                }
-            },
-        )
-        return False
+        # Detect non-fast-forward rejection and retry with --force-with-lease.
+        # This handles the common case where a prior run already pushed the
+        # same arcwright/ branch and the new local branch diverges.
+        stderr = ""
+        if exc.details and "stderr" in exc.details:
+            stderr = str(exc.details["stderr"]).lower()
+        if "non-fast-forward" in stderr:
+            logger.info(
+                "git.push.retry_force_with_lease",
+                extra={
+                    "data": {
+                        "branch": branch_name,
+                        "remote": remote,
+                        "reason": "non_fast_forward",
+                    }
+                },
+            )
+            try:
+                await git("push", "--force-with-lease", remote, branch_name, cwd=project_root)
+            except ScmError as retry_exc:
+                logger.warning(
+                    "git.push.error",
+                    extra={
+                        "data": {
+                            "branch": branch_name,
+                            "remote": remote,
+                            "project_root": str(project_root),
+                            "error": retry_exc.message,
+                            "details": retry_exc.details,
+                            "retry": "force_with_lease",
+                        }
+                    },
+                )
+                return False
+        else:
+            logger.warning(
+                "git.push.error",
+                extra={
+                    "data": {
+                        "branch": branch_name,
+                        "remote": remote,
+                        "project_root": str(project_root),
+                        "error": exc.message,
+                        "details": exc.details,
+                    }
+                },
+            )
+            return False
 
     logger.info(
         "git.push",

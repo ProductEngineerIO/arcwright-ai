@@ -123,9 +123,7 @@ async def preflight_node(state: StoryState) -> StoryState:
                 # Also delete the remote branch so the fresh push doesn't hit
                 # a non-fast-forward rejection from the prior run's push.
                 remote = state.config.scm.remote.strip() if state.config.scm.remote.strip() else "origin"
-                await delete_remote_branch(
-                    BRANCH_PREFIX + story_slug, project_root=state.project_root, remote=remote
-                )
+                await delete_remote_branch(BRANCH_PREFIX + story_slug, project_root=state.project_root, remote=remote)
                 worktree_path = await create_worktree(story_slug, project_root=state.project_root)
             else:
                 raise
