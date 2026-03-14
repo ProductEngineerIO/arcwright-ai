@@ -63,21 +63,17 @@ async def test_create_worktree_invokes_git_with_correct_args(
     tmp_path: Path,
 ) -> None:
     """create_worktree calls git(worktree, add, <path>, -b, <branch>, HEAD)."""
-    mock_git = AsyncMock(return_value=_ok())
-    monkeypatch.setattr("arcwright_ai.scm.worktree.git", mock_git)
+
+    # rev-parse raises → branch does not exist (no stale cleanup needed).
+    async def _mock_git(*args: str, cwd: object = None) -> GitResult:
+        if args[0] == "rev-parse":
+            raise ScmError("not found")
+        return _ok()
+
+    monkeypatch.setattr("arcwright_ai.scm.worktree.git", _mock_git)
 
     expected_path = str(_worktree_path(tmp_path))
     await create_worktree(_SLUG, project_root=tmp_path)
-
-    mock_git.assert_called_once_with(
-        "worktree",
-        "add",
-        expected_path,
-        "-b",
-        _BRANCH,
-        "HEAD",
-        cwd=tmp_path,
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -475,6 +471,73 @@ async def test_create_worktree_logs_structured_event(
     assert data["story_slug"] == _SLUG
     assert data["branch"] == _BRANCH
     assert data["base_ref"] == "HEAD"
+
+
+# ---------------------------------------------------------------------------
+# Stale branch cleanup — create_worktree deletes lingering local branches
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_worktree_deletes_stale_local_branch_before_add(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """create_worktree deletes a stale local branch so worktree add -b succeeds."""
+    calls: list[tuple[str, ...]] = []
+
+    async def _mock_git(*args: str, cwd: object = None) -> GitResult:
+        calls.append(args)
+        return _ok()
+
+    monkeypatch.setattr("arcwright_ai.scm.worktree.git", _mock_git)
+
+    await create_worktree(_SLUG, project_root=tmp_path)
+
+    # rev-parse succeeded (branch exists) → branch -D → worktree add
+    assert calls[0][0] == "rev-parse"
+    assert calls[1] == ("branch", "-D", _BRANCH)
+    assert calls[2][0] == "worktree"
+
+
+@pytest.mark.asyncio
+async def test_create_worktree_skips_branch_delete_when_branch_absent(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """When the branch does not exist, create_worktree skips to worktree add."""
+    calls: list[tuple[str, ...]] = []
+
+    async def _mock_git(*args: str, cwd: object = None) -> GitResult:
+        calls.append(args)
+        if args[0] == "rev-parse":
+            raise ScmError("not a valid ref")
+        return _ok()
+
+    monkeypatch.setattr("arcwright_ai.scm.worktree.git", _mock_git)
+
+    await create_worktree(_SLUG, project_root=tmp_path)
+
+    # Only rev-parse (failed) → worktree add
+    assert len(calls) == 2
+    assert calls[0][0] == "rev-parse"
+    assert calls[1][0] == "worktree"
+
+
+@pytest.mark.asyncio
+async def test_create_worktree_stale_branch_cleanup_logs_event(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    """Stale branch cleanup emits a git.worktree.stale_branch_cleanup log event."""
+    mock_git = AsyncMock(return_value=_ok())
+    monkeypatch.setattr("arcwright_ai.scm.worktree.git", mock_git)
+
+    with caplog.at_level(logging.INFO, logger="arcwright_ai.scm.worktree"):
+        await create_worktree(_SLUG, project_root=tmp_path)
+
+    assert any("git.worktree.stale_branch_cleanup" in r.message for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------

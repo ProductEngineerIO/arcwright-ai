@@ -132,6 +132,28 @@ async def create_worktree(
     branch_name: str = BRANCH_PREFIX + story_slug
     resolved_base_ref: str = base_ref if base_ref is not None else "HEAD"
 
+    # Delete stale local branch from a prior run if it still exists.
+    # Arcwright-namespaced branches are exclusively tool-owned, so this is
+    # safe.  Without this, ``git worktree add -b`` would fail with
+    # "a branch named '...' already exists" when a prior run committed
+    # but the branch was never cleaned up.
+    try:
+        await git("rev-parse", "--verify", f"refs/heads/{branch_name}", cwd=project_root)
+        # Branch exists — delete it.
+        with contextlib.suppress(ScmError):
+            await git("branch", "-D", branch_name, cwd=project_root)
+        logger.info(
+            "git.worktree.stale_branch_cleanup",
+            extra={
+                "data": {
+                    "story_slug": story_slug,
+                    "branch": branch_name,
+                }
+            },
+        )
+    except ScmError:
+        pass  # Branch does not exist — proceed normally.
+
     try:
         await git(
             "worktree",

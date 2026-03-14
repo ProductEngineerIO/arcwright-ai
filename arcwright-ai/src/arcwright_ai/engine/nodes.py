@@ -108,7 +108,8 @@ async def preflight_node(state: StoryState) -> StoryState:
             # If a worktree was preserved from a prior escalated run, remove it
             # and retry rather than escalating immediately.  This allows fresh
             # `dispatch --story` retries without manual `git worktree remove`.
-            if "already exists" in stale_exc.message:
+            stale_msg = stale_exc.message + " " + str(stale_exc.details or "")
+            if "already exists" in stale_msg:
                 logger.info(
                     "scm.worktree.stale_cleanup",
                     extra={
