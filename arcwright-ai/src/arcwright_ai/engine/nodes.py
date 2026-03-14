@@ -1408,6 +1408,7 @@ async def commit_node(state: StoryState) -> StoryState:
                     branch_name,
                     project_root=project_root,
                     remote=configured_remote,
+                    worktree_path=state.worktree_path,
                 )
             except Exception as exc:
                 logger.warning(

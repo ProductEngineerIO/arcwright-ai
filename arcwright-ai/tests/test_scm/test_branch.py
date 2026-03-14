@@ -576,12 +576,172 @@ async def test_push_branch_logs_structured_event_on_success(
     assert any("git.push" in r.message for r in caplog.records)
 
 
+# ---------------------------------------------------------------------------
+# Merge-ours reconciliation strategy (with worktree_path)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_push_branch_merge_ours_reconciles_non_fast_forward(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """push_branch fetches + merges --strategy=ours then retries push when worktree_path is given."""
+    calls: list[tuple[str, ...]] = []
+    worktree = tmp_path / "worktree"
+
+    async def _mock_git(*args: str, cwd: object = None) -> GitResult:
+        calls.append(args)
+        # First push fails with non-fast-forward
+        if args == ("push", "origin", _BRANCH) and len([c for c in calls if c == ("push", "origin", _BRANCH)]) == 1:
+            raise ScmError(
+                "git push failed (exit 1)",
+                details={"stderr": "! [rejected] (non-fast-forward)\nerror: failed to push"},
+            )
+        return _ok()
+
+    monkeypatch.setattr("arcwright_ai.scm.branch.git", _mock_git)
+
+    result = await push_branch(_BRANCH, project_root=tmp_path, worktree_path=worktree)
+
+    assert result is True
+    # Calls: push (fail) → fetch → merge --strategy=ours → push (succeed)
+    assert calls[0] == ("push", "origin", _BRANCH)
+    assert calls[1] == ("fetch", "origin", _BRANCH)
+    assert calls[2][0] == "merge"
+    assert "--strategy=ours" in calls[2]
+    assert "FETCH_HEAD" in calls[2]
+    assert calls[3] == ("push", "origin", _BRANCH)
+
+
+@pytest.mark.asyncio
+async def test_push_branch_merge_ours_runs_merge_in_worktree(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """merge-ours fetch and merge run in the worktree_path, not project_root."""
+    cwd_log: list[object] = []
+    worktree = tmp_path / "worktree"
+    push_count = 0
+
+    async def _mock_git(*args: str, cwd: object = None) -> GitResult:
+        nonlocal push_count
+        cwd_log.append((args[0], cwd))
+        if args[:2] == ("push", "origin") and push_count == 0:
+            push_count += 1
+            raise ScmError(
+                "git push failed",
+                details={"stderr": "non-fast-forward"},
+            )
+        return _ok()
+
+    monkeypatch.setattr("arcwright_ai.scm.branch.git", _mock_git)
+
+    await push_branch(_BRANCH, project_root=tmp_path, worktree_path=worktree)
+
+    # fetch and merge should use worktree as cwd
+    fetch_entry = [e for e in cwd_log if e[0] == "fetch"]
+    merge_entry = [e for e in cwd_log if e[0] == "merge"]
+    assert fetch_entry[0][1] == worktree
+    assert merge_entry[0][1] == worktree
+    # push should use project_root
+    push_entries = [e for e in cwd_log if e[0] == "push"]
+    assert all(e[1] == tmp_path for e in push_entries)
+
+
+@pytest.mark.asyncio
+async def test_push_branch_merge_ours_falls_back_to_force_with_lease_on_merge_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """When merge-ours fails (e.g. fetch error), falls back to --force-with-lease."""
+    calls: list[tuple[str, ...]] = []
+    worktree = tmp_path / "worktree"
+
+    async def _mock_git(*args: str, cwd: object = None) -> GitResult:
+        calls.append(args)
+        # First push: non-fast-forward
+        if args == ("push", "origin", _BRANCH) and len([c for c in calls if c == ("push", "origin", _BRANCH)]) == 1:
+            raise ScmError(
+                "git push failed",
+                details={"stderr": "non-fast-forward"},
+            )
+        # Fetch fails (e.g. remote branch missing from a race)
+        if args[0] == "fetch":
+            raise ScmError("fetch failed", details={"stderr": "could not read from remote"})
+        return _ok()
+
+    monkeypatch.setattr("arcwright_ai.scm.branch.git", _mock_git)
+
+    result = await push_branch(_BRANCH, project_root=tmp_path, worktree_path=worktree)
+
+    assert result is True
+    # Should have fallen through to --force-with-lease
+    assert ("push", "--force-with-lease", "origin", _BRANCH) in calls
+
+
+@pytest.mark.asyncio
+async def test_push_branch_merge_ours_push_after_merge_fails_returns_false(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """When push after merge-ours also fails, returns False (no further retry)."""
+    worktree = tmp_path / "worktree"
+
+    async def _mock_git(*args: str, cwd: object = None) -> GitResult:
+        # All pushes fail
+        if args[0] == "push":
+            raise ScmError(
+                "git push failed",
+                details={"stderr": "non-fast-forward"},
+            )
+        # fetch and merge succeed
+        return _ok()
+
+    monkeypatch.setattr("arcwright_ai.scm.branch.git", _mock_git)
+
+    result = await push_branch(_BRANCH, project_root=tmp_path, worktree_path=worktree)
+
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_push_branch_merge_ours_logs_retry_event(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    """push_branch logs git.push.retry_merge_ours before the reconciliation."""
+    worktree = tmp_path / "worktree"
+    push_count = 0
+
+    async def _mock_git(*args: str, cwd: object = None) -> GitResult:
+        nonlocal push_count
+        if args[:2] == ("push", "origin") and push_count == 0:
+            push_count += 1
+            raise ScmError("fail", details={"stderr": "non-fast-forward"})
+        return _ok()
+
+    monkeypatch.setattr("arcwright_ai.scm.branch.git", _mock_git)
+
+    with caplog.at_level(logging.INFO, logger="arcwright_ai.scm.branch"):
+        result = await push_branch(_BRANCH, project_root=tmp_path, worktree_path=worktree)
+
+    assert result is True
+    assert any("git.push.retry_merge_ours" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# --force-with-lease fallback (without worktree_path)
+# ---------------------------------------------------------------------------
+
+
 @pytest.mark.asyncio
 async def test_push_branch_retries_with_force_with_lease_on_non_fast_forward(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """push_branch retries with --force-with-lease when non-fast-forward is detected."""
+    """push_branch retries with --force-with-lease when no worktree_path is given."""
     calls: list[tuple[str, ...]] = []
 
     async def _mock_git(*args: str, cwd: object = None) -> GitResult:
@@ -624,11 +784,11 @@ async def test_push_branch_force_with_lease_retry_returns_false_on_failure(
 
 
 @pytest.mark.asyncio
-async def test_push_branch_does_not_retry_on_non_fast_forward_unrelated_errors(
+async def test_push_branch_does_not_retry_on_unrelated_errors(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """push_branch does NOT retry with --force-with-lease for non-network errors."""
+    """push_branch does NOT retry for non-fast-forward unrelated errors."""
     mock_git = AsyncMock(side_effect=ScmError("network timeout", details={"stderr": "fatal: unable to access remote"}))
     monkeypatch.setattr("arcwright_ai.scm.branch.git", mock_git)
 
@@ -644,7 +804,7 @@ async def test_push_branch_force_with_lease_retry_logs_info(
     caplog: pytest.LogCaptureFixture,
     tmp_path: Path,
 ) -> None:
-    """push_branch logs git.push.retry_force_with_lease before the retry."""
+    """push_branch logs git.push.retry_force_with_lease before the fallback retry."""
 
     async def _mock_git(*args: str, cwd: object = None) -> GitResult:
         if "--force-with-lease" not in args:

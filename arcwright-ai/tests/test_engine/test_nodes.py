@@ -1956,6 +1956,7 @@ async def test_commit_node_calls_push_branch_after_successful_commit(
     # branch_name should be arcwright/<story_id>, project_root should be state.project_root
     assert BRANCH_PREFIX in call_kwargs.args[0]
     assert call_kwargs.kwargs["remote"] == "origin"
+    assert call_kwargs.kwargs["worktree_path"] == worktree_path
 
 
 @pytest.mark.asyncio

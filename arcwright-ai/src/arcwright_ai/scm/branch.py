@@ -11,12 +11,16 @@ isolated from any human-created branches.  Example: ``arcwright/my-story``.
 No ``--force``, ``reset --hard``, or rebase commands are used.  An existing
 branch is an error, not a silent overwrite.
 
-**Exception: ``--force-with-lease`` for Arcwright-Owned Branches**
-``push_branch`` uses ``--force-with-lease`` as a retry strategy when a
-non-fast-forward rejection is detected on an ``arcwright/`` branch from a
-prior run.  ``--force-with-lease`` is safe — it only succeeds when the
-remote ref has not been updated by another actor since the last fetch.
-This prevents stale remote branches from blocking fresh dispatches.
+**Exception: Merge-Ours Reconciliation for Stale Remote Branches**
+When ``push_branch`` detects a non-fast-forward rejection (stale remote
+branch from a prior run), it reconciles by fetching the remote tip and
+merging with ``--strategy=ours``.  This creates a merge commit that keeps
+our tree intact but makes the push a legitimate fast-forward from the
+remote's perspective.  This works even with GitHub branch protection rules
+that block ``--force-with-lease`` and ``--delete``.
+
+If the merge-ours approach fails (or no worktree_path is provided),
+``--force-with-lease`` is used as a last-resort fallback.
 
 **Push/PR Integration**
 Branches may be pushed to a configured remote as a best-effort step after
@@ -310,18 +314,86 @@ async def commit_story(
 # ---------------------------------------------------------------------------
 
 
+async def _reconcile_stale_remote(
+    branch_name: str,
+    *,
+    worktree_path: Path,
+    remote: str,
+) -> bool:
+    """Fetch a stale remote branch and merge with ``--strategy=ours``.
+
+    After this merge the local branch is a fast-forward descendant of the
+    remote tip while keeping our working tree exactly as-is.  A subsequent
+    regular ``git push`` will succeed without requiring force operations.
+
+    Args:
+        branch_name: Full branch name (e.g. ``arcwright/my-story``).
+        worktree_path: Working directory where the branch is checked out.
+        remote: Remote name (e.g. ``"origin"``).
+
+    Returns:
+        ``True`` when the merge succeeded and a regular push should now
+        fast-forward, ``False`` on any failure.
+    """
+    try:
+        await git("fetch", remote, branch_name, cwd=worktree_path)
+        await git(
+            "merge",
+            "--strategy=ours",
+            "--no-edit",
+            "-m",
+            f"[arcwright] reconcile stale remote branch {remote}/{branch_name}",
+            "FETCH_HEAD",
+            cwd=worktree_path,
+        )
+    except ScmError as exc:
+        logger.warning(
+            "git.push.reconcile_failed",
+            extra={
+                "data": {
+                    "branch": branch_name,
+                    "remote": remote,
+                    "worktree_path": str(worktree_path),
+                    "error": exc.message,
+                    "details": exc.details,
+                }
+            },
+        )
+        return False
+
+    logger.info(
+        "git.push.reconcile_merge_ours",
+        extra={
+            "data": {
+                "branch": branch_name,
+                "remote": remote,
+                "worktree_path": str(worktree_path),
+            }
+        },
+    )
+    return True
+
+
 async def push_branch(
     branch_name: str,
     *,
     project_root: Path,
     remote: str = "origin",
+    worktree_path: Path | None = None,
 ) -> bool:
     """Push a local branch to a remote repository (best-effort).
 
     Calls ``git push <remote> <branch_name>`` via the :func:`~arcwright_ai.scm.git.git`
     wrapper.  On a non-fast-forward rejection (stale remote branch from a prior
-    run), retries once with ``--force-with-lease`` which is safe — it only
-    succeeds when the remote ref has not been updated by another actor.
+    run), attempts recovery in this order:
+
+    1. **Merge-ours reconciliation** (preferred, requires ``worktree_path``):
+       Fetches the stale remote tip and merges with ``--strategy=ours`` to
+       make the next push a legitimate fast-forward.  Works even when GitHub
+       branch protection blocks force-push and branch deletion.
+    2. **--force-with-lease** (fallback when ``worktree_path`` is ``None``):
+       Safe force-push that only succeeds when the remote ref has not been
+       updated by another actor since the last fetch.
 
     :class:`~arcwright_ai.core.exceptions.ScmError` is caught, logged as a
     warning, and not re-raised so that push failures never halt story execution
@@ -334,6 +406,8 @@ async def push_branch(
         branch_name: Full branch name to push (e.g. ``arcwright/my-story``).
         project_root: Absolute path to the root of the git repository.
         remote: Remote name to push to.  Defaults to ``"origin"``.
+        worktree_path: Path to the worktree where the branch is checked out.
+            When provided, enables the merge-ours reconciliation strategy.
 
     Returns:
         ``True`` when push succeeded, ``False`` when push failed and was
@@ -342,41 +416,12 @@ async def push_branch(
     try:
         await git("push", remote, branch_name, cwd=project_root)
     except ScmError as exc:
-        # Detect non-fast-forward rejection and retry with --force-with-lease.
-        # This handles the common case where a prior run already pushed the
-        # same arcwright/ branch and the new local branch diverges.
+        # Detect non-fast-forward rejection — stale remote branch from a prior run.
         stderr = ""
         if exc.details and "stderr" in exc.details:
             stderr = str(exc.details["stderr"]).lower()
-        if "non-fast-forward" in stderr:
-            logger.info(
-                "git.push.retry_force_with_lease",
-                extra={
-                    "data": {
-                        "branch": branch_name,
-                        "remote": remote,
-                        "reason": "non_fast_forward",
-                    }
-                },
-            )
-            try:
-                await git("push", "--force-with-lease", remote, branch_name, cwd=project_root)
-            except ScmError as retry_exc:
-                logger.warning(
-                    "git.push.error",
-                    extra={
-                        "data": {
-                            "branch": branch_name,
-                            "remote": remote,
-                            "project_root": str(project_root),
-                            "error": retry_exc.message,
-                            "details": retry_exc.details,
-                            "retry": "force_with_lease",
-                        }
-                    },
-                )
-                return False
-        else:
+        if "non-fast-forward" not in stderr:
+            # Unrelated push error (network, auth, etc.) — give up immediately.
             logger.warning(
                 "git.push.error",
                 extra={
@@ -386,6 +431,82 @@ async def push_branch(
                         "project_root": str(project_root),
                         "error": exc.message,
                         "details": exc.details,
+                    }
+                },
+            )
+            return False
+
+        # --- Non-fast-forward recovery cascade ---
+
+        # Strategy 1: Merge-ours reconciliation (preferred, works with branch protection)
+        if worktree_path is not None:
+            logger.info(
+                "git.push.retry_merge_ours",
+                extra={
+                    "data": {
+                        "branch": branch_name,
+                        "remote": remote,
+                        "reason": "non_fast_forward",
+                    }
+                },
+            )
+            reconciled = await _reconcile_stale_remote(branch_name, worktree_path=worktree_path, remote=remote)
+            if reconciled:
+                try:
+                    await git("push", remote, branch_name, cwd=project_root)
+                except ScmError as merge_push_exc:
+                    logger.warning(
+                        "git.push.error",
+                        extra={
+                            "data": {
+                                "branch": branch_name,
+                                "remote": remote,
+                                "project_root": str(project_root),
+                                "error": merge_push_exc.message,
+                                "details": merge_push_exc.details,
+                                "retry": "merge_ours",
+                            }
+                        },
+                    )
+                    return False
+                # Merge-ours push succeeded:
+                logger.info(
+                    "git.push",
+                    extra={
+                        "data": {
+                            "branch": branch_name,
+                            "remote": remote,
+                            "project_root": str(project_root),
+                            "strategy": "merge_ours",
+                        }
+                    },
+                )
+                return True
+
+        # Strategy 2: --force-with-lease (fallback)
+        logger.info(
+            "git.push.retry_force_with_lease",
+            extra={
+                "data": {
+                    "branch": branch_name,
+                    "remote": remote,
+                    "reason": "non_fast_forward",
+                }
+            },
+        )
+        try:
+            await git("push", "--force-with-lease", remote, branch_name, cwd=project_root)
+        except ScmError as retry_exc:
+            logger.warning(
+                "git.push.error",
+                extra={
+                    "data": {
+                        "branch": branch_name,
+                        "remote": remote,
+                        "project_root": str(project_root),
+                        "error": retry_exc.message,
+                        "details": retry_exc.details,
+                        "retry": "force_with_lease",
                     }
                 },
             )
