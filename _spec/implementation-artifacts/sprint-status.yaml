@@ -122,5 +122,5 @@ development_status:
   # Epic 10: Ad-Hoc Improvements & Housekeeping
   epic-10: in-progress
   10-1-dynamic-versioning-with-hatch-vcs: done
-  10-2-pyjwt-crit-header-vulnerability-remediation: in-progress
+  10-2-pyjwt-crit-header-vulnerability-remediation: review
   10-3-langgraph-major-upgrade-deserialization-vulnerability-remediation: ready-for-dev
