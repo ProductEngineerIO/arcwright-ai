@@ -72,7 +72,7 @@ async def test_create_worktree_invokes_git_with_correct_args(
 
     monkeypatch.setattr("arcwright_ai.scm.worktree.git", _mock_git)
 
-    expected_path = str(_worktree_path(tmp_path))
+    _worktree_path(tmp_path)  # ensure path resolution works
     await create_worktree(_SLUG, project_root=tmp_path)
 
 

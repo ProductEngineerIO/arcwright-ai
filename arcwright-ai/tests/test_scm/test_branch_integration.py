@@ -59,7 +59,7 @@ async def git_repo(tmp_path: Path) -> Path:
 async def test_create_branch_real_git(git_repo: Path) -> None:
     """Create branch in real repo — verify it appears in git branch --list."""
     slug = "integration-story"
-    branch = f"arcwright/{slug}"
+    branch = f"arcwright-ai/{slug}"
 
     result = await create_branch(slug, project_root=git_repo)
 
@@ -70,7 +70,7 @@ async def test_create_branch_real_git(git_repo: Path) -> None:
     assert branch in list_result.stdout
 
     # Cleanup
-    await delete_branch(branch, project_root=git_repo, force=True)
+    await delete_branch(f"arcwright-ai/{slug}", project_root=git_repo, force=True)
 
 
 # ---------------------------------------------------------------------------
@@ -90,7 +90,7 @@ async def test_create_branch_existing_raises_error(git_repo: Path) -> None:
         await create_branch(slug, project_root=git_repo)
 
     # Cleanup
-    await delete_branch(f"arcwright/{slug}", project_root=git_repo, force=True)
+    await delete_branch(f"arcwright-ai/{slug}", project_root=git_repo, force=True)
 
 
 # ---------------------------------------------------------------------------
@@ -121,7 +121,7 @@ async def test_commit_story_real_git(git_repo: Path) -> None:
 
     # Verify commit in git log
     log_result = await git("log", "--oneline", cwd=wt_path)
-    assert "[arcwright] Commit Story" in log_result.stdout
+    assert "[arcwright-ai] Commit Story" in log_result.stdout
 
     # Verify commit message body contains Story: and Run:
     full_log = await git("log", "-1", "--format=%B", cwd=wt_path)
@@ -158,7 +158,7 @@ async def test_commit_story_no_changes_raises_error(git_repo: Path) -> None:
 
     # Cleanup (worktree has no commit, force-remove)
     await git("worktree", "remove", "--force", str(wt_path), cwd=git_repo)
-    await delete_branch(f"arcwright/{slug}", project_root=git_repo, force=True)
+    await delete_branch(f"arcwright-ai/{slug}", project_root=git_repo, force=True)
 
 
 # ---------------------------------------------------------------------------
@@ -169,7 +169,7 @@ async def test_commit_story_no_changes_raises_error(git_repo: Path) -> None:
 async def test_branch_exists_real_git(git_repo: Path) -> None:
     """branch_exists returns True for existing branch and False for non-existent."""
     slug = "exists-story"
-    branch = f"arcwright/{slug}"
+    branch = f"arcwright-ai/{slug}"
 
     # Before creation
     assert await branch_exists(branch, project_root=git_repo) is False
@@ -180,7 +180,7 @@ async def test_branch_exists_real_git(git_repo: Path) -> None:
     assert await branch_exists(branch, project_root=git_repo) is True
 
     # Non-existent
-    assert await branch_exists("arcwright/does-not-exist", project_root=git_repo) is False
+    assert await branch_exists("arcwright-ai/does-not-exist", project_root=git_repo) is False
 
     # Cleanup
     await delete_branch(branch, project_root=git_repo, force=True)
@@ -194,7 +194,7 @@ async def test_branch_exists_real_git(git_repo: Path) -> None:
 async def test_list_branches_real_git(git_repo: Path) -> None:
     """list_branches returns all arcwright branches, sorted."""
     slugs = ["zeta-story", "alpha-story", "mu-story"]
-    branches = [f"arcwright/{s}" for s in slugs]
+    branches = [f"arcwright-ai/{s}" for s in slugs]
 
     for slug in slugs:
         await create_branch(slug, project_root=git_repo)
@@ -221,7 +221,7 @@ async def test_list_branches_real_git(git_repo: Path) -> None:
 async def test_delete_branch_real_git(git_repo: Path) -> None:
     """delete_branch removes the branch — no longer appears in git branch --list."""
     slug = "to-delete-story"
-    branch = f"arcwright/{slug}"
+    branch = f"arcwright-ai/{slug}"
 
     await create_branch(slug, project_root=git_repo)
     assert await branch_exists(branch, project_root=git_repo) is True
@@ -242,7 +242,7 @@ async def test_delete_branch_real_git(git_repo: Path) -> None:
 
 async def test_delete_branch_idempotent_real_git(git_repo: Path) -> None:
     """Deleting a non-existent branch raises no error (idempotent)."""
-    branch = "arcwright/never-created"
+    branch = "arcwright-ai/never-created"
 
     # Should not raise
     await delete_branch(branch, project_root=git_repo)

@@ -53,7 +53,7 @@ async def git_repo(tmp_path: Path) -> Path:
 async def test_create_worktree_real_git(git_repo: Path) -> None:
     """Create worktree in a real repo — directory exists, branch exists, files isolated."""
     slug = "integration-story"
-    branch = f"arcwright/{slug}"
+    branch = f"arcwright-ai/{slug}"
 
     wt_path = await create_worktree(slug, project_root=git_repo)
 

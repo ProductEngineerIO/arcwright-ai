@@ -12,17 +12,17 @@ so that the git history is organized and traceable back to the run that produced
 
 ## Acceptance Criteria (BDD)
 
-1. **Given** `scm/branch.py` module **When** a story is dispatched and completes validation **Then** branch naming follows convention: `arcwright/<story-slug>` — namespaced, predictable, greppable per D7.
+1. **Given** `scm/branch.py` module **When** a story is dispatched and completes validation **Then** branch naming follows convention: `arcwright-ai/<story-slug>` — namespaced, predictable, greppable per D7.
 
-2. **Given** `scm/branch.py` module **When** `create_branch(story_slug: str, base_ref: str | None = None, *, project_root: Path) -> str` is called **Then** a new branch named `arcwright/<story-slug>` is created at the specified base ref (defaulting to `HEAD`) **And** the branch name is returned **And** if the branch already exists, `BranchError` is raised (no force operations per D7).
+2. **Given** `scm/branch.py` module **When** `create_branch(story_slug: str, base_ref: str | None = None, *, project_root: Path) -> str` is called **Then** a new branch named `arcwright-ai/<story-slug>` is created at the specified base ref (defaulting to `HEAD`) **And** the branch name is returned **And** if the branch already exists, `BranchError` is raised (no force operations per D7).
 
-3. **Given** `scm/branch.py` module **When** a story completes validation and needs to commit **Then** `commit_story(story_slug: str, story_title: str, story_path: str, run_id: str, *, worktree_path: Path) -> str` stages all changes with `git add .` and commits with message format `[arcwright] <story-title>\n\nStory: <story-file-path>\nRun: <run-id>` using `COMMIT_MESSAGE_TEMPLATE` from `core/constants.py` **And** the commit hash is returned.
+3. **Given** `scm/branch.py` module **When** a story completes validation and needs to commit **Then** `commit_story(story_slug: str, story_title: str, story_path: str, run_id: str, *, worktree_path: Path) -> str` stages all changes with `git add .` and commits with message format `[arcwright-ai] <story-title>\n\nStory: <story-file-path>\nRun: <run-id>` using `COMMIT_MESSAGE_TEMPLATE` from `core/constants.py` **And** the commit hash is returned.
 
 4. **Given** `commit_story` is called **When** there are no staged changes (nothing to commit) **Then** a `BranchError` is raised with a clear message indicating no changes were found (not silently ignored).
 
 5. **Given** `scm/branch.py` module **When** `branch_exists(branch_name: str, *, project_root: Path) -> bool` is called **Then** it returns `True` if the branch exists locally, `False` otherwise **And** no exception is raised for non-existent branches.
 
-6. **Given** `scm/branch.py` module **When** `list_branches(*, project_root: Path) -> list[str]` is called **Then** it returns a sorted list of all arcwright-namespaced branches (matching `arcwright/*` pattern) **And** returns an empty list when no arcwright branches exist.
+6. **Given** `scm/branch.py` module **When** `list_branches(*, project_root: Path) -> list[str]` is called **Then** it returns a sorted list of all arcwright-namespaced branches (matching `arcwright-ai/*` pattern) **And** returns an empty list when no arcwright branches exist.
 
 7. **Given** `scm/branch.py` module **When** `delete_branch(branch_name: str, *, project_root: Path, force: bool = False) -> None` is called **Then** it deletes the branch using `git branch -d` (safe delete, only if fully merged) by default **And** if `force=True`, uses `git branch -D` (force delete regardless of merge status) **And** if the branch does not exist, the call is a no-op (idempotent per NFR19).
 
@@ -41,7 +41,7 @@ so that the git history is organized and traceable back to the run that produced
 14. **Given** any existing tests in the full test suite **When** this story is complete **Then** no existing tests break. All existing tests continue to pass.
 
 15. **Given** new tests in `tests/test_scm/test_branch.py` **When** the test suite runs **Then** unit tests cover:
-    (a) `create_branch` creates branch with correct name format `arcwright/<story-slug>`;
+    (a) `create_branch` creates branch with correct name format `arcwright-ai/<story-slug>`;
     (b) `create_branch` invokes `git("branch", branch_name, base_ref, cwd=project_root)` with correct args;
     (c) `create_branch` with `base_ref=None` defaults to `HEAD`;
     (d) `create_branch` with explicit `base_ref` passes it to `git branch`;
@@ -80,7 +80,7 @@ so that the git history is organized and traceable back to the run that produced
 
 - [x] Task 2: Implement `create_branch` function (AC: #1, #2, #8, #9, #10)
   - [x] 2.1: Function signature: `async def create_branch(story_slug: str, base_ref: str | None = None, *, project_root: Path) -> str`.
-  - [x] 2.2: Compute branch name: `BRANCH_PREFIX + story_slug` (e.g., `arcwright/<story-slug>`).
+  - [x] 2.2: Compute branch name: `BRANCH_PREFIX + story_slug` (e.g., `arcwright-ai/<story-slug>`).
   - [x] 2.3: Compute base ref: use `base_ref` if provided, otherwise `"HEAD"`.
   - [x] 2.4: Check if branch already exists via `branch_exists()` — if so, raise `BranchError(f"Branch '{branch_name}' already exists for story '{story_slug}'", details={"branch": branch_name, "story_slug": story_slug})`.
   - [x] 2.5: Call `await git("branch", branch_name, resolved_base_ref, cwd=project_root)`.
@@ -178,10 +178,10 @@ so that the git history is organized and traceable back to the run that produced
 **Package Dependency DAG**: `cli → engine → {validation, agent, context, output, scm} → core`. Story 6.3 adds code ONLY to `scm/branch.py` and `scm/__init__.py`. The branch module imports from `core/` only (`core/exceptions.py` for `BranchError`, `core/constants.py` for `BRANCH_PREFIX` and `COMMIT_MESSAGE_TEMPLATE`) and from `scm/git.py` for the `git()` wrapper. This is the valid dependency: `scm → core` + internal `scm` imports. No DAG violations.
 
 **Decision 7 — Git Operations Strategy**: Branch naming and commit conventions are explicitly specified:
-- Branch naming: `arcwright/<story-slug>` — namespaced, predictable, greppable
-- Commit message: `[arcwright] <story-title>\n\nStory: <story-file-path>\nRun: <run-id>`
+- Branch naming: `arcwright-ai/<story-slug>` — namespaced, predictable, greppable
+- Commit message: `[arcwright-ai] <story-title>\n\nStory: <story-file-path>\nRun: <run-id>`
 - No force operations — no `--force`, no `reset --hard`, no rebase. Existing branch → error out
-- No push in MVP — all operations local only
+- Push after successful validation — `push_branch()` pushes to remote with merge-ours reconciliation
 - All git commands run with `cwd=worktree_path` for commit operations (inside worktree), `cwd=project_root` for branch operations
 [Source: [architecture.md](../../_spec/planning-artifacts/architecture.md) — Decision 7]
 
@@ -216,8 +216,8 @@ so that the git history is organized and traceable back to the run that produced
 5. **`BranchError`** in `core/exceptions.py` — Already defined as `ScmError` subclass: `"Raised when a branch already exists or checkout fails."` Has `message: str` and `details: dict[str, Any] | None` from `ArcwrightError` base. USE THIS — do NOT create a new exception.
 
 6. **`core/constants.py`** — Already defines:
-   - `BRANCH_PREFIX = "arcwright/"`
-   - `COMMIT_MESSAGE_TEMPLATE = "[arcwright] {story_title}\n\nStory: {story_path}\nRun: {run_id}"`
+   - `BRANCH_PREFIX = "arcwright-ai/"`
+   - `COMMIT_MESSAGE_TEMPLATE = "[arcwright-ai] {story_title}\n\nStory: {story_path}\nRun: {run_id}"`
    USE THESE constants — do NOT hardcode strings.
 
 7. **`tests/test_scm/`** — Directory exists with `__init__.py`, `.gitkeep`, `test_git.py` (from 6.1), `test_worktree.py` and `test_worktree_integration.py` (from 6.2). Create `test_branch.py` and `test_branch_integration.py` here.
@@ -234,7 +234,7 @@ so that the git history is organized and traceable back to the run that produced
 
 ### CRITICAL: Relationship Between `create_worktree` and `create_branch`
 
-`create_worktree` in `worktree.py` already creates branches via `git worktree add -b arcwright/<slug>`. The `create_branch` function in `branch.py` is a STANDALONE branch creation utility. In the normal engine flow:
+`create_worktree` in `worktree.py` already creates branches via `git worktree add -b arcwright-ai/<slug>`. The `create_branch` function in `branch.py` is a STANDALONE branch creation utility. In the normal engine flow:
 1. `create_worktree()` creates both the worktree AND the branch (Story 6.2)
 2. `commit_story()` stages and commits changes inside the worktree (this story)
 3. `remove_worktree()` removes the worktree (Story 6.2)
@@ -245,7 +245,7 @@ so that the git history is organized and traceable back to the run that produced
 
 The `commit_story` function operates with `cwd=worktree_path`. This means:
 - `git add .` stages files in the worktree's working directory only
-- `git commit` creates a commit on the worktree's branch (automatically `arcwright/<story-slug>`)
+- `git commit` creates a commit on the worktree's branch (automatically `arcwright-ai/<story-slug>`)
 - The `.arcwright-ai/` directory at the project root is NOT in scope of the worktree's `git add .`
 - No files from the main working tree are affected
 
@@ -265,11 +265,11 @@ await git("rev-parse", "--verify", f"refs/heads/{branch_name}", cwd=project_root
 
 ### CRITICAL: `list_branches` Output Parsing
 
-`git branch --list "arcwright/*"` outputs lines like:
+`git branch --list "arcwright-ai/*"` outputs lines like:
 ```
-  arcwright/story-1
-* arcwright/story-2
-  arcwright/story-3
+  arcwright-ai/story-1
+* arcwright-ai/story-2
+  arcwright-ai/story-3
 ```
 
 The current branch is marked with `* `. Strip the leading `  ` or `* ` from each line. Filter out empty lines.

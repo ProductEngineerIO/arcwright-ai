@@ -220,7 +220,7 @@ async def test_commit_story_uses_commit_message_template(
 
     commit_call = mock_git.call_args_list[2]
     assert commit_call == call("commit", "-m", expected_msg, cwd=tmp_path)
-    assert expected_msg == "[arcwright] My Story\n\nStory: _spec/s.md\nRun: 20260307-001122-abc123"
+    assert expected_msg == "[arcwright-ai] My Story\n\nStory: _spec/s.md\nRun: 20260307-001122-abc123"
 
 
 # ---------------------------------------------------------------------------
@@ -346,14 +346,14 @@ async def test_list_branches_returns_sorted_list(
     tmp_path: Path,
 ) -> None:
     """list_branches returns a sorted list of arcwright branch names."""
-    raw_output = "  arcwright/story-z\n* arcwright/story-a\n  arcwright/story-m"
+    raw_output = "  arcwright-ai/story-z\n* arcwright-ai/story-a\n  arcwright-ai/story-m"
     mock_git = AsyncMock(return_value=_ok(stdout=raw_output))
     monkeypatch.setattr("arcwright_ai.scm.branch.git", mock_git)
 
     result = await list_branches(project_root=tmp_path)
 
-    assert result == ["arcwright/story-a", "arcwright/story-m", "arcwright/story-z"]
-    mock_git.assert_called_once_with("branch", "--list", "arcwright/*", cwd=tmp_path)
+    assert result == ["arcwright-ai/story-a", "arcwright-ai/story-m", "arcwright-ai/story-z"]
+    mock_git.assert_called_once_with("branch", "--list", "arcwright-ai/*", cwd=tmp_path)
 
 
 # ---------------------------------------------------------------------------
@@ -867,7 +867,7 @@ async def test_delete_remote_branch_returns_true_when_already_absent(
     mock_git = AsyncMock(
         side_effect=ScmError(
             "push failed",
-            details={"stderr": "error: unable to delete 'arcwright/my-story': remote ref does not exist"},
+            details={"stderr": "error: unable to delete 'arcwright-ai/my-story': remote ref does not exist"},
         )
     )
     monkeypatch.setattr("arcwright_ai.scm.branch.git", mock_git)

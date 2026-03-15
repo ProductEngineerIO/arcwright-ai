@@ -494,17 +494,34 @@ async def generate_pr_body(run_id: str, story_slug: str, *, project_root: Path) 
 # ---------------------------------------------------------------------------
 
 
-async def _detect_default_branch(project_root: Path, story_slug: str) -> str:
+async def _detect_default_branch(
+    project_root: Path,
+    story_slug: str,
+    *,
+    default_branch_override: str = "",
+) -> str:
     """Detect the repository default branch, fallback to ``main``.
+
+    When *default_branch_override* is a non-empty string the value is returned
+    immediately, bypassing all git/gh detection.
 
     Args:
         project_root: Absolute path to the repository root.
         story_slug: Story slug used in log events.
+        default_branch_override: Config-supplied branch name.  Empty string
+            (the default) means run the auto-detect cascade.
 
     Returns:
         Default branch name (e.g. ``"main"`` or ``"master"``).  Falls back to
         ``"main"`` if detection fails.
     """
+    if stripped_override := default_branch_override.strip():
+        logger.debug(
+            "scm.pr.default_branch_config",
+            extra={"data": {"story_slug": story_slug, "branch": stripped_override}},
+        )
+        return stripped_override
+
     try:
         result = await git("remote", "show", "origin", cwd=project_root)
         match = re.search(r"HEAD branch:\s*(?P<branch>\S+)", result.stdout)
@@ -588,6 +605,7 @@ async def open_pull_request(
     pr_body: str,
     *,
     project_root: Path,
+    default_branch: str = "",
 ) -> str | None:
     """Open a GitHub pull request for the story branch (best-effort).
 
@@ -597,10 +615,12 @@ async def open_pull_request(
     caller's story status is never affected by failures (AC: #5).
 
     Args:
-        branch_name: Full branch name (e.g. ``arcwright/my-story``).
+        branch_name: Full branch name (e.g. ``arcwright-ai/my-story``).
         story_slug: Story slug used for the PR title and log events.
         pr_body: Markdown PR description from :func:`generate_pr_body`.
         project_root: Absolute path to the repository root.
+        default_branch: Config-supplied default branch override.  Empty string
+            (the default) triggers auto-detection via ``_detect_default_branch``.
 
     Returns:
         PR URL string on success, or ``None`` on any failure.
@@ -622,12 +642,14 @@ async def open_pull_request(
         return None
 
     # Detect default branch (AC: #6)
-    default_branch = await _detect_default_branch(project_root, story_slug)
+    resolved_default_branch = await _detect_default_branch(
+        project_root, story_slug, default_branch_override=default_branch
+    )
 
     # Derive PR title from story slug (AC: #7)
     parts = story_slug.split("-", 2)
     title_part = parts[2] if len(parts) > 2 else story_slug
-    pr_title = f"[arcwright] {title_part.replace('-', ' ').title()}"
+    pr_title = f"[arcwright-ai] {title_part.replace('-', ' ').title()}"
 
     # Open PR with gh CLI (AC: #4)
     try:
@@ -636,7 +658,7 @@ async def open_pull_request(
             "pr",
             "create",
             "--base",
-            default_branch,
+            resolved_default_branch,
             "--head",
             branch_name,
             "--title",
@@ -686,7 +708,7 @@ async def open_pull_request(
                     "story_slug": story_slug,
                     "branch": branch_name,
                     "pr_url": pr_url,
-                    "base": default_branch,
+                    "base": resolved_default_branch,
                 }
             },
         )

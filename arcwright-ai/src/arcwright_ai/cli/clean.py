@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 
 async def _list_merged_branches(*, project_root: Path) -> set[str]:
-    """Return the set of arcwright-namespaced branches merged into HEAD.
+    """Return the set of arcwright-ai-namespaced branches merged into HEAD.
 
     Calls ``git branch --merged``, parses the output, and filters for branches
     starting with :data:`~arcwright_ai.core.constants.BRANCH_PREFIX`.
@@ -38,9 +38,9 @@ async def _list_merged_branches(*, project_root: Path) -> set[str]:
         project_root: Absolute path to the root of the git repository.
 
     Returns:
-        set[str]: Branch names (e.g. ``arcwright/my-story``) that are fully
+        set[str]: Branch names (e.g. ``arcwright-ai/my-story``) that are fully
             merged into the current HEAD.  Returns an empty set when no
-            arcwright branches are merged.
+            arcwright-ai branches are merged.
     """
     result = await git("branch", "--merged", cwd=project_root)
     merged: set[str] = set()

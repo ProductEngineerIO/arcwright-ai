@@ -411,18 +411,20 @@ async def git(*args: str, cwd: Path | None = None) -> GitResult:
 ```
 
 **Worktree lifecycle:**
-1. `git worktree add .arcwright-ai/worktrees/<story-slug> -b arcwright/<story-slug> <base-ref>`
-2. Agent executes in worktree directory (sandbox boundary)
-3. Validation passes → `git add` + `git commit` (inside worktree) → `git worktree remove`
-4. Validation fails → worktree preserved for inspection, logged in provenance
-5. Halt/budget-exceeded → all active worktrees preserved, run marked incomplete
+1. `preflight_node` fetches latest from remote default branch and fast-forward merges to ensure worktrees start from current upstream state
+2. `git worktree add .arcwright-ai/worktrees/<story-slug> -b arcwright-ai/<story-slug> <base-ref>`
+3. Agent executes in worktree directory (sandbox boundary)
+4. Validation passes → `git add` + `git commit` (inside worktree) → `git push` → `gh pr create` → optional `gh pr merge` → `git worktree remove`
+5. Validation fails → worktree preserved for inspection, logged in provenance
+6. Halt/budget-exceeded → all active worktrees preserved, run marked incomplete
 
 **Conventions:**
-- Base ref: defaults to current HEAD; configurable via `--base-ref`
-- Branch naming: `arcwright/<story-slug>` — namespaced, predictable, greppable
-- Commit message: `[arcwright] <story-title>\n\nStory: <story-file-path>\nRun: <run-id>`
+- Base ref: defaults to fetched remote default branch tip; configurable via `--base-ref`
+- Default branch: auto-detected (git remote show → gh repo view → origin/HEAD → fallback "main"); overridable via `scm.default_branch` config
+- Branch naming: `arcwright-ai/<story-slug>` — namespaced, predictable, greppable
+- Commit message: `[arcwright-ai] <story-title>\n\nStory: <story-file-path>\nRun: <run-id>`
 - No force operations — no `--force`, no `reset --hard`, no rebase. Existing branch → error out
-- No push in MVP — all operations local only (FR-25 is Growth phase)
+- Push + PR: after successful validation, `push_branch()` pushes to remote with merge-ours reconciliation; `open_pull_request()` creates PR via `gh pr create`; optional auto-merge via `gh pr merge --squash` when `scm.auto_merge` is enabled
 - All git commands run with `cwd=worktree_path` except worktree add/remove (project root)
 - Atomic guarantee: worktree creation failure → no partial state, story skipped and logged
 
@@ -1025,8 +1027,11 @@ async def test_worktree_lifecycle(tmp_path):
 | FR31 | Run status | `output/run_manager.py` | Reads `run.yaml` status field |
 | FR32 | Run listing | `output/run_manager.py` | Scans `.arcwright-ai/runs/` directory |
 | FR33 | Run summary | `output/summary.py` | Generates human-readable run report |
-| FR34 | Branch creation | `scm/branch.py` | `arcwright/<story-slug>` naming convention |
+| FR34 | Branch creation | `scm/branch.py` | `arcwright-ai/<story-slug>` naming convention |
 | FR35 | Commit story | `scm/worktree.py` | `git add` + `git commit` inside worktree |
+| FR37 | Default branch config | `core/config.py` + `scm/pr.py` | Configurable `scm.default_branch` with auto-detect fallback cascade |
+| FR38 | Fetch before story | `scm/branch.py` + `engine/nodes.py` | Fetch + fast-forward merge of remote default branch before worktree creation |
+| FR39 | Auto-merge PR | `scm/pr.py` + `engine/nodes.py` | Optional `gh pr merge --squash` after PR creation when `scm.auto_merge` enabled |
 
 ### Architectural Boundaries
 
@@ -1275,7 +1280,7 @@ All 9 decisions validated pairwise — no contradictions found. Key bindings exp
 All implementation patterns align with architectural decisions:
 - Error handling patterns use D6 exception hierarchy consistently
 - File I/O patterns use `pathlib.Path` + `asyncio.to_thread()` aligned with D7 async subprocess
-- Naming patterns (`snake_case`, `arcwright/<slug>`) consistent across code, branches, and run IDs
+- Naming patterns (`snake_case`, `arcwright-ai/<slug>`) consistent across code, branches, and run IDs
 - State transitions use `TaskState` enum from D1 throughout data flow and node signatures
 - Logging patterns emit structured JSONL events per D8 specification
 
@@ -1284,7 +1289,7 @@ Project structure directly implements the package dependency DAG. 8 packages map
 
 ### Requirements Coverage Validation ✅
 
-**Functional Requirements — all 36 FRs mapped to specific files:**
+**Functional Requirements — all 39 FRs mapped to specific files:**
 
 | FR Range | Status | Coverage |
 |----------|--------|----------|
@@ -1298,6 +1303,7 @@ Project structure directly implements the package dependency DAG. 8 packages map
 | FR26-30 (Config) | COMPLETE | cli/status.py + core/config.py |
 | FR31-33 (Visibility) | COMPLETE | output/run_manager.py + output/summary.py |
 | FR34-36 (SCM) | COMPLETE | scm/ package |
+| FR37-39 (SCM Enhancements) | PLANNED | scm/ + engine/nodes.py + core/config.py (Epic 9) |
 
 **Non-Functional Requirements — all 20 NFRs mapped to enforcement mechanisms:**
 

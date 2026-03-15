@@ -86,7 +86,7 @@ EXIT_INTERNAL: int = 5
 # ---------------------------------------------------------------------------
 
 MAX_RETRIES: int = 3
-BRANCH_PREFIX: str = "arcwright/"
+BRANCH_PREFIX: str = "arcwright-ai/"
 
 # Naming convention patterns
 PYTHON_FILENAME_PATTERN: str = r"^[a-z][a-z0-9_]*\.py$"
@@ -99,7 +99,7 @@ PYTHON_DIRNAME_PATTERN: str = r"^[a-z][a-z0-9_]*$"
 #: strftime format string for the datetime portion of a run ID.
 RUN_ID_DATETIME_FORMAT: str = "%Y%m%d-%H%M%S"
 
-COMMIT_MESSAGE_TEMPLATE: str = "[arcwright] {story_title}\n\nStory: {story_path}\nRun: {run_id}"
+COMMIT_MESSAGE_TEMPLATE: str = "[arcwright-ai] {story_title}\n\nStory: {story_path}\nRun: {run_id}"
 WORKTREE_DIR_TEMPLATE: str = ".arcwright-ai/worktrees/{story_slug}"
 
 # ---------------------------------------------------------------------------

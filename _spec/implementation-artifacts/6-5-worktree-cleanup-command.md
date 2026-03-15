@@ -22,7 +22,7 @@ so that completed run artifacts don't accumulate indefinitely.
 
 5. **Given** cleanup completes **When** one or more items were removed **Then** stdout reports what was cleaned: e.g., "Removed 3 worktrees, deleted 3 branches" **And** when nothing was cleaned: "Nothing to clean".
 
-6. **Given** cleanup runs **When** no network is available **Then** cleanup succeeds because all operations are local git commands (NFR20, no push in MVP per D7).
+6. **Given** cleanup runs **When** no network is available **Then** cleanup succeeds because all operations are local git commands (NFR20).
 
 7. **Given** integration tests with real git **When** the test suite runs **Then** tests cover: create worktrees → run default cleanup (only merged removed) → verify removal → run cleanup again (verify idempotent no-op) **And** create worktrees → run `--all` cleanup → verify all removed including unmerged.
 
@@ -48,7 +48,7 @@ so that completed run artifacts don't accumulate indefinitely.
   - [x] 2.1: `async def _clean_default(project_root: Path) -> tuple[int, int]` — returns `(worktrees_removed, branches_deleted)`.
   - [x] 2.2: Call `_list_merged_branches(project_root=project_root)` to get the set of merged arcwright branch names.
   - [x] 2.3: Call `list_worktrees(project_root=project_root)` to get all active worktree slugs.
-  - [x] 2.4: For each worktree slug whose branch (`arcwright/<slug>`) is in the merged set: call `remove_worktree(slug, project_root=project_root)` (without `delete_branch=True`). Catch `WorktreeError`, log warning, skip to next. Increment `worktrees_removed` on success.
+  - [x] 2.4: For each worktree slug whose branch (`arcwright-ai/<slug>`) is in the merged set: call `remove_worktree(slug, project_root=project_root)` (without `delete_branch=True`). Catch `WorktreeError`, log warning, skip to next. Increment `worktrees_removed` on success.
   - [x] 2.5: After worktree removal pass, call `list_branches(project_root=project_root)` to get remaining arcwright branches.
   - [x] 2.6: For each branch in the merged set: call `delete_branch(branch_name, project_root=project_root, force=False)`. Catch `BranchError`, log warning, skip. Increment `branches_deleted` on success.
   - [x] 2.7: Log completion as `clean.default` structured event with worktrees_removed, branches_deleted.
@@ -123,7 +123,7 @@ so that completed run artifacts don't accumulate indefinitely.
 Default mode removes "completed worktrees + merged branches". The definition of "completed" is: **the worktree's corresponding branch is fully merged into HEAD**. This is determined by:
 
 1. Query `git branch --merged` (returns branches merged into current HEAD)
-2. Filter for arcwright-namespaced branches (`arcwright/*`)
+2. Filter for arcwright-namespaced branches (`arcwright-ai/*`)
 3. Any worktree whose branch appears in this set is "completed"
 
 This approach works because:
@@ -147,10 +147,10 @@ This approach works because:
 
 - **`list_worktrees(project_root=)`** from `scm/worktree.py` — returns sorted list of story slugs for active arcwright worktrees. Already implemented in Story 6.2. [Source: scm/worktree.py]
 - **`remove_worktree(story_slug, project_root=, delete_branch=False)`** from `scm/worktree.py` — idempotent removal. Already implemented in Story 6.2. [Source: scm/worktree.py]
-- **`list_branches(project_root=)`** from `scm/branch.py` — returns sorted list of all `arcwright/*` branch names. Already implemented in Story 6.3. [Source: scm/branch.py]
+- **`list_branches(project_root=)`** from `scm/branch.py` — returns sorted list of all `arcwright-ai/*` branch names. Already implemented in Story 6.3. [Source: scm/branch.py]
 - **`delete_branch(branch_name, project_root=, force=False)`** from `scm/branch.py` — idempotent deletion, `force=False` uses `-d` (merged-only), `force=True` uses `-D`. Already implemented in Story 6.3. [Source: scm/branch.py]
 - **`git(*args, cwd=)`** from `scm/git.py` — the single gateway for all git subprocess calls. Already implemented in Story 6.1. [Source: scm/git.py]
-- **`BRANCH_PREFIX`** from `core/constants.py` — `"arcwright/"`. [Source: core/constants.py]
+- **`BRANCH_PREFIX`** from `core/constants.py` — `"arcwright-ai/"`. [Source: core/constants.py]
 - **`EXIT_SCM`** from `core/constants.py` — exit code `4`. [Source: core/constants.py]
 - **`EXIT_SUCCESS`** from `core/constants.py` — exit code `0`. [Source: core/constants.py]
 - **`ScmError`, `WorktreeError`, `BranchError`** from `core/exceptions.py`. [Source: core/exceptions.py]
@@ -260,14 +260,14 @@ async def git_repo(tmp_path: Path) -> Path:
 To create a "merged" worktree for testing:
 1. Create worktree + branch
 2. Write a file in worktree, add + commit
-3. Switch to main, merge the arcwright branch (`git merge arcwright/<slug>`)
-4. Now `git branch --merged` will include `arcwright/<slug>`
+3. Switch to main, merge the arcwright branch (`git merge arcwright-ai/<slug>`)
+4. Now `git branch --merged` will include `arcwright-ai/<slug>`
 5. Run cleanup — should remove worktree + delete branch
 
 To create an "unmerged" worktree:
 1. Create worktree + branch
 2. Write a file in worktree, add + commit (but don't merge into main)
-3. Now `git branch --merged` will NOT include `arcwright/<slug>`
+3. Now `git branch --merged` will NOT include `arcwright-ai/<slug>`
 4. Default cleanup should SKIP it; `--all` cleanup should REMOVE it
 
 ### Relationship to Other Stories in Epic 6

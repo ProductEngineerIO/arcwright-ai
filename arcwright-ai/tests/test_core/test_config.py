@@ -306,7 +306,7 @@ def test_load_config_uses_defaults_when_no_files(
     assert cfg.limits.timeout_per_story == 300
     assert cfg.methodology.artifacts_path == "_spec"
     assert cfg.methodology.type == "bmad"
-    assert cfg.scm.branch_template == "arcwright/{story_slug}"
+    assert cfg.scm.branch_template == "arcwright-ai/{story_slug}"
     assert cfg.reproducibility.enabled is False
     assert cfg.reproducibility.retention == 30
 
@@ -647,3 +647,65 @@ def test_known_keys_warns_on_unknown_models_pricing_subkey(
     with pytest.warns(UserWarning, match="Unknown config key 'models.generate.pricing.unknown_field'"):
         cfg = load_config()
     assert cfg.models.get(ModelRole.GENERATE).version == "v1"
+
+
+# ---------------------------------------------------------------------------
+# Story 9.1 — ScmConfig default_branch and auto_merge fields
+# ---------------------------------------------------------------------------
+
+
+def test_scm_default_branch_empty_default(api_key_env: None, global_config_dir: Path, clean_env: None) -> None:
+    """ScmConfig.default_branch defaults to empty string (auto-detect)."""
+    cfg = load_config()
+    assert cfg.scm.default_branch == ""
+
+
+def test_scm_default_branch_round_trips(
+    api_key_env: None, global_config_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clean_env: None
+) -> None:
+    """ScmConfig loads default_branch from YAML and round-trips correctly."""
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    (project_root / ".arcwright-ai").mkdir()
+    _write_yaml(
+        project_root / ".arcwright-ai" / "config.yaml",
+        "scm:\n  default_branch: develop\n",
+    )
+    monkeypatch.setenv("ARCWRIGHT_API_CLAUDE_API_KEY", "test-api-key")
+    cfg = load_config(project_root=project_root)
+    assert cfg.scm.default_branch == "develop"
+
+
+def test_scm_auto_merge_default_false(api_key_env: None, global_config_dir: Path, clean_env: None) -> None:
+    """ScmConfig.auto_merge defaults to False."""
+    cfg = load_config()
+    assert cfg.scm.auto_merge is False
+
+
+def test_scm_auto_merge_round_trips(
+    api_key_env: None, global_config_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clean_env: None
+) -> None:
+    """ScmConfig loads auto_merge from YAML and round-trips correctly."""
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    (project_root / ".arcwright-ai").mkdir()
+    _write_yaml(
+        project_root / ".arcwright-ai" / "config.yaml",
+        "scm:\n  auto_merge: true\n",
+    )
+    monkeypatch.setenv("ARCWRIGHT_API_CLAUDE_API_KEY", "test-api-key")
+    cfg = load_config(project_root=project_root)
+    assert cfg.scm.auto_merge is True
+
+
+def test_scm_unknown_key_warning_still_works(api_key_env: None, global_config_dir: Path, clean_env: None) -> None:
+    """Unknown key in scm section triggers UserWarning even with new fields present."""
+    _write_yaml(
+        global_config_dir / "config.yaml",
+        "scm:\n  branch_template: 'test/{story_slug}'\n  default_branch: main\n  auto_merge: false\n  bogus_key: 42\n",
+    )
+    with pytest.warns(UserWarning, match="Unknown config key 'scm.bogus_key'"):
+        cfg = load_config()
+    assert cfg.scm.branch_template == "test/{story_slug}"
+    assert cfg.scm.default_branch == "main"
+    assert cfg.scm.auto_merge is False

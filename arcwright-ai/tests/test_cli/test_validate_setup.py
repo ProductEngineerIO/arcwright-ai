@@ -50,7 +50,7 @@ def valid_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         "  retry_budget: 3\n"
         "  timeout_per_story: 300\n"
         'methodology:\n  artifacts_path: "_spec"\n  type: "bmad"\n'
-        'scm:\n  branch_template: "arcwright/{story_slug}"\n'
+        'scm:\n  branch_template: "arcwright-ai/{story_slug}"\n'
         "reproducibility:\n  enabled: false\n  retention: 30\n"
     )
     (arcwright / CONFIG_FILENAME).write_text(config_content, encoding="utf-8")
@@ -122,7 +122,7 @@ def test_validate_setup_wrong_artifacts_path(tmp_path: Path, monkeypatch: pytest
         "  retry_budget: 3\n"
         "  timeout_per_story: 300\n"
         'methodology:\n  artifacts_path: "wrong-dir"\n  type: "bmad"\n'
-        'scm:\n  branch_template: "arcwright/{story_slug}"\n'
+        'scm:\n  branch_template: "arcwright-ai/{story_slug}"\n'
         "reproducibility:\n  enabled: false\n  retention: 30\n"
     )
     (arcwright / CONFIG_FILENAME).write_text(config_content, encoding="utf-8")
@@ -152,7 +152,7 @@ def test_validate_setup_missing_planning_artifacts(tmp_path: Path, monkeypatch: 
         "  retry_budget: 3\n"
         "  timeout_per_story: 300\n"
         'methodology:\n  artifacts_path: "_spec"\n  type: "bmad"\n'
-        'scm:\n  branch_template: "arcwright/{story_slug}"\n'
+        'scm:\n  branch_template: "arcwright-ai/{story_slug}"\n'
         "reproducibility:\n  enabled: false\n  retention: 30\n"
     )
     (arcwright / CONFIG_FILENAME).write_text(config_content, encoding="utf-8")
@@ -188,7 +188,7 @@ def test_validate_setup_missing_story_artifacts(tmp_path: Path, monkeypatch: pyt
         "  retry_budget: 3\n"
         "  timeout_per_story: 300\n"
         'methodology:\n  artifacts_path: "_spec"\n  type: "bmad"\n'
-        'scm:\n  branch_template: "arcwright/{story_slug}"\n'
+        'scm:\n  branch_template: "arcwright-ai/{story_slug}"\n'
         "reproducibility:\n  enabled: false\n  retention: 30\n"
     )
     (arcwright / CONFIG_FILENAME).write_text(config_content, encoding="utf-8")
@@ -225,7 +225,7 @@ def test_validate_setup_invalid_config(tmp_path: Path, monkeypatch: pytest.Monke
         'limits:\n  tokens_per_story: "not-a-number"\n'
         "  cost_per_run: 10.0\n  retry_budget: 3\n  timeout_per_story: 300\n"
         'methodology:\n  artifacts_path: "_spec"\n  type: "bmad"\n'
-        'scm:\n  branch_template: "arcwright/{story_slug}"\n'
+        'scm:\n  branch_template: "arcwright-ai/{story_slug}"\n'
         "reproducibility:\n  enabled: false\n  retention: 30\n"
     )
     (arcwright / CONFIG_FILENAME).write_text(config_content, encoding="utf-8")
@@ -281,7 +281,7 @@ def test_validate_setup_dependent_check_skipping_structure(tmp_path: Path, monke
         "  retry_budget: 3\n"
         "  timeout_per_story: 300\n"
         'methodology:\n  artifacts_path: "nonexistent-path"\n  type: "bmad"\n'
-        'scm:\n  branch_template: "arcwright/{story_slug}"\n'
+        'scm:\n  branch_template: "arcwright-ai/{story_slug}"\n'
         "reproducibility:\n  enabled: false\n  retention: 30\n"
     )
     (arcwright / CONFIG_FILENAME).write_text(config_content, encoding="utf-8")
@@ -363,7 +363,7 @@ def test_validate_setup_missing_acceptance_criteria_in_story(tmp_path: Path, mon
         "  retry_budget: 3\n"
         "  timeout_per_story: 300\n"
         'methodology:\n  artifacts_path: "_spec"\n  type: "bmad"\n'
-        'scm:\n  branch_template: "arcwright/{story_slug}"\n'
+        'scm:\n  branch_template: "arcwright-ai/{story_slug}"\n'
         "reproducibility:\n  enabled: false\n  retention: 30\n"
     )
     (arcwright / CONFIG_FILENAME).write_text(config_content, encoding="utf-8")
@@ -400,7 +400,7 @@ def test_validate_setup_absolute_artifacts_path_falls_back_to_default(
         "  retry_budget: 3\n"
         "  timeout_per_story: 300\n"
         'methodology:\n  artifacts_path: "/tmp/outside"\n  type: "bmad"\n'
-        'scm:\n  branch_template: "arcwright/{story_slug}"\n'
+        'scm:\n  branch_template: "arcwright-ai/{story_slug}"\n'
         "reproducibility:\n  enabled: false\n  retention: 30\n"
     )
     (arcwright / CONFIG_FILENAME).write_text(config_content, encoding="utf-8")

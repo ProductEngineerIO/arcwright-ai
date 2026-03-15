@@ -84,7 +84,7 @@ methodology:
   type: "bmad"
 
 scm:
-  branch_template: "arcwright/{story_slug}"
+  branch_template: "arcwright-ai/{story_slug}"
 ```
 
 > **API key security**: Never put your API key in `config.yaml`. Set it via

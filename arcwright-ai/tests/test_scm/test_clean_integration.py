@@ -50,7 +50,7 @@ async def _create_merged_worktree(slug: str, repo: Path) -> None:
     """Create a worktree, commit a file in it, then merge the branch into main.
 
     After this helper runs, ``git branch --merged`` will include
-    ``arcwright/<slug>`` so the default cleanup should remove it.
+    ``arcwright-ai/<slug>`` so the default cleanup should remove it.
 
     Args:
         slug: Story slug for the worktree.
@@ -67,7 +67,7 @@ async def _create_unmerged_worktree(slug: str, repo: Path) -> None:
     """Create a worktree with a commit that has NOT been merged into main.
 
     After this helper runs, ``git branch --merged`` will NOT include
-    ``arcwright/<slug>`` so the default cleanup should skip it.
+    ``arcwright-ai/<slug>`` so the default cleanup should skip it.
 
     Args:
         slug: Story slug for the worktree.

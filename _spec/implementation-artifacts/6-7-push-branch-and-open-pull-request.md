@@ -33,7 +33,7 @@ so that completed work is immediately visible on GitHub for code review without 
 4. **AC4 — Open pull request via GitHub CLI**
    Given the branch is pushed and PR body is generated
    When `gh` CLI is available on PATH
-   Then a PR is opened with `gh pr create --base <default_branch> --head <branch_name> --title "[arcwright] <Story Title>" --body <pr_body>`
+   Then a PR is opened with `gh pr create --base <default_branch> --head <branch_name> --title "[arcwright-ai] <Story Title>" --body <pr_body>`
    And the PR URL is logged as a structured `scm.pr.create` event
    And the PR URL is stored in state for inclusion in the run summary
 
@@ -53,7 +53,7 @@ so that completed work is immediately visible on GitHub for code review without 
 7. **AC7 — PR title derives from story slug**
    Given the story slug (e.g. `28-5-docker-compose-ollama-container`)
    When the PR title is generated
-   Then the title follows the pattern `[arcwright] <Story Title>` where `<Story Title>` is the humanized slug (same logic as `commit_story` in `branch.py`)
+   Then the title follows the pattern `[arcwright-ai] <Story Title>` where `<Story Title>` is the humanized slug (same logic as `commit_story` in `branch.py`)
 
 8. **AC8 — Integration with commit_node**
    Given the existing `commit_node` in `engine/nodes.py`
@@ -154,7 +154,7 @@ Implemented push + PR pipeline as non-fatal post-commit operations:
 
 1. **`scm/branch.py`** — Added `push_branch(branch_name, *, project_root, remote="origin") -> None`. Calls `git("push", remote, branch_name, cwd=project_root)`. Catches `ScmError` internally, logs warning, returns `None`. Logs `git.push` structured event on success.
 
-2. **`scm/pr.py`** — Added `_detect_default_branch(project_root, story_slug) -> str` helper using `git rev-parse --abbrev-ref origin/HEAD`, stripping `origin/` prefix, falling back to `"main"`. Added `open_pull_request(branch_name, story_slug, pr_body, *, project_root) -> str | None`. Uses `shutil.which("gh")` to check CLI availability. Derives PR title from slug with `[arcwright] <Title>` pattern. Invokes `gh pr create` via `asyncio.create_subprocess_exec`. Handles gh missing, auth failure, and PR-already-exists gracefully.
+2. **`scm/pr.py`** — Added `_detect_default_branch(project_root, story_slug) -> str` helper using `git rev-parse --abbrev-ref origin/HEAD`, stripping `origin/` prefix, falling back to `"main"`. Added `open_pull_request(branch_name, story_slug, pr_body, *, project_root) -> str | None`. Uses `shutil.which("gh")` to check CLI availability. Derives PR title from slug with `[arcwright-ai] <Title>` pattern. Invokes `gh pr create` via `asyncio.create_subprocess_exec`. Handles gh missing, auth failure, and PR-already-exists gracefully.
 
 3. **`engine/state.py`** — Added `pr_url: str | None = None` field to `StoryState`.
 

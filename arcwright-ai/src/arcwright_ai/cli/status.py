@@ -90,7 +90,9 @@ methodology:
   type: "bmad"
 
 scm:
-  branch_template: "arcwright/{story_slug}"
+  branch_template: "arcwright-ai/{story_slug}"
+  # default_branch: ""          # empty = auto-detect; set to "main", "develop", etc.
+  # auto_merge: false            # set true for unattended overnight dispatch → merge chain
 
 reproducibility:
   enabled: false

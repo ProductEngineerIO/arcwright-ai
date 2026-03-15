@@ -546,6 +546,8 @@ methodology:
   type: "bmad"                # reference implementation
 scm:
   branch_template: "arcwright-ai/{epic}/{story}"
+  default_branch: ""              # empty = auto-detect; set to "main", "develop", etc. to override
+  auto_merge: false               # set true for unattended overnight dispatch → merge chain
 limits:
   tokens_per_story: 80000     # project override
   cost_per_run: 25.00         # project override
@@ -793,6 +795,9 @@ Remains in MVP as a learning exercise, not a shipping feature. The spike answers
 - **FR34:** System creates git branches per story using a configurable naming template
 - **FR35:** System generates pull requests for completed stories with decision provenance embedded
 - **FR36:** System manages worktree lifecycle — creation before story execution, disposal after validation failure
+- **FR37:** System supports a configurable default branch (`scm.default_branch`) with auto-detect fallback cascade (git remote show → gh repo view → origin/HEAD → fallback "main")
+- **FR38:** System fetches and fast-forward merges the remote default branch before worktree creation, ensuring stories start from the latest upstream state
+- **FR39:** System optionally auto-merges PRs via `gh pr merge --squash` after creation when `scm.auto_merge` is enabled in config
 
 ## Non-Functional Requirements
 

@@ -24,7 +24,7 @@ so that all subsequent subsystem stories import from a stable, well-tested found
 
 6. **Given** any exception from the hierarchy **When** instantiated **Then** it carries a `message` str attribute and an optional `details: dict[str, Any] | None` attribute that defaults to `None`.
 
-7. **Given** `core/constants.py` is implemented **When** inspected **Then** it defines `DIR_ARCWRIGHT` (`.arcwright-ai`), `DIR_SPEC` (`_spec`), `EXIT_SUCCESS=0`, `EXIT_VALIDATION=1`, `EXIT_AGENT=2`, `EXIT_CONFIG=3`, `EXIT_SCM=4`, `EXIT_INTERNAL=5`, `MAX_RETRIES=3`, `BRANCH_PREFIX` (`arcwright/`), and all other magic strings used by the system.
+7. **Given** `core/constants.py` is implemented **When** inspected **Then** it defines `DIR_ARCWRIGHT` (`.arcwright-ai`), `DIR_SPEC` (`_spec`), `EXIT_SUCCESS=0`, `EXIT_VALIDATION=1`, `EXIT_AGENT=2`, `EXIT_CONFIG=3`, `EXIT_SCM=4`, `EXIT_INTERNAL=5`, `MAX_RETRIES=3`, `BRANCH_PREFIX` (`arcwright-ai/`), and all other magic strings used by the system.
 
 8. **Given** `core/events.py` is implemented **When** inspected **Then** it defines an `EventEmitter` `Protocol` with an `emit(event: str, data: dict[str, Any]) -> None` signature and a `NoOpEmitter` class that satisfies the protocol and performs no operations.
 
@@ -389,10 +389,10 @@ EXIT_INTERNAL: int = 5
 
 # Operational defaults
 MAX_RETRIES: int = 3
-BRANCH_PREFIX: str = "arcwright/"
+BRANCH_PREFIX: str = "arcwright-ai/"
 
 # Git
-COMMIT_MESSAGE_TEMPLATE: str = "[arcwright] {story_title}\n\nStory: {story_path}\nRun: {run_id}"
+COMMIT_MESSAGE_TEMPLATE: str = "[arcwright-ai] {story_title}\n\nStory: {story_path}\nRun: {run_id}"
 WORKTREE_DIR_TEMPLATE: str = ".arcwright-ai/worktrees/{story_slug}"
 
 # File names

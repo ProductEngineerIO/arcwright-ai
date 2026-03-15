@@ -110,3 +110,11 @@ development_status:
   8-2-engine-node-wiring-role-based-model-resolution: done
   8-3-cost-display-per-role-and-config-template-update: done
   epic-8-retrospective: done
+
+  # Epic 9: SCM Enhancements — Fetch, Default Branch & Auto-Merge (4 stories, 18 pts)
+  epic-9: in-progress
+  9-1-scmconfig-enhancements-default-branch-and-auto-merge-configuration: done
+  9-2-fetch-and-sync-default-branch-before-worktree-creation: backlog
+  9-3-auto-merge-pr-after-creation: backlog
+  9-4-end-to-end-scm-enhancement-integration-tests: backlog
+  epic-9-retrospective: optional

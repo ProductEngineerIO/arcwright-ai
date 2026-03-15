@@ -555,6 +555,68 @@ async def test_detect_default_branch_returns_branch_without_prefix(
 
 
 # ---------------------------------------------------------------------------
+# Story 9.1 — _detect_default_branch config override tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_detect_default_branch_config_override(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """_detect_default_branch returns override immediately when non-empty string provided."""
+    from arcwright_ai.core.exceptions import ScmError as _ScmError
+
+    # Make all git calls fail to prove override short-circuits
+    async def _git_fail(*args: object, **kwargs: object) -> object:
+        raise _ScmError("should not be called", details={})
+
+    monkeypatch.setattr("arcwright_ai.scm.pr.git", AsyncMock(side_effect=_git_fail))
+    monkeypatch.setattr("arcwright_ai.scm.pr.shutil.which", lambda _: None)
+
+    result = await _detect_default_branch(tmp_path, "9-1-story", default_branch_override="develop")
+
+    assert result == "develop"
+
+
+@pytest.mark.asyncio
+async def test_detect_default_branch_empty_override_uses_cascade(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """_detect_default_branch runs the existing cascade when override is empty string."""
+    from arcwright_ai.scm.git import GitResult
+
+    monkeypatch.setattr(
+        "arcwright_ai.scm.pr.git",
+        AsyncMock(return_value=GitResult(stdout="* remote origin\n  HEAD branch: main\n", stderr="", returncode=0)),
+    )
+
+    result = await _detect_default_branch(tmp_path, "9-1-story", default_branch_override="")
+
+    assert result == "main"
+
+
+@pytest.mark.asyncio
+async def test_detect_default_branch_strips_whitespace_before_return(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """_detect_default_branch returns stripped branch name when override has surrounding whitespace."""
+    from arcwright_ai.core.exceptions import ScmError as _ScmError
+
+    async def _git_fail(*args: object, **kwargs: object) -> object:
+        raise _ScmError("should not be called", details={})
+
+    monkeypatch.setattr("arcwright_ai.scm.pr.git", AsyncMock(side_effect=_git_fail))
+    monkeypatch.setattr("arcwright_ai.scm.pr.shutil.which", lambda _: None)
+
+    result = await _detect_default_branch(tmp_path, "9-1-story", default_branch_override="  develop  ")
+
+    assert result == "develop"
+
+
+# ---------------------------------------------------------------------------
 # Story 6.7 — open_pull_request tests (Task 5.2)
 # ---------------------------------------------------------------------------
 
@@ -568,7 +630,7 @@ async def test_open_pull_request_returns_none_when_gh_not_found(
     monkeypatch.setattr("arcwright_ai.scm.pr.shutil.which", lambda _: None)
 
     result = await open_pull_request(
-        "arcwright/my-story",
+        "arcwright-ai/my-story",
         "6-7-push-branch",
         "PR body",
         project_root=tmp_path,
@@ -594,7 +656,7 @@ async def test_open_pull_request_logs_skipped_when_gh_not_found(
 
     with caplog.at_level(logging.WARNING, logger="arcwright_ai.scm.pr"):
         await open_pull_request(
-            "arcwright/my-story",
+            "arcwright-ai/my-story",
             "6-7-push-branch",
             "PR body",
             project_root=tmp_path,
@@ -604,7 +666,7 @@ async def test_open_pull_request_logs_skipped_when_gh_not_found(
     manual_url_logs = [r for r in caplog.records if r.message == "scm.pr.create.skipped"]
     assert manual_url_logs
     data = getattr(manual_url_logs[-1], "data", {})
-    assert data.get("manual_pr_url") == "https://github.com/owner/repo/pull/new/arcwright/my-story"
+    assert data.get("manual_pr_url") == "https://github.com/owner/repo/pull/new/arcwright-ai/my-story"
 
 
 @pytest.mark.asyncio
@@ -629,7 +691,7 @@ async def test_open_pull_request_returns_pr_url_on_success(
 
     with patch("arcwright_ai.scm.pr.asyncio.create_subprocess_exec", AsyncMock(return_value=mock_proc)):
         result = await open_pull_request(
-            "arcwright/my-story",
+            "arcwright-ai/my-story",
             "6-7-push-branch",
             "PR body",
             project_root=tmp_path,
@@ -663,7 +725,7 @@ async def test_open_pull_request_logs_create_event_on_success(
         caplog.at_level(logging.INFO, logger="arcwright_ai.scm.pr"),
     ):
         await open_pull_request(
-            "arcwright/my-story",
+            "arcwright-ai/my-story",
             "6-7-push-branch",
             "PR body",
             project_root=tmp_path,
@@ -692,7 +754,7 @@ async def test_open_pull_request_returns_none_on_gh_auth_failure(
 
     with patch("arcwright_ai.scm.pr.asyncio.create_subprocess_exec", AsyncMock(return_value=mock_proc)):
         result = await open_pull_request(
-            "arcwright/my-story",
+            "arcwright-ai/my-story",
             "6-7-push-branch",
             "PR body",
             project_root=tmp_path,
@@ -718,12 +780,12 @@ async def test_open_pull_request_returns_none_when_pr_already_exists(
     mock_proc = MagicMock()
     mock_proc.returncode = 1
     mock_proc.communicate = AsyncMock(
-        return_value=(b"", b"a pull request for branch 'arcwright/my-story' already exists")
+        return_value=(b"", b"a pull request for branch 'arcwright-ai/my-story' already exists")
     )
 
     with patch("arcwright_ai.scm.pr.asyncio.create_subprocess_exec", AsyncMock(return_value=mock_proc)):
         result = await open_pull_request(
-            "arcwright/my-story",
+            "arcwright-ai/my-story",
             "6-7-push-branch",
             "PR body",
             project_root=tmp_path,
@@ -759,7 +821,7 @@ async def test_open_pull_request_pr_title_humanized_from_slug(
 
     with patch("arcwright_ai.scm.pr.asyncio.create_subprocess_exec", mock_exec):
         await open_pull_request(
-            "arcwright/6-7-push-branch",
+            "arcwright-ai/6-7-push-branch",
             "6-7-push-branch",
             "PR body",
             project_root=tmp_path,
@@ -769,4 +831,51 @@ async def test_open_pull_request_pr_title_humanized_from_slug(
     pr_create_call = next((args for args in captured_args if "--title" in args), None)
     assert pr_create_call is not None
     title_idx = list(pr_create_call).index("--title")
-    assert pr_create_call[title_idx + 1] == "[arcwright] Push Branch"
+    assert pr_create_call[title_idx + 1] == "[arcwright-ai] Push Branch"
+
+
+# ---------------------------------------------------------------------------
+# Story 9.1 — open_pull_request default_branch passthrough test
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_open_pull_request_passes_default_branch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """open_pull_request forwards default_branch to _detect_default_branch."""
+    from arcwright_ai.scm.git import GitResult
+
+    monkeypatch.setattr("arcwright_ai.scm.pr.shutil.which", lambda _: "/usr/local/bin/gh")
+    monkeypatch.setattr(
+        "arcwright_ai.scm.pr.git",
+        AsyncMock(return_value=GitResult(stdout="origin/main", stderr="", returncode=0)),
+    )
+
+    pr_url = "https://github.com/owner/repo/pull/99"
+    mock_proc = MagicMock()
+    mock_proc.returncode = 0
+    mock_proc.communicate = AsyncMock(return_value=(pr_url.encode(), b""))
+
+    captured_base: list[str] = []
+
+    async def mock_exec(*args: str, **kwargs: object) -> MagicMock:
+        args_list = list(args)
+        if "--base" in args_list:
+            base_idx = args_list.index("--base")
+            captured_base.append(args_list[base_idx + 1])
+        return mock_proc
+
+    with patch("arcwright_ai.scm.pr.asyncio.create_subprocess_exec", mock_exec):
+        result = await open_pull_request(
+            "arcwright-ai/my-story",
+            "9-1-story",
+            "PR body",
+            project_root=tmp_path,
+            default_branch="develop",
+        )
+
+    assert result == pr_url
+    # The --base argument should be "develop" (from the config override)
+    assert captured_base == ["develop"]

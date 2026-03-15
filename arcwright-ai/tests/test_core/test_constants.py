@@ -108,7 +108,7 @@ def test_max_retries() -> None:
 
 
 def test_branch_prefix() -> None:
-    assert BRANCH_PREFIX == "arcwright/"
+    assert BRANCH_PREFIX == "arcwright-ai/"
 
 
 def test_run_id_datetime_format() -> None:

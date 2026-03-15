@@ -1426,6 +1426,7 @@ async def commit_node(state: StoryState) -> StoryState:
                         story_slug,
                         pr_body,
                         project_root=project_root,
+                        default_branch=state.config.scm.default_branch,
                     )
                 except Exception as exc:
                     logger.warning(

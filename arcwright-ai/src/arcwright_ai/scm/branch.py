@@ -1,11 +1,11 @@
 """SCM branch — Branch management and commit strategy.
 
 **Branch Naming Convention**
-All branches are namespaced under ``arcwright/`` to keep them greppable and
-isolated from any human-created branches.  Example: ``arcwright/my-story``.
+All branches are namespaced under ``arcwright-ai/`` to keep them greppable and
+isolated from any human-created branches.  Example: ``arcwright-ai/my-story``.
 
 **Commit Message Format**
-``[arcwright] <story-title>\\n\\nStory: <story-path>\\nRun: <run-id>``
+``[arcwright-ai] <story-title>\\n\\nStory: <story-path>\\nRun: <run-id>``
 
 **No Force Operations**
 No ``--force``, ``reset --hard``, or rebase commands are used.  An existing
@@ -68,7 +68,7 @@ async def branch_exists(branch_name: str, *, project_root: Path) -> bool:
     local branch only (not remote tracking refs or tags).
 
     Args:
-        branch_name: Full branch name to check (e.g. ``arcwright/my-story``).
+        branch_name: Full branch name to check (e.g. ``arcwright-ai/my-story``).
         project_root: Absolute path to the root of the git repository.
 
     Returns:
@@ -116,7 +116,7 @@ async def create_branch(
     *,
     project_root: Path,
 ) -> str:
-    """Create a new local branch named ``arcwright/<story_slug>``.
+    """Create a new local branch named ``arcwright-ai/<story_slug>``.
 
     The branch is created at ``base_ref`` (defaulting to ``HEAD``).  If the
     branch already exists a :class:`~arcwright_ai.core.exceptions.BranchError`
@@ -124,13 +124,13 @@ async def create_branch(
 
     Args:
         story_slug: Story identifier used to build the branch name.  The
-            final branch name is ``arcwright/<story_slug>``.
+            final branch name is ``arcwright-ai/<story_slug>``.
         base_ref: Git ref at which to create the branch.  Defaults to
             ``"HEAD"`` when ``None``.
         project_root: Absolute path to the root of the git repository.
 
     Returns:
-        str: The full branch name that was created (``arcwright/<story_slug>``).
+        str: The full branch name that was created (``arcwright-ai/<story_slug>``).
 
     Raises:
         BranchError: If the branch already exists, or if the underlying git
@@ -327,7 +327,7 @@ async def _reconcile_stale_remote(
     regular ``git push`` will succeed without requiring force operations.
 
     Args:
-        branch_name: Full branch name (e.g. ``arcwright/my-story``).
+        branch_name: Full branch name (e.g. ``arcwright-ai/my-story``).
         worktree_path: Working directory where the branch is checked out.
         remote: Remote name (e.g. ``"origin"``).
 
@@ -342,7 +342,7 @@ async def _reconcile_stale_remote(
             "--strategy=ours",
             "--no-edit",
             "-m",
-            f"[arcwright] reconcile stale remote branch {remote}/{branch_name}",
+            f"[arcwright-ai] reconcile stale remote branch {remote}/{branch_name}",
             "FETCH_HEAD",
             cwd=worktree_path,
         )
@@ -403,7 +403,7 @@ async def push_branch(
     git treats it as a successful push (AC: #10).
 
     Args:
-        branch_name: Full branch name to push (e.g. ``arcwright/my-story``).
+        branch_name: Full branch name to push (e.g. ``arcwright-ai/my-story``).
         project_root: Absolute path to the root of the git repository.
         remote: Remote name to push to.  Defaults to ``"origin"``.
         worktree_path: Path to the worktree where the branch is checked out.
@@ -548,7 +548,7 @@ async def delete_remote_branch(
     contract — remote failures never halt execution.
 
     Args:
-        branch_name: Full branch name to delete (e.g. ``arcwright/my-story``).
+        branch_name: Full branch name to delete (e.g. ``arcwright-ai/my-story``).
         project_root: Absolute path to the root of the git repository.
         remote: Remote name.  Defaults to ``"origin"``.
 
@@ -608,16 +608,16 @@ async def delete_remote_branch(
 
 
 async def list_branches(*, project_root: Path) -> list[str]:
-    """Return a sorted list of all local arcwright-namespaced branches.
+    """Return a sorted list of all local arcwright-ai-namespaced branches.
 
-    Queries ``git branch --list "arcwright/*"`` and parses the output.
+    Queries ``git branch --list "arcwright-ai/*"`` and parses the output.
 
     Args:
         project_root: Absolute path to the root of the git repository.
 
     Returns:
-        list[str]: Sorted list of branch names matching ``arcwright/*``.
-            Returns an empty list when no arcwright branches exist.
+        list[str]: Sorted list of branch names matching ``arcwright-ai/*``.
+            Returns an empty list when no arcwright-ai branches exist.
     """
     result = await git("branch", "--list", f"{BRANCH_PREFIX}*", cwd=project_root)
     branches: list[str] = []
@@ -646,7 +646,7 @@ async def delete_branch(
     no-op per NFR19.
 
     Args:
-        branch_name: Full branch name to delete (e.g. ``arcwright/my-story``).
+        branch_name: Full branch name to delete (e.g. ``arcwright-ai/my-story``).
         project_root: Absolute path to the root of the git repository.
         force: When ``False`` (default), use ``git branch -d`` which only
             deletes if the branch is fully merged.  When ``True``, use

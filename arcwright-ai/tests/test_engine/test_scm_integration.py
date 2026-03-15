@@ -201,7 +201,7 @@ async def test_full_story_lifecycle_with_scm(
     # Verify branch has the expected commit
     branch_name = BRANCH_PREFIX + story_id
     branch_log = await git("log", "--oneline", branch_name, cwd=project_root)
-    assert "[arcwright]" in branch_log.stdout, "commit message should start with [arcwright]"
+    assert "[arcwright-ai]" in branch_log.stdout, "commit message should start with [arcwright-ai]"
 
     # Step 5: finalize_node with SUCCESS status
     result = await finalize_node(state_after_commit)

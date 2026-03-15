@@ -222,12 +222,20 @@ class ScmConfig(ArcwrightModel):
     Attributes:
         branch_template: Git branch name template string.
         remote: Default git remote name for push/PR operations.
+        default_branch: Override for the repository default branch.
+            Empty string (the default) means auto-detect via the
+            ``git remote show`` / ``gh repo view`` / ``origin/HEAD`` cascade.
+        auto_merge: When ``True``, automatically merge the PR after creation.
+            Defaults to ``False`` (manual merge).  The actual merge call is
+            wired in Story 9.3; this field only stores the preference.
     """
 
     model_config = ConfigDict(frozen=True, extra="ignore", str_strip_whitespace=True)
 
-    branch_template: str = "arcwright/{story_slug}"
+    branch_template: str = "arcwright-ai/{story_slug}"
     remote: str = "origin"
+    default_branch: str = ""
+    auto_merge: bool = False
 
 
 class ReproducibilityConfig(ArcwrightModel):

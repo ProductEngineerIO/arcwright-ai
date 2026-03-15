@@ -144,7 +144,7 @@ This document provides the complete epic and story breakdown for Arcwright AI, d
 - D4 (Context Injection): Dispatch-time assembly in preflight node. Strict regex-only reference resolution in MVP (FR IDs, architecture section anchors). No fuzzy matching. No LLM fallback.
 - D5 (Run Directory Schema): Run ID format `YYYYMMDD-HHMMSS-<short-uuid>`. Story slug as directory name. `run.yaml` for metadata. LangGraph state is authority during execution; run dir files are transition checkpoints.
 - D6 (Error Handling): 6-class exception hierarchy (`ArcwrightError` → `ConfigError`, `ProjectError`, `ContextError`, `AgentError`, `ValidationError`, `ScmError`). Exit codes 0-5.
-- D7 (Git Operations): Shell out to `git` CLI via async subprocess wrapper. Worktree lifecycle with atomic guarantees. Branch naming: `arcwright/<story-slug>`.
+- D7 (Git Operations): Shell out to `git` CLI via async subprocess wrapper. Worktree lifecycle with atomic guarantees. Branch naming: `arcwright-ai/<story-slug>`. Fetch + fast-forward merge before worktree creation. Push + PR after validation. Optional auto-merge.
 - D8 (Logging & Observability): Two channels — Rich/Typer formatted text for humans (stderr), JSONL structured log for machines (`.arcwright-ai/runs/<run-id>/log.jsonl`).
 
 **From Architecture — Cross-Cutting Constraints**
@@ -205,6 +205,9 @@ This document provides the complete epic and story breakdown for Arcwright AI, d
 | FR34 | Epic 6 | Git branches per story with configurable naming |
 | FR35 | Epic 6 | PR generation with decision provenance embedded |
 | FR36 | Epic 6 | Worktree lifecycle management |
+| FR37 | Epic 9 | Configurable default branch with auto-detect fallback |
+| FR38 | Epic 9 | Fetch + fast-forward merge before worktree creation |
+| FR39 | Epic 9 | Optional auto-merge PR after creation |
 
 ## Epic List
 
@@ -234,7 +237,7 @@ Developer can dispatch a full epic (multiple stories), have the system halt loud
 **NFRs addressed:** NFR2, NFR3
 
 ### Epic 6: SCM Integration & PR Generation
-Developer gets clean git branches per story, worktree lifecycle management, automated commits, and pull requests with decision provenance embedded — code review is decision-centric, not line-by-line.
+Developer gets clean git branches per story, worktree lifecycle management, automated commits with push, and pull requests with decision provenance embedded — code review is decision-centric, not line-by-line.
 **FRs covered:** FR6, FR7, FR15, FR34, FR35, FR36
 **NFRs addressed:** NFR4, NFR14, NFR15, NFR19, NFR20
 
@@ -248,6 +251,11 @@ Developer can configure separate LLM models for code generation and code review,
 **Architecture Decision:** D9 (Role-Based Model Registry)
 **FRs covered:** FR22, FR30
 **NFRs addressed:** NFR12a, NFR12b
+
+### Epic 9: SCM Enhancements — Fetch, Default Branch & Auto-Merge
+Developer dispatches an overnight epic run and every story starts from the latest upstream code, creates PRs against the correct default branch, and optionally auto-merges — the full chain from dispatch to merged code runs unattended.
+**FRs covered:** FR37, FR38, FR39
+**NFRs addressed:** NFR4, NFR19, NFR20
 
 ## Epic 1: Project Foundation & Configuration
 
@@ -849,7 +857,7 @@ So that no story can corrupt the main branch or interfere with other stories.
 
 **Given** `scm/worktree.py` module
 **When** the engine needs to create an execution environment for a story
-**Then** `create_worktree(story_slug: str, base_ref: str) → Path` creates worktree at `.arcwright-ai/worktrees/<story-slug>` with branch `arcwright/<story-slug>`
+**Then** `create_worktree(story_slug: str, base_ref: str) → Path` creates worktree at `.arcwright-ai/worktrees/<story-slug>` with branch `arcwright-ai/<story-slug>`
 **And** `remove_worktree(story_slug: str)` removes worktree and optionally deletes the branch
 **And** atomic guarantee: if `git worktree add` fails mid-operation, cleanup restores consistent state — no partial worktrees, no orphaned branches per D7
 **And** existing worktree for same story slug → `WorktreeError` with clear message (no `--force`, no implicit cleanup per D7)
@@ -873,10 +881,10 @@ So that the git history is organized and traceable back to the run that produced
 
 **Given** `scm/branch.py` module
 **When** a story is dispatched and completes validation
-**Then** branch naming follows convention: `arcwright/<story-slug>` — namespaced, predictable, greppable per D7
+**Then** branch naming follows convention: `arcwright-ai/<story-slug>` — namespaced, predictable, greppable per D7
 **And** `create_branch(story_slug: str, base_ref: str)` creates branch; existing branch → `BranchError` (no force operations per D7)
-**And** commit inside worktree uses: `git add .` + `git commit -m "[arcwright] <story-title>\n\nStory: <story-file-path>\nRun: <run-id>"`
-**And** no push in MVP — all operations are local only
+**And** commit inside worktree uses: `git add .` + `git commit -m "[arcwright-ai] <story-title>\n\nStory: <story-file-path>\nRun: <run-id>"`
+**And** after successful commit, `push_branch()` pushes the branch to remote with merge-ours reconciliation for concurrent remote changes
 **And** no force operations anywhere — no `--force`, no `reset --hard`, no rebase per D7
 **And** compatible with git 2.25+ per NFR14 (no features introduced after git 2.25, which is Ubuntu 20.04 floor)
 **And** unit tests verify: branch naming format, commit message format, `BranchError` on existing branch, no force flags in any generated command
@@ -938,8 +946,8 @@ So that worktree isolation and commit happen automatically without manual interv
 
 **Given** the LangGraph StateGraph nodes from Epic 2
 **When** the engine executes a story through the pipeline
-**Then** `preflight` node calls `scm/worktree.py` to create worktree before agent execution; sets `cwd` for agent dispatch to the worktree path
-**And** `commit` node calls `scm/branch.py` to commit inside worktree, then `scm/worktree.py` to remove worktree
+**Then** `preflight` node fetches and fast-forward merges the remote default branch, then calls `scm/worktree.py` to create worktree from the updated tip; sets `cwd` for agent dispatch to the worktree path
+**And** `commit` node calls `scm/branch.py` to commit inside worktree, `push_branch()` to push to remote, `scm/pr.py` to generate PR body and open pull request, optionally `merge_pull_request()` when `scm.auto_merge` enabled, then `scm/worktree.py` to remove worktree
 **And** on ESCALATED (halt): worktree is preserved for inspection, path logged to provenance and summary
 **And** on RETRY: worktree is reused — agent re-executes in the same worktree with reflexion feedback (no worktree teardown/recreate per retry)
 **And** all git commands run with `cwd=worktree_path` except worktree add/remove which run from project root per D7
@@ -1157,3 +1165,138 @@ So that I can see exactly how much each phase of the pipeline costs and optimize
 - `cli/init.py` — Updated config template with `models` format
 - `tests/test_output/` — Summary and cost display tests
 - `tests/test_cli/` — Status display and init template tests
+
+---
+
+## Epic 9: SCM Enhancements — Fetch, Default Branch & Auto-Merge
+
+> **Value prop**: Developer dispatches an overnight epic run and every story starts from the latest upstream code, creates PRs against the correct default branch, and optionally auto-merges — the full chain from dispatch to merged code runs unattended.
+
+### Story 9.1: ScmConfig Enhancements — Default Branch & Auto-Merge Configuration
+
+**Priority**: HIGH | **Points**: 3
+**Requirements**: FR37, FR39, FR30
+**Dependencies**: Epic 6 (complete)
+
+**Description:**
+As a developer configuring Arcwright AI for my project,
+I want to specify the default branch and enable auto-merge in my project config,
+So that SCM operations target the correct branch and PRs merge automatically when configured.
+
+**Acceptance Criteria:**
+
+**Given** `core/config.py` `ScmConfig` Pydantic model
+**When** the developer configures SCM settings in `.arcwright-ai/config.yaml`
+**Then** `ScmConfig` gains two new optional fields: `default_branch: str = ""` (empty string means auto-detect) and `auto_merge: bool = False`
+**And** when `default_branch` is set to a non-empty string (e.g., `"main"`, `"develop"`), `_detect_default_branch()` in `scm/pr.py` returns that value immediately without running any git commands
+**And** when `default_branch` is empty or unset, `_detect_default_branch()` uses the existing 3-step cascade: `git remote show origin` → `gh repo view --json defaultBranchRef` → `git rev-parse --abbrev-ref origin/HEAD` → fallback `"main"`
+**And** `auto_merge` defaults to `False` — when `True`, the commit node will call `merge_pull_request()` after PR creation
+**And** config validation: `default_branch` accepts any non-empty string (branch name validation is intentionally lenient — git will reject invalid names); `auto_merge` must be boolean
+**And** `_KNOWN_SUBSECTION_FIELDS` is updated to include `default_branch` and `auto_merge` under the `scm` section for unknown-key warnings
+**And** `arcwright-ai init` config template includes commented-out `default_branch` and `auto_merge` fields with explanatory comments
+**And** unit tests verify: (1) empty `default_branch` triggers auto-detect cascade, (2) non-empty `default_branch` short-circuits detection, (3) `auto_merge` defaults to `False`, (4) config round-trips through YAML load/save, (5) unknown key warnings still work for `scm` section
+
+**Files touched:**
+- `core/config.py` — `ScmConfig` new fields, `_KNOWN_SUBSECTION_FIELDS` update
+- `scm/pr.py` — `_detect_default_branch()` accepts optional config override
+- `cli/init.py` — Config template update
+- `tests/test_core/test_config.py` — New ScmConfig field tests
+- `tests/test_scm/test_pr.py` — Default branch detection tests with config override
+
+### Story 9.2: Fetch & Sync Default Branch Before Worktree Creation
+
+**Priority**: HIGH | **Points**: 5
+**Requirements**: FR38, D7
+**Dependencies**: Story 9.1
+
+**Description:**
+As a developer dispatching stories overnight,
+I want each story's worktree to start from the latest upstream code,
+So that stories don't build on stale commits and merge conflicts are minimized.
+
+**Acceptance Criteria:**
+
+**Given** `scm/branch.py` module and `engine/nodes.py` `preflight_node`
+**When** the engine is about to create a worktree for a story
+**Then** a new `fetch_and_sync(default_branch: str, remote: str = "origin", *, project_root: Path) → str` function in `scm/branch.py`:
+  1. Runs `git fetch <remote> <default_branch>` to fetch latest commits from remote
+  2. Runs `git merge --ff-only <remote>/<default_branch>` to fast-forward the local default branch (if currently on it), or just uses `<remote>/<default_branch>` as the base_ref
+  3. Returns the resolved commit SHA of `<remote>/<default_branch>` as the base_ref for worktree creation
+**And** `preflight_node` in `engine/nodes.py` calls `fetch_and_sync()` before `create_worktree()`, passing the returned SHA as `base_ref`
+**And** if `--base-ref` is explicitly provided by the user on the CLI, `fetch_and_sync()` is skipped and the user-provided base ref is used directly
+**And** network failure during fetch → `ScmError` with clear message ("Failed to fetch from remote — check network connectivity"); story is skipped and halted (cannot guarantee fresh base without fetch)
+**And** fast-forward failure (local branch has diverged) → log warning, use `<remote>/<default_branch>` as base_ref directly (detached worktree off remote tip — safe, no local merge needed)
+**And** the default branch name is resolved via `_detect_default_branch()` (which respects `scm.default_branch` config from Story 9.1)
+**And** fetch runs once per dispatch when processing multiple stories in an epic (cached after first fetch for the duration of the run, not per-story)
+**And** unit tests verify: (1) `fetch_and_sync()` calls correct git commands, (2) returned SHA is used as base_ref, (3) network failure raises `ScmError`, (4) ff-only failure falls back to remote ref, (5) explicit `--base-ref` bypasses fetch
+**And** integration tests with real git: create remote, push commits, verify worktree starts from remote tip (not stale local HEAD)
+
+**Files touched:**
+- `scm/branch.py` — New `fetch_and_sync()` function
+- `engine/nodes.py` — `preflight_node` calls `fetch_and_sync()` before `create_worktree()`
+- `engine/state.py` — Optional `base_ref` field on state for caching resolved ref across stories
+- `tests/test_scm/test_branch.py` — Unit tests for `fetch_and_sync()`
+- `tests/test_scm/test_branch_integration.py` — Integration tests with real git remote
+
+### Story 9.3: Auto-Merge PR After Creation
+
+**Priority**: HIGH | **Points**: 5
+**Requirements**: FR39, D7
+**Dependencies**: Story 9.1
+
+**Description:**
+As a developer running overnight dispatches,
+I want PRs to auto-merge after creation when configured,
+So that completed stories flow through to the default branch without manual intervention.
+
+**Acceptance Criteria:**
+
+**Given** `scm/pr.py` module and `engine/nodes.py` `commit_node`
+**When** a PR is successfully created and `scm.auto_merge` is `True` in config
+**Then** a new `merge_pull_request(pr_url: str, strategy: str = "squash", *, project_root: Path) → bool` function in `scm/pr.py`:
+  1. Extracts PR number from the `pr_url` returned by `open_pull_request()`
+  2. Runs `gh pr merge <pr_number> --squash --delete-branch` to squash-merge and clean up the remote branch
+  3. Returns `True` on success, `False` on merge failure (e.g., merge conflicts, required reviews pending)
+**And** `commit_node` in `engine/nodes.py` calls `merge_pull_request()` after `open_pull_request()` when `state.config.scm.auto_merge is True`
+**And** merge failure is non-fatal — the PR remains open, merge failure is logged to provenance as a warning, and the story is still marked as `SUCCESS` (the code was committed and PR created; merge is best-effort)
+**And** when `scm.auto_merge` is `False` (default), `merge_pull_request()` is never called — existing behavior preserved
+**And** the `--delete-branch` flag cleans up the remote `arcwright-ai/<story-slug>` branch after merge, reducing branch clutter
+**And** for epic dispatches with multiple stories, auto-merge happens per-story immediately after PR creation (not batched at the end), so subsequent stories can build on merged changes when combined with Story 9.2's fetch
+**And** provenance entry records: merge attempt timestamp, success/failure, merge strategy, resulting merge commit SHA (when successful)
+**And** unit tests verify: (1) `merge_pull_request()` calls correct `gh` command, (2) successful merge returns `True`, (3) merge failure returns `False` without raising, (4) `commit_node` skips merge when `auto_merge` is `False`, (5) provenance includes merge metadata
+**And** integration tests: create real PR (if CI has gh auth), verify merge succeeds and branch is deleted
+
+**Files touched:**
+- `scm/pr.py` — New `merge_pull_request()` function
+- `engine/nodes.py` — `commit_node` calls `merge_pull_request()` conditionally
+- `output/provenance.py` — Merge event recording
+- `tests/test_scm/test_pr.py` — Unit tests for `merge_pull_request()`
+- `tests/test_engine/test_nodes.py` — `commit_node` auto-merge tests
+
+### Story 9.4: End-to-End SCM Enhancement Integration Tests
+
+**Priority**: MEDIUM | **Points**: 5
+**Requirements**: FR37, FR38, FR39, D7
+**Dependencies**: Stories 9.1, 9.2, 9.3
+
+**Description:**
+As a system maintainer,
+I want integration tests that verify the full enhanced SCM flow end-to-end,
+So that fetch → worktree → commit → push → PR → merge works as an unbroken chain.
+
+**Acceptance Criteria:**
+
+**Given** all SCM enhancements from Stories 9.1–9.3 are implemented
+**When** integration tests execute the full enhanced SCM lifecycle
+**Then** test scenario 1 (single story, auto-merge enabled): fetch remote → create worktree from remote tip → make changes → commit → push → PR → merge → verify branch deleted and changes on default branch
+**And** test scenario 2 (epic chain, auto-merge enabled): dispatch 2 stories sequentially; story 2's worktree starts from story 1's merged changes (verifies fetch-after-merge picks up previous story's work)
+**And** test scenario 3 (auto-merge disabled): full flow stops at PR creation; PR remains open, no merge attempted
+**And** test scenario 4 (configured default branch): `scm.default_branch` set to custom branch name; verify all operations target that branch, not auto-detected one
+**And** test scenario 5 (network failure simulation): mock fetch failure; verify graceful halt with clear error message
+**And** test scenario 6 (merge conflict): create conflicting changes on default branch; auto-merge fails gracefully, PR remains open, story still marked SUCCESS
+**And** all tests marked `@pytest.mark.slow` (real git operations)
+**And** tests use `tmp_path` fixture with real git repos (local bare remote + working clone)
+
+**Files touched:**
+- `tests/test_scm/test_scm_integration.py` — New integration test file covering all 6 scenarios
+- `tests/conftest.py` — Shared fixture for creating local bare remote + clone pair

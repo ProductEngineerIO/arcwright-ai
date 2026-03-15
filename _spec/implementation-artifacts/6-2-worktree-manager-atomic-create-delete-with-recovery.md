@@ -12,7 +12,7 @@ so that no story can corrupt the main branch or interfere with other stories.
 
 ## Acceptance Criteria (BDD)
 
-1. **Given** `scm/worktree.py` module **When** the engine needs to create an execution environment for a story **Then** `create_worktree(story_slug: str, base_ref: str | None = None) → Path` creates worktree at `.arcwright-ai/worktrees/<story-slug>` with branch `arcwright/<story-slug>` **And** returns the absolute `Path` to the worktree directory.
+1. **Given** `scm/worktree.py` module **When** the engine needs to create an execution environment for a story **Then** `create_worktree(story_slug: str, base_ref: str | None = None) → Path` creates worktree at `.arcwright-ai/worktrees/<story-slug>` with branch `arcwright-ai/<story-slug>` **And** returns the absolute `Path` to the worktree directory.
 
 2. **Given** `scm/worktree.py` module **When** the engine needs to clean up after story execution **Then** `remove_worktree(story_slug: str) → None` removes the worktree **And** optionally deletes the associated branch.
 
@@ -68,7 +68,7 @@ so that no story can corrupt the main branch or interfere with other stories.
   - [x] 1.2: Compute worktree path: `project_root / DIR_ARCWRIGHT / DIR_WORKTREES / story_slug` using constants from `core/constants.py`.
   - [x] 1.3: Check if worktree directory already exists — if so, raise `WorktreeError(f"Worktree already exists for '{story_slug}'", details={"path": str(worktree_path), "story_slug": story_slug})`.
   - [x] 1.4: Ensure parent directory `.arcwright-ai/worktrees/` exists (`worktree_path.parent.mkdir(parents=True, exist_ok=True)`).
-  - [x] 1.5: Compute branch name: `BRANCH_PREFIX + story_slug` (e.g., `arcwright/<story-slug>`).
+  - [x] 1.5: Compute branch name: `BRANCH_PREFIX + story_slug` (e.g., `arcwright-ai/<story-slug>`).
   - [x] 1.6: Compute base ref: use `base_ref` if provided, otherwise `"HEAD"`.
   - [x] 1.7: Call `await git("worktree", "add", str(worktree_path), "-b", branch_name, resolved_base_ref, cwd=project_root)`.
   - [x] 1.8: Wrap git call in try/except `ScmError` — on failure, run `_cleanup_partial_worktree(worktree_path, branch_name, project_root)` then re-raise as `WorktreeError`.
@@ -158,7 +158,7 @@ so that no story can corrupt the main branch or interfere with other stories.
 4. Validation fails → worktree preserved for inspection, logged in provenance
 5. Halt/budget-exceeded → all active worktrees preserved, run marked incomplete
 
-**Key D7 conventions**: No force operations (no `--force`, no `reset --hard`, no rebase). Existing branch → error out. No push in MVP. All git commands run with `cwd=worktree_path` except worktree add/remove (project root). Cleanup is always user-initiated (never automatic). [Source: architecture.md — Decision 7]
+**Key D7 conventions**: No force operations (no `--force`, no `reset --hard`, no rebase). Existing branch → error out. Push after successful validation via `push_branch()`. All git commands run with `cwd=worktree_path` except worktree add/remove (project root). Cleanup is always user-initiated (never automatic). [Source: architecture.md — Decision 7]
 
 **Architectural Constraint 4 — Worktree Isolation as Security Model**: "Git worktrees are not a convenience — they are the **primary isolation and safety boundary**." Worktree operations must be atomic and recoverable — if `git worktree add` fails mid-operation, cleanup logic must restore consistent state. This is a founding architectural decision. [Source: architecture.md — Constraint 4]
 

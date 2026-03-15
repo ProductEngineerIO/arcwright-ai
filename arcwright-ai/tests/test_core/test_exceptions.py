@@ -133,8 +133,8 @@ def test_config_error_with_details() -> None:
 
 
 def test_worktree_error_with_details() -> None:
-    exc = WorktreeError("failed", details={"branch": "arcwright/story-1-2"})
-    assert exc.details == {"branch": "arcwright/story-1-2"}
+    exc = WorktreeError("failed", details={"branch": "arcwright-ai/story-1-2"})
+    assert exc.details == {"branch": "arcwright-ai/story-1-2"}
 
 
 # ---------------------------------------------------------------------------

@@ -101,7 +101,7 @@ async def create_worktree(
     """Create an isolated git worktree for a story and return its path.
 
     Creates the worktree at ``<project_root>/.arcwright-ai/worktrees/<story_slug>``
-    on a new branch named ``arcwright/<story_slug>``.  If the operation fails
+    on a new branch named ``arcwright-ai/<story_slug>``.  If the operation fails
     mid-way, :func:`_cleanup_partial_worktree` restores a consistent state
     before the error is re-raised.
 
@@ -133,7 +133,7 @@ async def create_worktree(
     resolved_base_ref: str = base_ref if base_ref is not None else "HEAD"
 
     # Delete stale local branch from a prior run if it still exists.
-    # Arcwright-namespaced branches are exclusively tool-owned, so this is
+    # Arcwright-AI-namespaced branches are exclusively tool-owned, so this is
     # safe.  Without this, ``git worktree add -b`` would fail with
     # "a branch named '...' already exists" when a prior run committed
     # but the branch was never cleaned up.

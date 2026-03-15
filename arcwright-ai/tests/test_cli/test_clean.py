@@ -51,10 +51,10 @@ async def test_clean_default_removes_merged_worktrees_and_branches(
     tmp_path: Path,
 ) -> None:
     """Default mode removes matched worktree and calls delete_branch(force=False)."""
-    mock_git = AsyncMock(return_value=_ok("  arcwright/story-a"))
+    mock_git = AsyncMock(return_value=_ok("  arcwright-ai/story-a"))
     mock_list_worktrees = AsyncMock(return_value=["story-a"])
     mock_remove_worktree = AsyncMock(return_value=None)
-    mock_list_branches = AsyncMock(return_value=["arcwright/story-a"])
+    mock_list_branches = AsyncMock(return_value=["arcwright-ai/story-a"])
     mock_delete_branch = AsyncMock(return_value=None)
 
     monkeypatch.setattr("arcwright_ai.cli.clean.git", mock_git)
@@ -68,7 +68,7 @@ async def test_clean_default_removes_merged_worktrees_and_branches(
     assert worktrees == 1
     assert branches == 1
     mock_remove_worktree.assert_awaited_once_with("story-a", project_root=tmp_path)
-    mock_delete_branch.assert_awaited_once_with("arcwright/story-a", project_root=tmp_path, force=False)
+    mock_delete_branch.assert_awaited_once_with("arcwright-ai/story-a", project_root=tmp_path, force=False)
 
 
 # ---------------------------------------------------------------------------
@@ -85,7 +85,7 @@ async def test_clean_default_skips_unmerged_worktrees(
     mock_git = AsyncMock(return_value=_ok(""))  # no merged arcwright branches
     mock_list_worktrees = AsyncMock(return_value=["story-a"])
     mock_remove_worktree = AsyncMock(return_value=None)
-    mock_list_branches = AsyncMock(return_value=["arcwright/story-a"])
+    mock_list_branches = AsyncMock(return_value=["arcwright-ai/story-a"])
     mock_delete_branch = AsyncMock(return_value=None)
 
     monkeypatch.setattr("arcwright_ai.cli.clean.git", mock_git)
@@ -113,10 +113,10 @@ async def test_clean_default_cleans_orphaned_merged_branches(
     tmp_path: Path,
 ) -> None:
     """Default mode deletes merged branches even when no worktree exists."""
-    mock_git = AsyncMock(return_value=_ok("  arcwright/story-a"))
+    mock_git = AsyncMock(return_value=_ok("  arcwright-ai/story-a"))
     mock_list_worktrees = AsyncMock(return_value=[])  # no active worktrees
     mock_remove_worktree = AsyncMock(return_value=None)
-    mock_list_branches = AsyncMock(return_value=["arcwright/story-a"])
+    mock_list_branches = AsyncMock(return_value=["arcwright-ai/story-a"])
     mock_delete_branch = AsyncMock(return_value=None)
 
     monkeypatch.setattr("arcwright_ai.cli.clean.git", mock_git)
@@ -130,7 +130,7 @@ async def test_clean_default_cleans_orphaned_merged_branches(
     assert worktrees == 0
     assert branches == 1
     mock_remove_worktree.assert_not_awaited()
-    mock_delete_branch.assert_awaited_once_with("arcwright/story-a", project_root=tmp_path, force=False)
+    mock_delete_branch.assert_awaited_once_with("arcwright-ai/story-a", project_root=tmp_path, force=False)
 
 
 # ---------------------------------------------------------------------------
@@ -146,7 +146,7 @@ async def test_clean_all_removes_all_worktrees_and_branches(
     """--all mode removes every worktree and force-deletes every branch."""
     mock_list_worktrees = AsyncMock(return_value=["story-a", "story-b"])
     mock_remove_worktree = AsyncMock(return_value=None)
-    mock_list_branches = AsyncMock(return_value=["arcwright/story-a", "arcwright/story-b"])
+    mock_list_branches = AsyncMock(return_value=["arcwright-ai/story-a", "arcwright-ai/story-b"])
     mock_delete_branch = AsyncMock(return_value=None)
 
     monkeypatch.setattr("arcwright_ai.cli.clean.list_worktrees", mock_list_worktrees)
@@ -159,8 +159,8 @@ async def test_clean_all_removes_all_worktrees_and_branches(
     assert worktrees == 2
     assert branches == 2
     assert mock_remove_worktree.await_count == 2
-    mock_delete_branch.assert_any_await("arcwright/story-a", project_root=tmp_path, force=True)
-    mock_delete_branch.assert_any_await("arcwright/story-b", project_root=tmp_path, force=True)
+    mock_delete_branch.assert_any_await("arcwright-ai/story-a", project_root=tmp_path, force=True)
+    mock_delete_branch.assert_any_await("arcwright-ai/story-b", project_root=tmp_path, force=True)
 
 
 # ---------------------------------------------------------------------------
@@ -223,7 +223,7 @@ async def test_clean_partial_failure_continues(
     tmp_path: Path,
 ) -> None:
     """A WorktreeError on one slug does not prevent removal of subsequent slugs."""
-    mock_git = AsyncMock(return_value=_ok("  arcwright/story-a\n  arcwright/story-b"))
+    mock_git = AsyncMock(return_value=_ok("  arcwright-ai/story-a\n  arcwright-ai/story-b"))
     mock_list_worktrees = AsyncMock(return_value=["story-a", "story-b"])
 
     remove_call_count = 0
@@ -234,7 +234,7 @@ async def test_clean_partial_failure_continues(
         if slug == "story-a":
             raise WorktreeError(f"Cannot remove '{slug}'")
 
-    mock_list_branches = AsyncMock(return_value=["arcwright/story-b"])
+    mock_list_branches = AsyncMock(return_value=["arcwright-ai/story-b"])
     mock_delete_branch = AsyncMock(return_value=None)
 
     monkeypatch.setattr("arcwright_ai.cli.clean.git", mock_git)
@@ -262,9 +262,9 @@ def test_clean_reports_correct_counts(monkeypatch: pytest.MonkeyPatch, tmp_path:
 
     mock_list_worktrees = AsyncMock(return_value=["story-a", "story-b"])
     mock_remove_worktree = AsyncMock(return_value=None)
-    mock_list_branches = AsyncMock(return_value=["arcwright/story-a", "arcwright/story-b"])
+    mock_list_branches = AsyncMock(return_value=["arcwright-ai/story-a", "arcwright-ai/story-b"])
     mock_delete_branch = AsyncMock(return_value=None)
-    mock_git = AsyncMock(return_value=_ok("  arcwright/story-a\n  arcwright/story-b"))
+    mock_git = AsyncMock(return_value=_ok("  arcwright-ai/story-a\n  arcwright-ai/story-b"))
 
     monkeypatch.setattr(clean_mod, "list_worktrees", mock_list_worktrees)
     monkeypatch.setattr(clean_mod, "remove_worktree", mock_remove_worktree)
@@ -360,12 +360,12 @@ async def test_list_merged_branches_parses_output(
     tmp_path: Path,
 ) -> None:
     """_list_merged_branches returns only arcwright-prefixed branches from git output."""
-    mock_git = AsyncMock(return_value=_ok("* main\n  arcwright/story-a\n  arcwright/story-b\n  feature/other"))
+    mock_git = AsyncMock(return_value=_ok("* main\n  arcwright-ai/story-a\n  arcwright-ai/story-b\n  feature/other"))
     monkeypatch.setattr("arcwright_ai.cli.clean.git", mock_git)
 
     result = await _list_merged_branches(project_root=tmp_path)
 
-    assert result == {"arcwright/story-a", "arcwright/story-b"}
+    assert result == {"arcwright-ai/story-a", "arcwright-ai/story-b"}
     mock_git.assert_awaited_once_with("branch", "--merged", cwd=tmp_path)
 
 
@@ -376,12 +376,12 @@ async def test_list_merged_branches_handles_worktree_plus_prefix(
 ) -> None:
     """_list_merged_branches handles '+' prefix for branches checked out in linked worktrees."""
     # git uses '+' to mark branches checked out in linked worktrees (not '  ')
-    mock_git = AsyncMock(return_value=_ok("* main\n+ arcwright/story-a\n  feature/other"))
+    mock_git = AsyncMock(return_value=_ok("* main\n+ arcwright-ai/story-a\n  feature/other"))
     monkeypatch.setattr("arcwright_ai.cli.clean.git", mock_git)
 
     result = await _list_merged_branches(project_root=tmp_path)
 
-    assert result == {"arcwright/story-a"}
+    assert result == {"arcwright-ai/story-a"}
 
 
 @pytest.mark.asyncio
@@ -409,7 +409,7 @@ def test_clean_all_flag_invokes_clean_all(monkeypatch: pytest.MonkeyPatch, tmp_p
 
     mock_list_worktrees = AsyncMock(return_value=["story-x"])
     mock_remove_worktree = AsyncMock(return_value=None)
-    mock_list_branches = AsyncMock(return_value=["arcwright/story-x"])
+    mock_list_branches = AsyncMock(return_value=["arcwright-ai/story-x"])
     mock_delete_branch = AsyncMock(return_value=None)
 
     monkeypatch.setattr(clean_mod, "list_worktrees", mock_list_worktrees)
@@ -421,4 +421,4 @@ def test_clean_all_flag_invokes_clean_all(monkeypatch: pytest.MonkeyPatch, tmp_p
 
     assert result.exit_code == 0
     assert "Removed 1 worktree(s), deleted 1 branch(es)" in result.output
-    mock_delete_branch.assert_awaited_once_with("arcwright/story-x", project_root=tmp_path, force=True)
+    mock_delete_branch.assert_awaited_once_with("arcwright-ai/story-x", project_root=tmp_path, force=True)
