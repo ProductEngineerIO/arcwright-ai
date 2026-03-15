@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+.venv-studio/
+venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Arcwright AI runtime (never committed)
+.arcwright-ai/tmp/
+.arcwright-ai/runs/
+
+# mypy
+.mypy_cache/
+
+# pytest
+.pytest_cache/
+
+# ruff
+.ruff_cache/

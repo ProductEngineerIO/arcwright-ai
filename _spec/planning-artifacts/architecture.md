@@ -1,8 +1,12 @@
 ---
 stepsCompleted: [1, 2, 3, 4, 5, 6, 7, 8]
 lastStep: 8
-status: 'complete'
+status: 'amended'
 completedAt: '2026-02-27'
+amendedAt: '2026-03-11'
+amendments:
+  - date: '2026-03-11'
+    description: 'Decision 9: Role-Based Model Registry — dual-model support for code generation vs. review with extensible role pattern'
 inputDocuments:
   - '_spec/planning-artifacts/prd.md'
   - '_spec/planning-artifacts/product-brief-arcwright-ai-2026-02-26.md'
@@ -53,7 +57,7 @@ The FRs are not independent — they form execution chains where a flaw in any s
 | 5 | **Context Injector / Answerer** | BMAD artifact reading, context assembly, static rule lookup engine | FR16-18 |
 | 6 | **Provenance Recorder** | Decision logging, structured markdown generation, PR attachment | FR12-15, NFR17 |
 | 7 | **SCM Manager** | Git worktree lifecycle, branch management, PR generation | FR6-7, FR34-36, NFR4 |
-| 8 | **Configuration System** | Two-tier config with env var override, Pydantic validation, precedence chain | FR26-30, NFR5 |
+| 8 | **Configuration System** | Two-tier config with env var override, Pydantic validation, precedence chain, role-based model registry | FR26-30, NFR5 |
 | 9 | **Run State Manager (`.arcwright-ai/`)** | File-based persistent state — runs, provenance, config, tmp. The product's state outside of LangGraph. | FR31-33, NFR8, NFR16 |
 | 10 | **CLI Surface** | Click/Typer thin wrapper over Python API — 7 MVP commands | FR26-27, NFR19 |
 
@@ -407,18 +411,20 @@ async def git(*args: str, cwd: Path | None = None) -> GitResult:
 ```
 
 **Worktree lifecycle:**
-1. `git worktree add .arcwright-ai/worktrees/<story-slug> -b arcwright/<story-slug> <base-ref>`
-2. Agent executes in worktree directory (sandbox boundary)
-3. Validation passes → `git add` + `git commit` (inside worktree) → `git worktree remove`
-4. Validation fails → worktree preserved for inspection, logged in provenance
-5. Halt/budget-exceeded → all active worktrees preserved, run marked incomplete
+1. `preflight_node` fetches latest from remote default branch and fast-forward merges to ensure worktrees start from current upstream state
+2. `git worktree add .arcwright-ai/worktrees/<story-slug> -b arcwright-ai/<story-slug> <base-ref>`
+3. Agent executes in worktree directory (sandbox boundary)
+4. Validation passes → `git add` + `git commit` (inside worktree) → `git push` → `gh pr create` → optional `gh pr merge` → `git worktree remove`
+5. Validation fails → worktree preserved for inspection, logged in provenance
+6. Halt/budget-exceeded → all active worktrees preserved, run marked incomplete
 
 **Conventions:**
-- Base ref: defaults to current HEAD; configurable via `--base-ref`
-- Branch naming: `arcwright/<story-slug>` — namespaced, predictable, greppable
-- Commit message: `[arcwright] <story-title>\n\nStory: <story-file-path>\nRun: <run-id>`
+- Base ref: defaults to fetched remote default branch tip; configurable via `--base-ref`
+- Default branch: auto-detected (git remote show → gh repo view → origin/HEAD → fallback "main"); overridable via `scm.default_branch` config
+- Branch naming: `arcwright-ai/<story-slug>` — namespaced, predictable, greppable
+- Commit message: `[arcwright-ai] <story-title>\n\nStory: <story-file-path>\nRun: <run-id>`
 - No force operations — no `--force`, no `reset --hard`, no rebase. Existing branch → error out
-- No push in MVP — all operations local only (FR-25 is Growth phase)
+- Push + PR: after successful validation, `push_branch()` pushes to remote with merge-ours reconciliation; `open_pull_request()` creates PR via `gh pr create`; optional auto-merge via `gh pr merge --squash` when `scm.auto_merge` is enabled
 - All git commands run with `cwd=worktree_path` except worktree add/remove (project root)
 - Atomic guarantee: worktree creation failure → no partial state, story skipped and logged
 
@@ -468,6 +474,150 @@ async def git(*args: str, cwd: Path | None = None) -> GitResult:
 - No root logger modification — only `arcwright.*` logger namespace configured
 - Logger hierarchy mirrors packages: `arcwright.engine`, `arcwright.agent`, `arcwright.scm`, etc.
 - No external telemetry in MVP — JSONL file is the observability surface
+
+---
+
+### Decision 9: Role-Based Model Registry
+
+**Choice:** Role-based model registry — each pipeline consumption point declares a model role; roles resolve to model specs through a registry with fallback.
+
+**Motivation:** The execution pipeline has two fundamentally different LLM consumers: code generation (`agent_dispatch_node`) and code review (V3 reflexion in `validate_node`). Using the same model for both loses the adversarial benefit of independent review. Different models also have different cost/capability profiles — a fast, cheap model for generation paired with a thorough, expensive model for review optimizes both speed and quality. The architecture must support this split without proliferating per-consumer config fields.
+
+**Design principle:** *Design for N model roles, implement 2.* This mirrors the existing Constraint #5 ("Design for 5 dependency layers, implement 2") — the registry pattern accommodates future roles (planning, summarization, triage, observe-mode analysis) without config model changes.
+
+**Model roles (initial set):**
+
+| Role | Consumer | Default Model | Purpose |
+|------|----------|---------------|---------|
+| `generate` | `agent_dispatch_node` → `invoke_agent()` | `claude-sonnet-4-20250514` | Code generation — fast, cost-effective |
+| `review` | `validate_node` → V3 reflexion → `invoke_agent()` | `claude-opus-4-5` | Code review — thorough, adversarial |
+
+**Future roles (designed for, not implemented):**
+
+| Role | Likely Consumer | Rationale |
+|------|----------------|-----------|
+| `plan` | Epic-level planning, story decomposition | Growth-phase orchestrator intelligence |
+| `summarize` | Run summary, PR body generation | Cheap model for structured text output |
+| `triage` | Pre-validation quick-check | Fast gate before expensive V3 reflexion |
+| `observe` | Observe mode analysis (PRD deferred) | Already architecturally planned |
+
+**Configuration model:**
+
+```python
+class ModelRole(StrEnum):
+    """Well-known model roles in the execution pipeline."""
+    GENERATE = "generate"
+    REVIEW = "review"
+
+class ModelSpec(ArcwrightModel):
+    """A model specification bound to a role."""
+    model_config = ConfigDict(frozen=True, extra="ignore")
+    version: str
+    pricing: ModelPricing = Field(default_factory=ModelPricing)
+
+class ModelRegistry(ArcwrightModel):
+    """Role-based model selection registry.
+    
+    Each role maps to a ModelSpec. If a role is not explicitly configured,
+    it falls back to the 'generate' role (which must always be present).
+    """
+    model_config = ConfigDict(frozen=True, extra="ignore")
+    roles: dict[str, ModelSpec]
+    
+    def get(self, role: ModelRole | str) -> ModelSpec:
+        """Resolve model spec for a role, with fallback to 'generate'."""
+        key = role.value if isinstance(role, ModelRole) else role
+        if key in self.roles:
+            return self.roles[key]
+        if ModelRole.GENERATE.value in self.roles:
+            return self.roles[ModelRole.GENERATE.value]
+        raise ConfigError(f"No model configured for role '{key}' and no 'generate' fallback")
+```
+
+**RunConfig integration:**
+
+```python
+class RunConfig(ArcwrightModel):
+    api: ApiConfig
+    models: ModelRegistry      # replaces model: ModelConfig
+    limits: LimitsConfig
+    methodology: MethodologyConfig
+    scm: ScmConfig
+    reproducibility: ReproducibilityConfig
+```
+
+**Config YAML format:**
+
+```yaml
+models:
+  generate:
+    version: claude-sonnet-4-20250514
+    pricing:
+      input_rate: "3.00"
+      output_rate: "15.00"
+  review:
+    version: claude-opus-4-5
+    pricing:
+      input_rate: "15.00"
+      output_rate: "75.00"
+```
+
+**Minimal config (backward-compatible spirit):**
+
+```yaml
+models:
+  generate:
+    version: claude-sonnet-4-20250514
+# review falls back to generate automatically
+```
+
+**Backward compatibility migration:**
+1. If `models` key exists in config → use new registry format
+2. If `model` (singular) key exists → migrate to `models.generate`, emit deprecation warning
+3. If neither → use defaults (`generate` role with `claude-sonnet-4-20250514`)
+
+**Environment variable pattern:**
+
+Role-templated env vars replace per-field constants:
+
+| Env Var | Effect |
+|---------|--------|
+| `ARCWRIGHT_AI_MODEL_GENERATE_VERSION` | Override generate role model version |
+| `ARCWRIGHT_AI_MODEL_REVIEW_VERSION` | Override review role model version |
+| `ARCWRIGHT_AI_MODEL_GENERATE_PRICING_INPUT_RATE` | Override generate role input pricing |
+| `ARCWRIGHT_AI_MODEL_REVIEW_PRICING_INPUT_RATE` | Override review role input pricing |
+
+The env var override logic scans for `ARCWRIGHT_AI_MODEL_{ROLE}_*` patterns and merges into the corresponding registry entry. One scanning pattern covers all roles — no per-role constant declarations needed. The existing `ARCWRIGHT_AI_MODEL_VERSION` env var is treated as an alias for `ARCWRIGHT_AI_MODEL_GENERATE_VERSION` with a deprecation warning.
+
+**Node wiring:**
+
+```python
+# agent_dispatch_node
+spec = state.config.models.get(ModelRole.GENERATE)
+result = await invoke_agent(prompt, model=spec.version, ...)
+cost = calculate_invocation_cost(tokens_in, tokens_out, spec.pricing)
+
+# validate_node (V3 reflexion)
+spec = state.config.models.get(ModelRole.REVIEW)
+result = await run_validation_pipeline(..., model=spec.version, ...)
+cost = calculate_invocation_cost(tokens_in, tokens_out, spec.pricing)
+```
+
+**Cost tracking implications:**
+- Each node resolves its own `ModelSpec` and applies the correct pricing
+- Run summaries can report cost breakdown by role: "generation cost: $X, review cost: $Y"
+- `BudgetState` aggregation is unchanged — per-story and per-run totals still accumulate, but source pricing varies by role
+- Budget ceiling enforcement still operates on aggregate cost — no per-role ceilings in this iteration
+
+**Integration note (D9↔D2 binding):** Budget check node evaluates aggregate cost regardless of which model role incurred the cost. A story that fails V3 review and retries will accumulate both generation costs (from `generate` role) and review costs (from `review` role) toward the same dual ceiling.
+
+**Integration note (D9↔D8 binding):** Structured log events for `agent.dispatch` and `validation.pipeline.start` include the resolved model role and version:
+```json
+{"event": "agent.dispatch", "data": {"model_role": "generate", "model_version": "claude-sonnet-4-20250514", ...}}
+{"event": "validation.v3.start", "data": {"model_role": "review", "model_version": "claude-opus-4-5", ...}}
+```
+
+---
 
 ### Party Mode Enhancements Applied (Round 3)
 
@@ -865,7 +1015,7 @@ async def test_worktree_lifecycle(tmp_path):
 
 | FR | Description | Primary File | Notes |
 |----|-------------|-------------|-------|
-| FR22 | Agent session config | `agent/invoker.py` | Session timeout, model selection passed via `RunConfig` |
+| FR22 | Agent session config | `agent/invoker.py` | Session timeout, model resolved via `ModelRegistry.get(GENERATE)` from `RunConfig` |
 | FR23 | Token tracking | `core/types.py` + `engine/nodes.py` | `BudgetState` fields + budget_check node accumulates |
 | FR24 | Cost ceiling enforcement | `engine/nodes.py` | budget_check conditional edge before agent dispatch |
 | FR25 | Push to remote | `scm/git.py` | **NOT IN MVP** — file location reserved for Growth phase |
@@ -877,8 +1027,11 @@ async def test_worktree_lifecycle(tmp_path):
 | FR31 | Run status | `output/run_manager.py` | Reads `run.yaml` status field |
 | FR32 | Run listing | `output/run_manager.py` | Scans `.arcwright-ai/runs/` directory |
 | FR33 | Run summary | `output/summary.py` | Generates human-readable run report |
-| FR34 | Branch creation | `scm/branch.py` | `arcwright/<story-slug>` naming convention |
+| FR34 | Branch creation | `scm/branch.py` | `arcwright-ai/<story-slug>` naming convention |
 | FR35 | Commit story | `scm/worktree.py` | `git add` + `git commit` inside worktree |
+| FR37 | Default branch config | `core/config.py` + `scm/pr.py` | Configurable `scm.default_branch` with auto-detect fallback cascade |
+| FR38 | Fetch before story | `scm/branch.py` + `engine/nodes.py` | Fetch + fast-forward merge of remote default branch before worktree creation |
+| FR39 | Auto-merge PR | `scm/pr.py` + `engine/nodes.py` | Optional `gh pr merge --squash` after PR creation when `scm.auto_merge` enabled |
 
 ### Architectural Boundaries
 
@@ -930,17 +1083,20 @@ async def test_worktree_lifecycle(tmp_path):
   ▼                                                          │
 [Node: agent_dispatch]                                       │
   ├── agent/prompt.py → build prompt from ContextBundle      │
+  ├── models.get(GENERATE) → resolve model spec              │
   ├── agent/invoker.py → SDK async generator                 │
   ├── agent/sandbox.py → validate each file operation        │
   ├── output/run_manager.py → write agent-output.md          │
-  ├── Update BudgetState (tokens consumed, cost)             │
+  ├── Update BudgetState (tokens consumed, cost via spec)    │
   └── state.status = VALIDATING                              │
   │                                                          │
   ▼                                                          │
 [Node: validate]                                             │
+  ├── models.get(REVIEW) → resolve model spec               │
   ├── validation/pipeline.py → route to V3/V6               │
   ├── output/provenance.py → record validation results       │
   ├── output/run_manager.py → write validation.md            │
+  ├── Update BudgetState (validation cost via review spec)   │
   └── state.status = SUCCESS | RETRY | ESCALATED             │
   │                                                          │
   ├── if RETRY → back to budget_check (within budget)        │
@@ -1032,9 +1188,10 @@ arcwright-ai/
 │       └── core/
 │           ├── __init__.py      # __all__ = ["TaskState", "ArcwrightModel", "ArcwrightError", ...]
 │           ├── types.py         # StoryId, EpicId, RunId, ArtifactRef, ContextBundle,
-│           │                    #   BudgetState, ProvenanceEntry
+│           │                    #   BudgetState, ProvenanceEntry, ModelRole (StrEnum)
 │           ├── lifecycle.py     # TaskState enum + transition validation
-│           ├── config.py        # RunConfig Pydantic model + two-tier loader (file + env)
+│           ├── config.py        # RunConfig, ModelRegistry, ModelSpec, ModelRole +
+│           │                    #   two-tier loader (file + env) with role-templated env vars
 │           ├── constants.py     # DIR_ARCWRIGHT, DIR_SPEC, EXIT_*, MAX_RETRIES, BRANCH_PREFIX
 │           ├── exceptions.py    # Full hierarchy: ArcwrightError → Config/Project/Context/Agent/...
 │           ├── events.py        # EventEmitter protocol, NoOpEmitter default, event types
@@ -1110,18 +1267,20 @@ arcwright-ai/
 ### Coherence Validation ✅
 
 **Decision Compatibility:**
-All 8 decisions validated pairwise — no contradictions found. Key bindings explicitly documented through Party Mode reviews:
+All 9 decisions validated pairwise — no contradictions found. Key bindings explicitly documented through Party Mode reviews:
 - D1↔D4: preflight node = context assembly (bound in Round 3)
 - D3↔D5: provenance file path contract (bound in Round 3)
 - D2↔D8: halt output requirements as story AC (bound in Round 3)
 - D5 write policy: LangGraph state is authority, run dir files are transition checkpoints (Round 3)
 - D7↔D2: failed worktrees preserved on halt, `arcwright clean --all` for cleanup (Round 3)
+- D9↔D2: budget check aggregates across model roles — no per-role ceilings (Amendment 2026-03-11)
+- D9↔D8: structured log events include model_role and model_version (Amendment 2026-03-11)
 
 **Pattern Consistency:**
 All implementation patterns align with architectural decisions:
 - Error handling patterns use D6 exception hierarchy consistently
 - File I/O patterns use `pathlib.Path` + `asyncio.to_thread()` aligned with D7 async subprocess
-- Naming patterns (`snake_case`, `arcwright/<slug>`) consistent across code, branches, and run IDs
+- Naming patterns (`snake_case`, `arcwright-ai/<slug>`) consistent across code, branches, and run IDs
 - State transitions use `TaskState` enum from D1 throughout data flow and node signatures
 - Logging patterns emit structured JSONL events per D8 specification
 
@@ -1130,7 +1289,7 @@ Project structure directly implements the package dependency DAG. 8 packages map
 
 ### Requirements Coverage Validation ✅
 
-**Functional Requirements — all 36 FRs mapped to specific files:**
+**Functional Requirements — all 39 FRs mapped to specific files:**
 
 | FR Range | Status | Coverage |
 |----------|--------|----------|
@@ -1144,6 +1303,7 @@ Project structure directly implements the package dependency DAG. 8 packages map
 | FR26-30 (Config) | COMPLETE | cli/status.py + core/config.py |
 | FR31-33 (Visibility) | COMPLETE | output/run_manager.py + output/summary.py |
 | FR34-36 (SCM) | COMPLETE | scm/ package |
+| FR37-39 (SCM Enhancements) | PLANNED | scm/ + engine/nodes.py + core/config.py (Epic 9) |
 
 **Non-Functional Requirements — all 20 NFRs mapped to enforcement mechanisms:**
 
@@ -1176,7 +1336,7 @@ Project structure directly implements the package dependency DAG. 8 packages map
 **Important Gaps (non-blocking, addressable during implementation):**
 
 1. **`.arcwright-ai/` init schema** — exact files created by `arcwright init` not enumerated. Recommend: `config.yaml` + `runs/` + `worktrees/` (empty). Story-level detail.
-2. **V3 validation budget tracking** — V3 reflexion invokes SDK (costs tokens). MVP: track against same BudgetState. Growth refinement: separate validation budget.
+2. ~~**V3 validation budget tracking** — V3 reflexion invokes SDK (costs tokens). MVP: track against same BudgetState. Growth refinement: separate validation budget.~~ **RESOLVED by Decision 9:** Each model role carries its own `ModelPricing`; validate_node applies review model pricing while agent_dispatch applies generate model pricing. Budget ceiling remains aggregate.
 3. **`prompt.py` template structure** — prompt engineering is an implementation concern. Flagged as high-priority story needing experimentation.
 
 **Nice-to-Have Gaps:**
@@ -1194,7 +1354,7 @@ Project structure directly implements the package dependency DAG. 8 packages map
 - [x] 5 first-class architectural constraints established
 
 **✅ Architectural Decisions**
-- [x] 8 critical decisions documented with rationale and trade-offs
+- [x] 9 critical decisions documented with rationale and trade-offs (D1-D8 original, D9 post-MVP amendment)
 - [x] Technology stack fully specified with versions
 - [x] Integration patterns defined (file-based state, CLI boundaries, SDK contract)
 - [x] All inter-decision bindings explicitly documented
@@ -1221,7 +1381,7 @@ Project structure directly implements the package dependency DAG. 8 packages map
 
 **Overall Status:** READY FOR IMPLEMENTATION
 
-**Confidence Level:** High — all FRs/NFRs covered, no critical gaps, 5 rounds of Party Mode review producing 28 enhancements.
+**Confidence Level:** High — all FRs/NFRs covered, no critical gaps, 5 rounds of Party Mode review producing 28 enhancements, post-MVP amendment (Decision 9) adding role-based model registry.
 
 **Key Strengths:**
 - Every FR maps to a specific file — agents know exactly where to implement
@@ -1229,10 +1389,12 @@ Project structure directly implements the package dependency DAG. 8 packages map
 - 5 Party Mode rounds caught material issues (budget_check node, ContextError exit code, D1↔D4 binding, dependency DAG, test isolation)
 - Patterns are concrete and copy-pasteable with working code examples
 - Error handling, state lifecycle, and boundary contracts are explicit — no implicit success paths
+- Decision 9 (Role-Based Model Registry) enables adversarial code generation/review split and cost optimization per model role
 
 **Areas for Future Enhancement:**
 - Prompt engineering templates (high-priority implementation story)
-- V3 validation budget split (Growth phase)
+- ~~V3 validation budget split (Growth phase)~~ — resolved by Decision 9 role-based pricing
 - Architecture Mermaid diagram
 - `.arcwright-ai/` init schema enumeration (first implementation story)
 - Dependency version pinning strategy
+- Per-role budget ceilings (future refinement — current design aggregates across roles)

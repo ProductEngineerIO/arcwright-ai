@@ -5,11 +5,13 @@ inputDocuments:
   - '_spec/planning-artifacts/architecture.md'
 date: 2026-03-02
 author: Ed
-epicCount: 7
-storyCount: 34
-totalPoints: 172
+epicCount: 8
+storyCount: 38
+totalPoints: 186
 frCoverage: '36/36'
 nfrCoverage: '20/20'
+amendedDate: 2026-03-11
+amendedBy: Bob (SM)
 ---
 
 # Arcwright AI - Epic Breakdown
@@ -142,7 +144,7 @@ This document provides the complete epic and story breakdown for Arcwright AI, d
 - D4 (Context Injection): Dispatch-time assembly in preflight node. Strict regex-only reference resolution in MVP (FR IDs, architecture section anchors). No fuzzy matching. No LLM fallback.
 - D5 (Run Directory Schema): Run ID format `YYYYMMDD-HHMMSS-<short-uuid>`. Story slug as directory name. `run.yaml` for metadata. LangGraph state is authority during execution; run dir files are transition checkpoints.
 - D6 (Error Handling): 6-class exception hierarchy (`ArcwrightError` → `ConfigError`, `ProjectError`, `ContextError`, `AgentError`, `ValidationError`, `ScmError`). Exit codes 0-5.
-- D7 (Git Operations): Shell out to `git` CLI via async subprocess wrapper. Worktree lifecycle with atomic guarantees. Branch naming: `arcwright/<story-slug>`.
+- D7 (Git Operations): Shell out to `git` CLI via async subprocess wrapper. Worktree lifecycle with atomic guarantees. Branch naming: `arcwright-ai/<story-slug>`. Fetch + fast-forward merge before worktree creation. Push + PR after validation. Optional auto-merge.
 - D8 (Logging & Observability): Two channels — Rich/Typer formatted text for humans (stderr), JSONL structured log for machines (`.arcwright-ai/runs/<run-id>/log.jsonl`).
 
 **From Architecture — Cross-Cutting Constraints**
@@ -173,7 +175,7 @@ This document provides the complete epic and story breakdown for Arcwright AI, d
 | FR4 | Epic 5 | Halt on max retry failure, preserve completed work |
 | FR5 | Epic 5 | Resume halted epic from failure point |
 | FR6 | Epic 6 | Git worktree isolation per story |
-| FR7 | Epic 6 | Worktree cleanup (manual, automatic, post-merge) |
+| FR7 | Epic 6 | Worktree cleanup (MVP: manual only per D7; automatic & post-merge deferred to Growth) |
 | FR8 | Epic 3 | V3 reflexion validation against acceptance criteria |
 | FR9 | Epic 3 | Retry on reflexion failure up to configurable max |
 | FR10 | Epic 3 | V6 invariant checks (file exists, schema, naming) |
@@ -203,6 +205,9 @@ This document provides the complete epic and story breakdown for Arcwright AI, d
 | FR34 | Epic 6 | Git branches per story with configurable naming |
 | FR35 | Epic 6 | PR generation with decision provenance embedded |
 | FR36 | Epic 6 | Worktree lifecycle management |
+| FR37 | Epic 9 | Configurable default branch with auto-detect fallback |
+| FR38 | Epic 9 | Fetch + fast-forward merge before worktree creation |
+| FR39 | Epic 9 | Optional auto-merge PR after creation |
 
 ## Epic List
 
@@ -232,7 +237,7 @@ Developer can dispatch a full epic (multiple stories), have the system halt loud
 **NFRs addressed:** NFR2, NFR3
 
 ### Epic 6: SCM Integration & PR Generation
-Developer gets clean git branches per story, worktree lifecycle management, automated commits, and pull requests with decision provenance embedded — code review is decision-centric, not line-by-line.
+Developer gets clean git branches per story, worktree lifecycle management, automated commits with push, and pull requests with decision provenance embedded — code review is decision-centric, not line-by-line.
 **FRs covered:** FR6, FR7, FR15, FR34, FR35, FR36
 **NFRs addressed:** NFR4, NFR14, NFR15, NFR19, NFR20
 
@@ -241,11 +246,24 @@ Developer has full visibility into API spend per story and per run, with budget 
 **FRs covered:** FR23, FR24, FR25
 **NFRs addressed:** NFR10, NFR12a, NFR12b
 
+### Epic 8: Role-Based Model Registry
+Developer can configure separate LLM models for code generation and code review, enabling adversarial quality patterns where a fast model writes code and a thorough model reviews it — optimizing both speed and cost.
+**Architecture Decision:** D9 (Role-Based Model Registry)
+**FRs covered:** FR22, FR30
+**NFRs addressed:** NFR12a, NFR12b
+
+### Epic 9: SCM Enhancements — Fetch, Default Branch & Auto-Merge
+Developer dispatches an overnight epic run and every story starts from the latest upstream code, creates PRs against the correct default branch, and optionally auto-merges — the full chain from dispatch to merged code runs unattended.
+**FRs covered:** FR37, FR38, FR39
+**NFRs addressed:** NFR4, NFR19, NFR20
+
 ## Epic 1: Project Foundation & Configuration
 
 Developer can install Arcwright AI, initialize a project, validate their setup, and have confidence the tool is correctly configured before ever dispatching a run.
 
 ### Story 1.1: Project Scaffold & Package Structure
+
+**Priority**: HIGH | **Points**: 8
 
 As a developer contributing to Arcwright AI,
 I want a fully scaffolded Python project with the 8-package structure defined in the architecture,
@@ -267,6 +285,8 @@ So that all subsequent stories have a working build, test, and lint pipeline to 
 **And** `pytest` runs with zero tests collected (test directories exist, no test files yet)
 
 ### Story 1.2: Core Types, Lifecycle & Exception Hierarchy
+
+**Priority**: HIGH | **Points**: 5
 
 As a developer building Arcwright AI subsystems,
 I want the shared type definitions, task lifecycle state machine, and exception hierarchy established in `core/`,
@@ -290,6 +310,8 @@ So that all subsequent subsystem stories import from a stable, well-tested found
 
 ### Story 1.3: Configuration System with Two-Tier Loading
 
+**Priority**: HIGH | **Points**: 5
+
 As a developer setting up Arcwright AI,
 I want a configuration system that loads settings from environment variables, project config, and global config with proper precedence,
 So that I can configure API keys, model versions, token ceilings, and project-specific settings with confidence that invalid config is caught at startup.
@@ -310,6 +332,8 @@ So that I can configure API keys, model versions, token ceilings, and project-sp
 
 ### Story 1.4: CLI Init Command
 
+**Priority**: HIGH | **Points**: 3
+
 As a developer starting a new Arcwright AI project,
 I want to run `arcwright-ai init` to scaffold the `.arcwright-ai/` directory with default config and `.gitignore` entries,
 So that my project is ready for dispatching runs with minimal manual setup.
@@ -327,6 +351,8 @@ So that my project is ready for dispatching runs with minimal manual setup.
 **And** unit tests cover: fresh init, idempotent re-init, BMAD artifact detection, `.gitignore` append behavior
 
 ### Story 1.5: CLI Validate-Setup Command
+
+**Priority**: HIGH | **Points**: 5
 
 As a developer about to dispatch my first run,
 I want to run `arcwright-ai validate-setup` to verify my configuration, API key, and project structure with clear pass/fail per check,
@@ -349,6 +375,8 @@ Developer can dispatch a single story and have the LangGraph engine invoke Claud
 
 ### Story 2.1: LangGraph State Models & Graph Skeleton
 
+**Priority**: HIGH | **Points**: 5
+
 As a developer building the orchestration engine,
 I want the Pydantic state models (`ProjectState`, `StoryState`) and a minimal LangGraph StateGraph skeleton with placeholder nodes,
 So that subsequent stories can implement real node logic into a working graph framework.
@@ -367,6 +395,8 @@ So that subsequent stories can implement real node logic into a working graph fr
 **And** unit tests verify graph construction, node routing (success path, retry path, escalated path), and state model validation
 
 ### Story 2.2: Context Injector — BMAD Artifact Reader & Reference Resolver
+
+**Priority**: HIGH | **Points**: 5
 
 As a developer dispatching a story,
 I want the system to read BMAD planning artifacts and resolve FR/NFR/architecture references from the story file into a focused context bundle,
@@ -388,6 +418,8 @@ So that the agent receives the relevant requirements, architecture decisions, an
 
 ### Story 2.3: Context Answerer — Static Rule Lookup Engine
 
+**Priority**: MEDIUM | **Points**: 3
+
 As a developer whose agent needs to query BMAD conventions during implementation,
 I want a static rule lookup engine that responds to agent questions about workflow steps, artifact formats, and naming conventions,
 So that the agent can follow project conventions without LLM-based interpretation.
@@ -405,6 +437,8 @@ So that the agent can follow project conventions without LLM-based interpretatio
 
 ### Story 2.4: Agent Sandbox — Path Validation Layer
 
+**Priority**: HIGH | **Points**: 3
+
 As a developer ensuring agent safety,
 I want an application-level path validation layer that prevents the agent from modifying files outside the project boundary,
 So that story execution cannot corrupt the main branch, other worktrees, or the host system.
@@ -421,6 +455,8 @@ So that story execution cannot corrupt the main branch, other worktrees, or the 
 **And** unit tests cover: valid paths (within project), path traversal rejection, symlink escape detection, temp file validation, `.arcwright-ai/` subdirectory access
 
 ### Story 2.5: Agent Invoker — Claude Code SDK Integration
+
+**Priority**: HIGH | **Points**: 8
 
 As a developer dispatching a story,
 I want the system to invoke Claude Code SDK with the assembled context bundle and receive the agent's implementation output,
@@ -443,6 +479,8 @@ So that stories are implemented by the AI agent in a stateless, sandboxed sessio
 
 ### Story 2.6: Preflight Node — Context Assembly & Dispatch Preparation
 
+**Priority**: HIGH | **Points**: 5
+
 As a developer dispatching a story,
 I want the preflight graph node to resolve all context, prepare the execution environment, and write the context bundle checkpoint,
 So that the agent receives complete context and provenance can trace exactly what information informed the implementation.
@@ -462,6 +500,8 @@ So that the agent receives complete context and provenance can trace exactly wha
 
 ### Story 2.7: Agent Dispatch Node & Single Story CLI Command
 
+**Priority**: HIGH | **Points**: 8
+
 As a developer,
 I want to run `arcwright-ai dispatch --story STORY-N.N` and have the full preflight → budget_check → agent_dispatch pipeline execute for a single story,
 So that I can verify the core execution loop works end-to-end.
@@ -478,7 +518,7 @@ So that I can verify the core execution loop works end-to-end.
 **And** CLI output shows story start, agent invocation, and completion status using Rich/Typer formatting
 **And** structured JSONL events are written to `.arcwright-ai/runs/<run-id>/log.jsonl` for: `run.start`, `story.start`, `context.resolve`, `agent.dispatch`, `agent.response`
 **And** exit code is 0 on successful agent completion (validation not yet wired)
-**And** `arcwright-ai dispatch --epic EPIC-N` dispatches all stories in the epic sequentially in dependency order per FR1/FR3
+**And** `arcwright-ai dispatch --epic EPIC-N` dispatches all stories in the epic sequentially in dependency order per FR1/FR3 (basic sequential iteration only — no pre-dispatch confirmation, scope validation, or cost estimates; full epic dispatch UX is Story 5.1)
 **And** integration test with mock SDK verifies the full CLI → engine → context → agent pipeline
 
 ## Epic 3: Validation & Retry Pipeline
@@ -486,6 +526,8 @@ So that I can verify the core execution loop works end-to-end.
 Developer can trust that every story output is validated against acceptance criteria (V3 reflexion) and invariant rules (V6), with automatic retry on failure — no silent bad output.
 
 ### Story 3.1: V6 Invariant Validation — Deterministic Rule Checks
+
+**Priority**: HIGH | **Points**: 5
 
 As a developer who needs confidence in code quality,
 I want deterministic invariant checks that verify file existence, schema validity, and naming conventions on every story output,
@@ -503,6 +545,8 @@ So that basic structural correctness is guaranteed without relying on LLM judgme
 **And** unit tests cover: all-pass scenario, missing file detection, naming convention violation, syntax error detection, schema validation failure
 
 ### Story 3.2: V3 Reflexion Validation — LLM Self-Evaluation
+
+**Priority**: HIGH | **Points**: 8
 
 As a developer who needs the agent to verify its own work against acceptance criteria,
 I want V3 reflexion validation that has the agent self-evaluate whether its implementation satisfies each acceptance criterion,
@@ -523,6 +567,8 @@ So that the agent catches its own mistakes before the story is marked as complet
 
 ### Story 3.3: Validation Pipeline — Artifact-Specific Routing
 
+**Priority**: HIGH | **Points**: 5
+
 As a developer dispatching stories,
 I want a unified validation pipeline that routes story outputs through both V6 invariant and V3 reflexion checks in the correct order,
 So that every story passes through the complete validation chain before being marked as complete.
@@ -542,6 +588,8 @@ So that every story passes through the complete validation chain before being ma
 **And** unit tests cover: V6-fail short-circuits V3, V6-pass + V3-pass, V6-pass + V3-fail, pipeline result aggregation
 
 ### Story 3.4: Validate Node & Retry Loop Integration
+
+**Priority**: HIGH | **Points**: 5
 
 As a developer dispatching stories,
 I want the validation node wired into the LangGraph StateGraph with retry logic that re-dispatches the agent on V3 failure up to a configurable maximum,
@@ -809,7 +857,7 @@ So that no story can corrupt the main branch or interfere with other stories.
 
 **Given** `scm/worktree.py` module
 **When** the engine needs to create an execution environment for a story
-**Then** `create_worktree(story_slug: str, base_ref: str) → Path` creates worktree at `.arcwright-ai/worktrees/<story-slug>` with branch `arcwright/<story-slug>`
+**Then** `create_worktree(story_slug: str, base_ref: str) → Path` creates worktree at `.arcwright-ai/worktrees/<story-slug>` with branch `arcwright-ai/<story-slug>`
 **And** `remove_worktree(story_slug: str)` removes worktree and optionally deletes the branch
 **And** atomic guarantee: if `git worktree add` fails mid-operation, cleanup restores consistent state — no partial worktrees, no orphaned branches per D7
 **And** existing worktree for same story slug → `WorktreeError` with clear message (no `--force`, no implicit cleanup per D7)
@@ -833,10 +881,10 @@ So that the git history is organized and traceable back to the run that produced
 
 **Given** `scm/branch.py` module
 **When** a story is dispatched and completes validation
-**Then** branch naming follows convention: `arcwright/<story-slug>` — namespaced, predictable, greppable per D7
+**Then** branch naming follows convention: `arcwright-ai/<story-slug>` — namespaced, predictable, greppable per D7
 **And** `create_branch(story_slug: str, base_ref: str)` creates branch; existing branch → `BranchError` (no force operations per D7)
-**And** commit inside worktree uses: `git add .` + `git commit -m "[arcwright] <story-title>\n\nStory: <story-file-path>\nRun: <run-id>"`
-**And** no push in MVP — all operations are local only
+**And** commit inside worktree uses: `git add .` + `git commit -m "[arcwright-ai] <story-title>\n\nStory: <story-file-path>\nRun: <run-id>"`
+**And** after successful commit, `push_branch()` pushes the branch to remote with merge-ours reconciliation for concurrent remote changes
 **And** no force operations anywhere — no `--force`, no `reset --hard`, no rebase per D7
 **And** compatible with git 2.25+ per NFR14 (no features introduced after git 2.25, which is Ubuntu 20.04 floor)
 **And** unit tests verify: branch naming format, commit message format, `BranchError` on existing branch, no force flags in any generated command
@@ -898,8 +946,8 @@ So that worktree isolation and commit happen automatically without manual interv
 
 **Given** the LangGraph StateGraph nodes from Epic 2
 **When** the engine executes a story through the pipeline
-**Then** `preflight` node calls `scm/worktree.py` to create worktree before agent execution; sets `cwd` for agent dispatch to the worktree path
-**And** `commit` node calls `scm/branch.py` to commit inside worktree, then `scm/worktree.py` to remove worktree
+**Then** `preflight` node fetches and fast-forward merges the remote default branch, then calls `scm/worktree.py` to create worktree from the updated tip; sets `cwd` for agent dispatch to the worktree path
+**And** `commit` node calls `scm/branch.py` to commit inside worktree, `push_branch()` to push to remote, `scm/pr.py` to generate PR body and open pull request, optionally `merge_pull_request()` when `scm.auto_merge` enabled, then `scm/worktree.py` to remove worktree
 **And** on ESCALATED (halt): worktree is preserved for inspection, path logged to provenance and summary
 **And** on RETRY: worktree is reused — agent re-executes in the same worktree with reflexion feedback (no worktree teardown/recreate per retry)
 **And** all git commands run with `cwd=worktree_path` except worktree add/remove which run from project root per D7
@@ -994,3 +1042,261 @@ So that cost data is always complete and trustworthy.
 **And** `run.yaml` budget section is updated at every state transition (not just at run completion) — crash recovery preserves cost data
 **And** if SDK doesn't report token counts (error scenario), log a warning and estimate from prompt length — never skip tracking, never leave a gap in the cost record
 **And** integration test verifies: 3-story run accumulates correct total across all stories, retry costs are included in both per-story and per-run totals, `run.yaml` reflects final cost accurately, zero invocations missed in tracking
+
+---
+
+## Epic 8: Role-Based Model Registry
+
+> **Value prop**: Developer can configure separate LLM models for code generation and code review, enabling adversarial quality patterns where a fast model writes code and a thorough model reviews it — optimizing both speed and cost.
+
+### Story 8.1: ModelRole Enum, ModelSpec, ModelRegistry & Config Migration
+
+**Priority**: HIGH | **Points**: 5
+**Requirements**: FR22, FR30, D9
+**Dependencies**: Story 1.3 (Configuration System)
+
+**Description:**
+As a developer configuring Arcwright AI,
+I want to assign different models to different pipeline roles (generation vs. review),
+So that I can optimize cost and quality by using a fast model for code generation and a thorough model for code review.
+
+**Acceptance Criteria:**
+
+**Given** `core/types.py` and `core/config.py` as the foundation for model configuration
+**When** the role-based model registry is implemented
+**Then** `ModelRole` is defined as a `StrEnum` in `core/config.py` with values `GENERATE = "generate"` and `REVIEW = "review"`
+**And** `ModelSpec` is a frozen Pydantic model with fields: `version` (str) and `pricing` (ModelPricing, default factory)
+**And** `ModelRegistry` is a frozen Pydantic model with a `roles: dict[str, ModelSpec]` field and a `get(role: ModelRole | str) -> ModelSpec` method that returns the spec for the requested role, falling back to the `generate` role if the requested role is not configured, raising `ConfigError` if no `generate` fallback exists
+**And** `RunConfig.model` (singular, `ModelConfig`) is replaced by `RunConfig.models` (`ModelRegistry`)
+**And** backward-compatible config migration is implemented: if `models` key exists in YAML → use new registry format; if `model` (singular) key exists → auto-migrate to `models.generate` with a `DeprecationWarning`; if neither → use defaults (`generate` role with `claude-sonnet-4-20250514`)
+**And** the config YAML format supports both minimal (just `generate`) and full (`generate` + `review`) configurations:
+```yaml
+# Full config
+models:
+  generate:
+    version: claude-sonnet-4-20250514
+    pricing:
+      input_rate: "3.00"
+      output_rate: "15.00"
+  review:
+    version: claude-opus-4-5
+    pricing:
+      input_rate: "15.00"
+      output_rate: "75.00"
+
+# Minimal config (review falls back to generate)
+models:
+  generate:
+    version: claude-sonnet-4-20250514
+```
+**And** environment variable overrides follow the pattern `ARCWRIGHT_AI_MODEL_{ROLE}_VERSION` and `ARCWRIGHT_AI_MODEL_{ROLE}_PRICING_{FIELD}` (e.g., `ARCWRIGHT_AI_MODEL_GENERATE_VERSION`, `ARCWRIGHT_AI_MODEL_REVIEW_VERSION`, `ARCWRIGHT_AI_MODEL_REVIEW_PRICING_INPUT_RATE`)
+**And** the existing `ARCWRIGHT_MODEL_VERSION` env var is treated as an alias for `ARCWRIGHT_AI_MODEL_GENERATE_VERSION` with a `DeprecationWarning`
+**And** `_KNOWN_SECTION_FIELDS` and `_KNOWN_SUBSECTION_FIELDS` are updated for unknown-key warnings on the new `models` structure
+**And** `core/constants.py` `__all__` is updated with new env var constant names; old `ENV_MODEL_*` constants are retained as deprecated aliases
+**And** unit tests in `tests/test_core/test_config.py` verify: (1) new `models` format loads correctly, (2) old `model` singular key auto-migrates with deprecation warning, (3) missing both keys uses defaults, (4) env var overrides with `ARCWRIGHT_AI_MODEL_{ROLE}_*` pattern, (5) fallback behavior when only `generate` is configured and `review` is requested, (6) `ConfigError` when `generate` role is missing and a role is requested
+**And** all existing tests that construct `RunConfig` are updated to use the new `models` field
+
+**Files touched:**
+- `core/config.py` — `ModelRole`, `ModelSpec`, `ModelRegistry`, `RunConfig`, `_apply_env_overrides()`, `_KNOWN_SECTION_FIELDS`, `_KNOWN_SUBSECTION_FIELDS`, backward-compat migration in `load_config()`
+- `core/constants.py` — New `ENV_MODEL_GENERATE_VERSION`, `ENV_MODEL_REVIEW_VERSION`, etc.; deprecation aliases
+- `core/types.py` — No structural changes; `ModelPricing` stays where it is
+- `tests/test_core/test_config.py` — New test cases + fixture updates
+
+### Story 8.2: Engine Node Wiring — Role-Based Model Resolution
+
+**Priority**: HIGH | **Points**: 5
+**Requirements**: FR22, D9
+**Dependencies**: Story 8.1
+
+**Description:**
+As a system running the execution pipeline,
+I want `agent_dispatch_node` to use the `generate` model role and `validate_node` to use the `review` model role,
+So that code generation and code review use their configured models independently.
+
+**Acceptance Criteria:**
+
+**Given** `ModelRegistry` is available on `state.config.models` (from Story 8.1)
+**When** the engine nodes resolve their model
+**Then** `agent_dispatch_node` in `engine/nodes.py` calls `state.config.models.get(ModelRole.GENERATE)` to obtain the `ModelSpec` and passes `spec.version` to `invoke_agent()` and `spec.pricing` to `calculate_invocation_cost()`
+**And** all 6 existing references to `state.config.model.version` and `state.config.model.pricing` in `agent_dispatch_node` (including error paths and provenance logging) are updated to use `state.config.models.get(ModelRole.GENERATE)`
+**And** `validate_node` in `engine/nodes.py` calls `state.config.models.get(ModelRole.REVIEW)` to obtain the `ModelSpec` and passes `spec.version` to `run_validation_pipeline()`
+**And** `validate_node` uses `spec.pricing` from the `REVIEW` role for cost tracking of validation invocations
+**And** `run_validation_pipeline()` in `validation/pipeline.py` receives the model version as before (no signature change) — the role resolution happens at the node level, not inside the pipeline
+**And** provenance entries that log model version now log both the role name and the resolved model version (e.g., `"model": "claude-sonnet-4-20250514", "role": "generate"`) for traceability
+**And** when only `generate` role is configured (no `review` role), `validate_node` falls back to the `generate` model via `ModelRegistry.get()` — no new fallback logic needed in nodes
+**And** unit tests in `tests/test_engine/test_nodes.py` verify: (1) `agent_dispatch_node` resolves `GENERATE` role, (2) `validate_node` resolves `REVIEW` role, (3) fallback to `generate` when `review` not configured, (4) cost tracking uses correct per-role pricing, (5) provenance entries include role metadata
+**And** all existing node tests that reference `state.config.model` are updated to use `state.config.models`
+
+**Files touched:**
+- `engine/nodes.py` — `agent_dispatch_node` (6 reference updates), `validate_node` (model + pricing references), provenance fields
+- `validation/pipeline.py` — No structural changes; receives model version string as before
+- `tests/test_engine/test_nodes.py` — Updated fixtures + new role-resolution tests
+
+### Story 8.3: Cost Display Per Role & Config Template Update
+
+**Priority**: MEDIUM | **Points**: 4
+**Requirements**: FR24, D9
+**Dependencies**: Story 8.2
+
+**Description:**
+As a developer reviewing run costs,
+I want cost breakdowns split by model role (generation cost vs. review cost),
+So that I can see exactly how much each phase of the pipeline costs and optimize model selection accordingly.
+
+**Acceptance Criteria:**
+
+**Given** cost data accumulated in `BudgetState` with per-invocation tracking and model role metadata
+**When** cost information is displayed in CLI status or run summaries
+**Then** `arcwright-ai status` includes a cost breakdown by role: "Generation cost: $X (N invocations)" and "Review cost: $Y (M invocations)" in addition to the existing total cost display
+**And** run summary (`summary.md`) includes a "Cost by Model Role" section with a table showing role, model version, invocations, tokens (in/out), and cost for each configured role
+**And** the per-story cost table in both status and summary distinguishes between generation and review costs when both are present
+**And** `BudgetState` or `StoryCost` in `core/types.py` is extended with per-role cost tracking fields (e.g., `cost_by_role: dict[str, Decimal]`) to support the breakdown without requiring schema-breaking changes
+**And** the `_serialize_budget()` function in `output/run_manager.py` correctly serializes the new per-role fields to `run.yaml`
+**And** `arcwright-ai init` generates an updated default config template that uses the new `models` format (with `generate` and `review` sections) instead of the old `model` format
+**And** the config template includes inline comments explaining model role configuration and how fallback works
+**And** cost formatting remains human-readable: "$1.17" not "0.00117 USD", "12,450 tokens" not "12450"
+**And** unit tests verify: (1) per-role cost display formatting, (2) summary table generation with role breakdown, (3) backward compat — runs with old single-model data display correctly without role breakdown, (4) config template generates valid YAML with models section
+
+**Files touched:**
+- `core/types.py` — `StoryCost` or `BudgetState` per-role tracking field
+- `output/summary.py` — Role-based cost formatting functions
+- `output/run_manager.py` — `_serialize_budget()` updates for per-role fields
+- `cli/status.py` — Role-based cost display in status output
+- `cli/init.py` — Updated config template with `models` format
+- `tests/test_output/` — Summary and cost display tests
+- `tests/test_cli/` — Status display and init template tests
+
+---
+
+## Epic 9: SCM Enhancements — Fetch, Default Branch & Auto-Merge
+
+> **Value prop**: Developer dispatches an overnight epic run and every story starts from the latest upstream code, creates PRs against the correct default branch, and optionally auto-merges — the full chain from dispatch to merged code runs unattended.
+
+### Story 9.1: ScmConfig Enhancements — Default Branch & Auto-Merge Configuration
+
+**Priority**: HIGH | **Points**: 3
+**Requirements**: FR37, FR39, FR30
+**Dependencies**: Epic 6 (complete)
+
+**Description:**
+As a developer configuring Arcwright AI for my project,
+I want to specify the default branch and enable auto-merge in my project config,
+So that SCM operations target the correct branch and PRs merge automatically when configured.
+
+**Acceptance Criteria:**
+
+**Given** `core/config.py` `ScmConfig` Pydantic model
+**When** the developer configures SCM settings in `.arcwright-ai/config.yaml`
+**Then** `ScmConfig` gains two new optional fields: `default_branch: str = ""` (empty string means auto-detect) and `auto_merge: bool = False`
+**And** when `default_branch` is set to a non-empty string (e.g., `"main"`, `"develop"`), `_detect_default_branch()` in `scm/pr.py` returns that value immediately without running any git commands
+**And** when `default_branch` is empty or unset, `_detect_default_branch()` uses the existing 3-step cascade: `git remote show origin` → `gh repo view --json defaultBranchRef` → `git rev-parse --abbrev-ref origin/HEAD` → fallback `"main"`
+**And** `auto_merge` defaults to `False` — when `True`, the commit node will call `merge_pull_request()` after PR creation
+**And** config validation: `default_branch` accepts any non-empty string (branch name validation is intentionally lenient — git will reject invalid names); `auto_merge` must be boolean
+**And** `_KNOWN_SUBSECTION_FIELDS` is updated to include `default_branch` and `auto_merge` under the `scm` section for unknown-key warnings
+**And** `arcwright-ai init` config template includes commented-out `default_branch` and `auto_merge` fields with explanatory comments
+**And** unit tests verify: (1) empty `default_branch` triggers auto-detect cascade, (2) non-empty `default_branch` short-circuits detection, (3) `auto_merge` defaults to `False`, (4) config round-trips through YAML load/save, (5) unknown key warnings still work for `scm` section
+
+**Files touched:**
+- `core/config.py` — `ScmConfig` new fields, `_KNOWN_SUBSECTION_FIELDS` update
+- `scm/pr.py` — `_detect_default_branch()` accepts optional config override
+- `cli/init.py` — Config template update
+- `tests/test_core/test_config.py` — New ScmConfig field tests
+- `tests/test_scm/test_pr.py` — Default branch detection tests with config override
+
+### Story 9.2: Fetch & Sync Default Branch Before Worktree Creation
+
+**Priority**: HIGH | **Points**: 5
+**Requirements**: FR38, D7
+**Dependencies**: Story 9.1
+
+**Description:**
+As a developer dispatching stories overnight,
+I want each story's worktree to start from the latest upstream code,
+So that stories don't build on stale commits and merge conflicts are minimized.
+
+**Acceptance Criteria:**
+
+**Given** `scm/branch.py` module and `engine/nodes.py` `preflight_node`
+**When** the engine is about to create a worktree for a story
+**Then** a new `fetch_and_sync(default_branch: str, remote: str = "origin", *, project_root: Path) → str` function in `scm/branch.py`:
+  1. Runs `git fetch <remote> <default_branch>` to fetch latest commits from remote
+  2. Runs `git merge --ff-only <remote>/<default_branch>` to fast-forward the local default branch (if currently on it), or just uses `<remote>/<default_branch>` as the base_ref
+  3. Returns the resolved commit SHA of `<remote>/<default_branch>` as the base_ref for worktree creation
+**And** `preflight_node` in `engine/nodes.py` calls `fetch_and_sync()` before `create_worktree()`, passing the returned SHA as `base_ref`
+**And** if `--base-ref` is explicitly provided by the user on the CLI, `fetch_and_sync()` is skipped and the user-provided base ref is used directly
+**And** network failure during fetch → `ScmError` with clear message ("Failed to fetch from remote — check network connectivity"); story is skipped and halted (cannot guarantee fresh base without fetch)
+**And** fast-forward failure (local branch has diverged) → log warning, use `<remote>/<default_branch>` as base_ref directly (detached worktree off remote tip — safe, no local merge needed)
+**And** the default branch name is resolved via `_detect_default_branch()` (which respects `scm.default_branch` config from Story 9.1)
+**And** fetch runs once per dispatch when processing multiple stories in an epic (cached after first fetch for the duration of the run, not per-story)
+**And** unit tests verify: (1) `fetch_and_sync()` calls correct git commands, (2) returned SHA is used as base_ref, (3) network failure raises `ScmError`, (4) ff-only failure falls back to remote ref, (5) explicit `--base-ref` bypasses fetch
+**And** integration tests with real git: create remote, push commits, verify worktree starts from remote tip (not stale local HEAD)
+
+**Files touched:**
+- `scm/branch.py` — New `fetch_and_sync()` function
+- `engine/nodes.py` — `preflight_node` calls `fetch_and_sync()` before `create_worktree()`
+- `engine/state.py` — Optional `base_ref` field on state for caching resolved ref across stories
+- `tests/test_scm/test_branch.py` — Unit tests for `fetch_and_sync()`
+- `tests/test_scm/test_branch_integration.py` — Integration tests with real git remote
+
+### Story 9.3: Auto-Merge PR After Creation
+
+**Priority**: HIGH | **Points**: 5
+**Requirements**: FR39, D7
+**Dependencies**: Story 9.1
+
+**Description:**
+As a developer running overnight dispatches,
+I want PRs to auto-merge after creation when configured,
+So that completed stories flow through to the default branch without manual intervention.
+
+**Acceptance Criteria:**
+
+**Given** `scm/pr.py` module and `engine/nodes.py` `commit_node`
+**When** a PR is successfully created and `scm.auto_merge` is `True` in config
+**Then** a new `merge_pull_request(pr_url: str, strategy: str = "squash", *, project_root: Path) → bool` function in `scm/pr.py`:
+  1. Extracts PR number from the `pr_url` returned by `open_pull_request()`
+  2. Runs `gh pr merge <pr_number> --squash --delete-branch` to squash-merge and clean up the remote branch
+  3. Returns `True` on success, `False` on merge failure (e.g., merge conflicts, required reviews pending)
+**And** `commit_node` in `engine/nodes.py` calls `merge_pull_request()` after `open_pull_request()` when `state.config.scm.auto_merge is True`
+**And** merge failure is non-fatal — the PR remains open, merge failure is logged to provenance as a warning, and the story is still marked as `SUCCESS` (the code was committed and PR created; merge is best-effort)
+**And** when `scm.auto_merge` is `False` (default), `merge_pull_request()` is never called — existing behavior preserved
+**And** the `--delete-branch` flag cleans up the remote `arcwright-ai/<story-slug>` branch after merge, reducing branch clutter
+**And** for epic dispatches with multiple stories, auto-merge happens per-story immediately after PR creation (not batched at the end), so subsequent stories can build on merged changes when combined with Story 9.2's fetch
+**And** provenance entry records: merge attempt timestamp, success/failure, merge strategy, resulting merge commit SHA (when successful)
+**And** unit tests verify: (1) `merge_pull_request()` calls correct `gh` command, (2) successful merge returns `True`, (3) merge failure returns `False` without raising, (4) `commit_node` skips merge when `auto_merge` is `False`, (5) provenance includes merge metadata
+**And** integration tests: create real PR (if CI has gh auth), verify merge succeeds and branch is deleted
+
+**Files touched:**
+- `scm/pr.py` — New `merge_pull_request()` function
+- `engine/nodes.py` — `commit_node` calls `merge_pull_request()` conditionally
+- `output/provenance.py` — Merge event recording
+- `tests/test_scm/test_pr.py` — Unit tests for `merge_pull_request()`
+- `tests/test_engine/test_nodes.py` — `commit_node` auto-merge tests
+
+### Story 9.4: End-to-End SCM Enhancement Integration Tests
+
+**Priority**: MEDIUM | **Points**: 5
+**Requirements**: FR37, FR38, FR39, D7
+**Dependencies**: Stories 9.1, 9.2, 9.3
+
+**Description:**
+As a system maintainer,
+I want integration tests that verify the full enhanced SCM flow end-to-end,
+So that fetch → worktree → commit → push → PR → merge works as an unbroken chain.
+
+**Acceptance Criteria:**
+
+**Given** all SCM enhancements from Stories 9.1–9.3 are implemented
+**When** integration tests execute the full enhanced SCM lifecycle
+**Then** test scenario 1 (single story, auto-merge enabled): fetch remote → create worktree from remote tip → make changes → commit → push → PR → merge → verify branch deleted and changes on default branch
+**And** test scenario 2 (epic chain, auto-merge enabled): dispatch 2 stories sequentially; story 2's worktree starts from story 1's merged changes (verifies fetch-after-merge picks up previous story's work)
+**And** test scenario 3 (auto-merge disabled): full flow stops at PR creation; PR remains open, no merge attempted
+**And** test scenario 4 (configured default branch): `scm.default_branch` set to custom branch name; verify all operations target that branch, not auto-detected one
+**And** test scenario 5 (network failure simulation): mock fetch failure; verify graceful halt with clear error message
+**And** test scenario 6 (merge conflict): create conflicting changes on default branch; auto-merge fails gracefully, PR remains open, story still marked SUCCESS
+**And** all tests marked `@pytest.mark.slow` (real git operations)
+**And** tests use `tmp_path` fixture with real git repos (local bare remote + working clone)
+
+**Files touched:**
+- `tests/test_scm/test_scm_integration.py` — New integration test file covering all 6 scenarios
+- `tests/conftest.py` — Shared fixture for creating local bare remote + clone pair

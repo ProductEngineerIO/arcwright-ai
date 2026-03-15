@@ -1,0 +1,80 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "arcwright-ai"
+version = "0.1.0"
+description = "Deterministic orchestration shell for autonomous AI agent execution"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Ed Hertzog" }]
+dependencies = [
+    "langgraph>=0.2,<1.0",
+    "typer[all]>=0.12,<1.0",
+    "pydantic>=2.7,<3.0",
+    "pyyaml>=6.0,<7.0",
+    "claude-code-sdk>=0.0.10",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "pre-commit>=4.0",
+    "types-PyYAML>=6.0",
+]
+
+[project.scripts]
+arcwright-ai = "arcwright_ai.cli.app:app"
+
+[tool.ruff]
+target-version = "py311"
+src = ["src"]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "TCH", "RUF"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["arcwright_ai"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+asyncio_mode = "auto"
+filterwarnings = [
+    "ignore:'asyncio.get_event_loop_policy' is deprecated and slated for removal in Python 3.16:DeprecationWarning:pytest_asyncio.plugin",
+    "ignore:'asyncio.set_event_loop_policy' is deprecated and slated for removal in Python 3.16:DeprecationWarning:pytest_asyncio.plugin",
+]
+markers = [
+    "slow: marks tests that use real git operations (deselect with '-m \"not slow\"')",
+]
+
+[tool.hatch.envs.default]
+dependencies = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "pre-commit>=4.0",
+    "types-PyYAML>=6.0",
+]
+
+[tool.hatch.envs.default.scripts]
+lint = ["ruff check src/ tests/", "ruff format --check src/ tests/", "mypy --strict src/"]
+fix = ["ruff check --fix src/ tests/", "ruff format src/ tests/"]
+test = ["pytest {args}"]
+check = ["lint", "test"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/arcwright_ai"]
