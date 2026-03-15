@@ -11,7 +11,7 @@ from arcwright_ai.scm.branch import (
     list_branches,
 )
 from arcwright_ai.scm.git import GitResult, git
-from arcwright_ai.scm.pr import generate_pr_body
+from arcwright_ai.scm.pr import generate_pr_body, get_pull_request_merge_sha, merge_pull_request
 from arcwright_ai.scm.worktree import create_worktree, list_worktrees, remove_worktree
 
 __all__: list[str] = [
@@ -23,8 +23,10 @@ __all__: list[str] = [
     "delete_branch",
     "fetch_and_sync",
     "generate_pr_body",
+    "get_pull_request_merge_sha",
     "git",
     "list_branches",
     "list_worktrees",
+    "merge_pull_request",
     "remove_worktree",
 ]

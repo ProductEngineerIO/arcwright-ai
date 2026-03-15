@@ -34,7 +34,13 @@ from arcwright_ai.output.provenance import append_entry, render_validation_row
 from arcwright_ai.output.run_manager import update_run_status, update_story_status
 from arcwright_ai.output.summary import write_halt_report, write_success_summary
 from arcwright_ai.scm.branch import commit_story, delete_remote_branch, fetch_and_sync, push_branch
-from arcwright_ai.scm.pr import _detect_default_branch, generate_pr_body, open_pull_request
+from arcwright_ai.scm.pr import (
+    _detect_default_branch,
+    generate_pr_body,
+    get_pull_request_merge_sha,
+    merge_pull_request,
+    open_pull_request,
+)
 from arcwright_ai.scm.worktree import create_worktree, remove_worktree
 from arcwright_ai.validation.pipeline import PipelineOutcome, PipelineResult, run_validation_pipeline
 from arcwright_ai.validation.v6_invariant import V6CheckResult, V6ValidationResult
@@ -1474,6 +1480,57 @@ async def commit_node(state: StoryState) -> StoryState:
                             }
                         },
                     )
+
+        # Auto-merge PR when configured (Story 9.3 — best-effort, non-fatal)
+        if pr_url is not None and state.config.scm.auto_merge:
+            merge_attempted_at = datetime.now(tz=UTC).isoformat()
+            merge_strategy = "squash"
+            merge_succeeded = False
+            merge_sha = "not_merged"
+            try:
+                merge_succeeded = await merge_pull_request(
+                    pr_url,
+                    strategy=merge_strategy,
+                    project_root=project_root,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "scm.pr.merge.error",
+                    extra={"data": {"story": story_slug, "error": str(exc)}},
+                )
+
+            if merge_succeeded:
+                try:
+                    merge_sha = await get_pull_request_merge_sha(pr_url, project_root=project_root) or "unknown"
+                except Exception as exc:
+                    logger.warning(
+                        "scm.pr.merge.sha.error",
+                        extra={"data": {"story": story_slug, "error": str(exc)}},
+                    )
+
+            # Record merge provenance (best-effort)
+            try:
+                checkpoint_dir = state.project_root / DIR_ARCWRIGHT / DIR_RUNS / run_id / DIR_STORIES / story_slug
+                provenance_path = checkpoint_dir / VALIDATION_FILENAME
+                merge_entry = ProvenanceEntry(
+                    decision="Auto-merge PR after creation",
+                    alternatives=["manual merge", "skip merge"],
+                    rationale=(
+                        f"merge_attempted_at={merge_attempted_at}; "
+                        f"status={'success' if merge_succeeded else 'failed'}; "
+                        f"strategy={merge_strategy}; "
+                        f"pr_url={pr_url}; "
+                        f"merge_sha={merge_sha}"
+                    ),
+                    ac_references=["FR39", "D7"],
+                    timestamp=datetime.now(tz=UTC).isoformat(),
+                )
+                await append_entry(provenance_path, merge_entry)
+            except Exception as prov_exc:
+                logger.warning(
+                    "provenance.write_error",
+                    extra={"data": {"story": story_slug, "error": str(prov_exc)}},
+                )
 
         # Store PR URL in state (AC: #9)
         if pr_url is not None:

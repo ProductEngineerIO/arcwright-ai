@@ -23,7 +23,7 @@ from arcwright_ai.scm.git import git
 if TYPE_CHECKING:
     from pathlib import Path
 
-__all__: list[str] = ["generate_pr_body", "open_pull_request"]
+__all__: list[str] = ["generate_pr_body", "get_pull_request_merge_sha", "merge_pull_request", "open_pull_request"]
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +38,16 @@ _GITHUB_REMOTE_PATTERNS: tuple[re.Pattern[str], ...] = (
 # ---------------------------------------------------------------------------
 
 _RATIONALE_COLLAPSE_THRESHOLD: int = 500
+
+# ---------------------------------------------------------------------------
+# Merge strategy flag mapping (Story 9.3)
+# ---------------------------------------------------------------------------
+
+_MERGE_STRATEGY_FLAGS: dict[str, str] = {
+    "squash": "--squash",
+    "merge": "--merge",
+    "rebase": "--rebase",
+}
 _ALTERNATIVES_COLLAPSE_THRESHOLD: int = 5
 _LARGE_BLOCK_LINE_THRESHOLD: int = 50
 
@@ -723,6 +733,208 @@ async def open_pull_request(
                     "reason": "subprocess_error",
                     "error": str(exc),
                     "manual_pr_url": manual_pr_url,
+                }
+            },
+        )
+        return None
+
+
+async def merge_pull_request(
+    pr_url: str,
+    strategy: str = "squash",
+    *,
+    project_root: Path,
+) -> bool:
+    """Merge a GitHub pull request after creation (best-effort, Story 9.3).
+
+    Extracts the PR number from ``pr_url``, maps ``strategy`` to the
+    corresponding ``gh pr merge`` flag, and runs ``gh pr merge <number>
+    <strategy_flag> --delete-branch``.  All errors are caught internally;
+    the function never raises to its caller.
+
+    Args:
+        pr_url: PR URL as returned by :func:`open_pull_request`, e.g.
+            ``"https://github.com/owner/repo/pull/42"``.
+        strategy: Merge strategy — ``"squash"`` (default), ``"merge"``, or
+            ``"rebase"``.
+        project_root: Absolute path to the repository root.
+
+    Returns:
+        ``True`` on a successful merge (``gh`` exits 0), ``False`` on any
+        failure (``gh`` missing, invalid URL, non-zero exit, subprocess
+        exception).
+    """
+    # Guard: gh CLI must be available (AC: #9)
+    if shutil.which("gh") is None:
+        logger.warning(
+            "scm.pr.merge.skipped",
+            extra={"data": {"pr_url": pr_url, "reason": "gh_not_found"}},
+        )
+        return False
+
+    # Extract PR number from URL (AC: #10)
+    pr_number = _extract_pr_number(pr_url)
+    if pr_number is None:
+        logger.warning(
+            "scm.pr.merge.skipped",
+            extra={"data": {"pr_url": pr_url, "reason": "invalid_pr_url"}},
+        )
+        return False
+
+    # Map strategy to gh flag (AC: #8)
+    strategy_flag = _MERGE_STRATEGY_FLAGS.get(strategy, "--squash")
+
+    # Run gh pr merge (AC: #1, #5)
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "gh",
+            "pr",
+            "merge",
+            pr_number,
+            strategy_flag,
+            "--delete-branch",
+            cwd=str(project_root),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout_bytes, stderr_bytes = await proc.communicate()
+        stdout = stdout_bytes.decode("utf-8", errors="replace").strip()
+        stderr = stderr_bytes.decode("utf-8", errors="replace").strip()
+
+        if proc.returncode != 0:
+            logger.warning(
+                "scm.pr.merge.failed",
+                extra={
+                    "data": {
+                        "pr_url": pr_url,
+                        "pr_number": pr_number,
+                        "stderr": stderr,
+                        "returncode": proc.returncode,
+                    }
+                },
+            )
+            return False
+
+        # Parse merge commit SHA from stdout if present (AC: #7)
+        sha_match = re.search(r"[0-9a-f]{7,40}", stdout)
+        merge_sha = sha_match.group(0) if sha_match else "unknown"
+
+        logger.info(
+            "scm.pr.merge",
+            extra={
+                "data": {
+                    "pr_url": pr_url,
+                    "pr_number": pr_number,
+                    "strategy": strategy,
+                    "merge_sha": merge_sha,
+                }
+            },
+        )
+        return True
+
+    except Exception as exc:
+        logger.warning(
+            "scm.pr.merge.failed",
+            extra={
+                "data": {
+                    "pr_url": pr_url,
+                    "pr_number": pr_number,
+                    "reason": "subprocess_error",
+                    "error": str(exc),
+                }
+            },
+        )
+        return False
+
+
+def _extract_pr_number(pr_url: str) -> str | None:
+    """Extract pull-request number from a GitHub PR URL.
+
+    Args:
+        pr_url: GitHub PR URL (for example,
+            ``"https://github.com/owner/repo/pull/42"``).
+
+    Returns:
+        The PR number as a string, or ``None`` when the URL does not match the
+        expected ``.../pull/<number>`` suffix.
+    """
+    clean_url = pr_url.rstrip("/")
+    match = re.search(r"/pull/(\d+)$", clean_url)
+    if match is None:
+        return None
+    return match.group(1)
+
+
+async def get_pull_request_merge_sha(pr_url: str, *, project_root: Path) -> str | None:
+    """Resolve merge commit SHA for a pull request via ``gh pr view``.
+
+    Args:
+        pr_url: PR URL returned by :func:`open_pull_request`.
+        project_root: Absolute path to the repository root.
+
+    Returns:
+        Merge commit SHA string when available, otherwise ``None``.
+    """
+    if shutil.which("gh") is None:
+        logger.warning(
+            "scm.pr.merge.sha.skipped",
+            extra={"data": {"pr_url": pr_url, "reason": "gh_not_found"}},
+        )
+        return None
+
+    pr_number = _extract_pr_number(pr_url)
+    if pr_number is None:
+        logger.warning(
+            "scm.pr.merge.sha.skipped",
+            extra={"data": {"pr_url": pr_url, "reason": "invalid_pr_url"}},
+        )
+        return None
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "gh",
+            "pr",
+            "view",
+            pr_number,
+            "--json",
+            "mergeCommit",
+            "--jq",
+            ".mergeCommit.oid",
+            cwd=str(project_root),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout_bytes, stderr_bytes = await proc.communicate()
+        stdout = stdout_bytes.decode("utf-8", errors="replace").strip()
+        stderr = stderr_bytes.decode("utf-8", errors="replace").strip()
+
+        if proc.returncode != 0:
+            logger.warning(
+                "scm.pr.merge.sha.skipped",
+                extra={
+                    "data": {
+                        "pr_url": pr_url,
+                        "pr_number": pr_number,
+                        "reason": "gh_error",
+                        "stderr": stderr,
+                        "returncode": proc.returncode,
+                    }
+                },
+            )
+            return None
+
+        sha_match = re.search(r"[0-9a-f]{7,40}", stdout)
+        return sha_match.group(0) if sha_match else None
+
+    except Exception as exc:
+        logger.warning(
+            "scm.pr.merge.sha.skipped",
+            extra={
+                "data": {
+                    "pr_url": pr_url,
+                    "pr_number": pr_number,
+                    "reason": "subprocess_error",
+                    "error": str(exc),
                 }
             },
         )
