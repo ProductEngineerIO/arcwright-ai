@@ -335,11 +335,13 @@ async def test_fetch_and_sync_diverged_local(bare_remote_and_clone: tuple[Path, 
     await git("add", ".", cwd=clone)
     await git("commit", "--allow-empty-message", "-m", "", cwd=clone)
 
+    expected_remote_result = await git("rev-parse", "main", cwd=bare)
+    expected_remote_sha = expected_remote_result.stdout.strip()
+
     # fetch_and_sync should handle ff-only failure and still return remote tip
     result_sha = await fetch_and_sync("main", "origin", project_root=clone)
 
-    # Verify it returns a valid SHA (non-empty)
-    assert len(result_sha) == 40
+    assert result_sha == expected_remote_sha
 
 
 async def test_worktree_from_fetched_sha(bare_remote_and_clone: tuple[Path, Path]) -> None:

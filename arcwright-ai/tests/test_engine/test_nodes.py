@@ -2927,8 +2927,20 @@ async def test_preflight_calls_fetch_and_sync(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """preflight_node calls fetch_and_sync before create_worktree when base_ref is None."""
-    mock_fetch = AsyncMock(return_value="deadbeef1234567890deadbeef1234567890dead")
+    call_order: list[str] = []
+
+    async def _fetch_and_sync(*_args: object, **_kwargs: object) -> str:
+        call_order.append("fetch")
+        return "deadbeef1234567890deadbeef1234567890dead"
+
+    async def _create_worktree(*_args: object, **_kwargs: object) -> Path:
+        call_order.append("create_worktree")
+        return Path("/project/.arcwright-ai/worktrees/2-6-preflight-node")
+
+    mock_fetch = AsyncMock(side_effect=_fetch_and_sync)
+    mock_create = AsyncMock(side_effect=_create_worktree)
     monkeypatch.setattr("arcwright_ai.engine.nodes.fetch_and_sync", mock_fetch)
+    monkeypatch.setattr("arcwright_ai.engine.nodes.create_worktree", mock_create)
     monkeypatch.setattr(
         "arcwright_ai.engine.nodes._detect_default_branch",
         AsyncMock(return_value="main"),
@@ -2937,6 +2949,8 @@ async def test_preflight_calls_fetch_and_sync(
     await preflight_node(story_state_with_project)
 
     mock_fetch.assert_called_once()
+    mock_create.assert_called_once()
+    assert call_order == ["fetch", "create_worktree"]
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,6 @@
 # Story 9.2: Fetch & Sync Default Branch Before Worktree Creation
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -112,6 +112,14 @@ so that stories don't build on stale commits and merge conflicts are minimized.
   - [x] 8.3: `.venv/bin/python -m mypy --strict src/` — zero errors.
   - [x] 8.4: `pytest` — all tests pass (existing + new).
   - [x] 8.5: Verify Google-style docstrings on all modified/new functions.
+
+### Review Follow-ups (AI)
+
+- [x] [AI-Review][HIGH] Emit explicit `git.fetch_and_sync.ff_merge` event on successful ff-only merge to satisfy AC #2 wording and observability parity. [arcwright-ai/src/arcwright_ai/scm/branch.py]
+- [x] [AI-Review][MEDIUM] Strengthen structured logging coverage for AC #13(h): add assertions for fetch/merge/error event paths (not just generic `git.fetch_and_sync`). [arcwright-ai/tests/test_scm/test_branch.py]
+- [x] [AI-Review][MEDIUM] Update `test_preflight_calls_fetch_and_sync` to verify ordering (fetch happens before `create_worktree`), not only that fetch was called. [arcwright-ai/tests/test_engine/test_nodes.py]
+- [x] [AI-Review][MEDIUM] Tighten diverged-local integration assertion to validate returned SHA equals remote tip SHA (current assertion only checks SHA length). [arcwright-ai/tests/test_scm/test_branch_integration.py]
+- [x] [AI-Review][LOW] Remove duplicate monkeypatch assignment in skip-merge unit test for clarity and maintainability. [arcwright-ai/tests/test_scm/test_branch.py]
 
 ## Dev Notes
 
@@ -231,6 +239,8 @@ No debug escalations. All tasks proceeded without HALT conditions.
 ### Change Log
 
 - 2026-03-15: Implemented Story 9.2 — fetch_and_sync function, StoryState.base_ref field, preflight_node wiring, full test suite (unit + integration).
+- 2026-03-15: Senior Developer Review (AI) completed — 1 high, 3 medium, 1 low findings; follow-up actions added; status set to in-progress.
+- 2026-03-15: Applied automated review fixes (option 1): added ff-merge success event, strengthened structured-log tests, added preflight call-order assertion, tightened diverged-local SHA assertion, cleaned duplicate monkeypatch; status set to done.
 
 ### File List
 
@@ -244,3 +254,59 @@ No debug escalations. All tasks proceeded without HALT conditions.
 - `arcwright-ai/tests/test_engine/test_graph.py`
 - `arcwright-ai/tests/test_engine/test_scm_integration.py`
 - `arcwright-ai/tests/test_cli/test_dispatch.py`
+
+## Senior Developer Review (AI)
+
+### Reviewer
+
+Ed (AI Code Review Workflow)
+
+### Date
+
+2026-03-15
+
+### Outcome
+
+Changes Requested
+
+### Summary
+
+- Story claims are mostly implemented in code and tests, but key gaps remain in AC-level observability and test rigor.
+- Git working tree is clean, so review evidence was taken from committed code and story artifacts.
+
+### Findings
+
+#### High
+
+1. Missing explicit ff-merge success event required by AC #2.
+  - Evidence: `fetch_and_sync()` logs `git.fetch_and_sync` and `git.fetch_and_sync.ff_failed`, but no `git.fetch_and_sync.ff_merge` event on success.
+  - Files: `arcwright-ai/src/arcwright_ai/scm/branch.py`
+
+#### Medium
+
+1. AC #13(h) test coverage is incomplete for structured logging event paths.
+  - Evidence: unit tests assert a generic `git.fetch_and_sync` message but do not assert distinct fetch/merge/error event paths and payload expectations.
+  - Files: `arcwright-ai/tests/test_scm/test_branch.py`
+
+2. Task 6.1 claim (“verify fetch called before worktree creation”) is under-tested.
+  - Evidence: `test_preflight_calls_fetch_and_sync` checks `assert_called_once()` only; no call-order assertion versus `create_worktree`.
+  - Files: `arcwright-ai/tests/test_engine/test_nodes.py`
+
+3. AC #14(b) diverged-local integration assertion is weak.
+  - Evidence: test currently asserts only `len(result_sha) == 40`, which does not prove returned SHA is the remote tip.
+  - Files: `arcwright-ai/tests/test_scm/test_branch_integration.py`
+
+#### Low
+
+1. Minor unit-test hygiene issue.
+  - Evidence: duplicate `monkeypatch.setattr("arcwright_ai.scm.branch.git", mock_git)` in `test_fetch_and_sync_skips_merge_not_on_default`.
+  - Files: `arcwright-ai/tests/test_scm/test_branch.py`
+
+### Checklist Snapshot
+
+- [x] Acceptance Criteria cross-checked against implementation
+- [x] File List reviewed against actual codebase files
+- [x] Code quality and security-focused review completed
+- [x] Review notes appended
+- [x] Change Log updated
+- [x] Story status updated

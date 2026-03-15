@@ -757,6 +757,15 @@ async def fetch_and_sync(
         try:
             await git("merge", "--ff-only", f"{remote}/{default_branch}", cwd=project_root)
             ff_merged = True
+            logger.info(
+                "git.fetch_and_sync.ff_merge",
+                extra={
+                    "data": {
+                        "remote": remote,
+                        "branch": default_branch,
+                    }
+                },
+            )
         except ScmError as exc:
             logger.warning(
                 "git.fetch_and_sync.ff_failed",

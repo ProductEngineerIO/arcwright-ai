@@ -1022,7 +1022,6 @@ async def test_fetch_and_sync_skips_merge_not_on_default(
         ]
     )
     monkeypatch.setattr("arcwright_ai.scm.branch.git", mock_git)
-    monkeypatch.setattr("arcwright_ai.scm.branch.git", mock_git)
 
     result = await fetch_and_sync("main", "origin", project_root=tmp_path)
 
@@ -1071,3 +1070,43 @@ async def test_fetch_and_sync_logs_structured_event(
         await fetch_and_sync("main", "origin", project_root=tmp_path)
 
     assert any("git.fetch_and_sync" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_fetch_and_sync_logs_ff_merge_event_on_success(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    """fetch_and_sync emits git.fetch_and_sync.ff_merge when ff-only merge succeeds (AC: #2, #13h)."""
+    sha = "1234567890abcdef1234567890abcdef12345678"
+    mock_git = AsyncMock(
+        side_effect=[
+            _ok(),
+            _ok(sha),
+            _ok("main"),
+            _ok(),
+        ]
+    )
+    monkeypatch.setattr("arcwright_ai.scm.branch.git", mock_git)
+
+    with caplog.at_level(logging.INFO, logger="arcwright_ai.scm.branch"):
+        await fetch_and_sync("main", "origin", project_root=tmp_path)
+
+    assert any("git.fetch_and_sync.ff_merge" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_fetch_and_sync_logs_fetch_failed_event(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    """fetch_and_sync emits git.fetch_and_sync.fetch_failed when fetch fails (AC: #13h)."""
+    mock_git = AsyncMock(side_effect=ScmError("fatal: unable to connect", details={"stderr": "network error"}))
+    monkeypatch.setattr("arcwright_ai.scm.branch.git", mock_git)
+
+    with caplog.at_level(logging.ERROR, logger="arcwright_ai.scm.branch"), pytest.raises(ScmError):
+        await fetch_and_sync("main", "origin", project_root=tmp_path)
+
+    assert any("git.fetch_and_sync.fetch_failed" in r.message for r in caplog.records)
