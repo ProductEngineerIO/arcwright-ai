@@ -91,6 +91,15 @@ def _mock_output_functions(monkeypatch: pytest.MonkeyPatch) -> None:
         "arcwright_ai.engine.nodes.open_pull_request",
         AsyncMock(return_value=None),
     )
+    # Story 9.2: fetch_and_sync and _detect_default_branch mocks
+    monkeypatch.setattr(
+        "arcwright_ai.engine.nodes.fetch_and_sync",
+        AsyncMock(return_value="abc1234567890abcdef1234567890abcdef123456"),
+    )
+    monkeypatch.setattr(
+        "arcwright_ai.engine.nodes._detect_default_branch",
+        AsyncMock(return_value="main"),
+    )
 
 
 @pytest.fixture
@@ -1612,6 +1621,7 @@ async def test_preflight_node_creates_worktree(
 
     mock_create.assert_called_once_with(
         str(story_state_with_project.story_id),
+        "abc1234567890abcdef1234567890abcdef123456",
         project_root=story_state_with_project.project_root,
     )
     assert result.worktree_path == expected_path
@@ -1669,7 +1679,7 @@ async def test_preflight_node_removes_stale_worktree_and_retries(
 
     call_count = 0
 
-    async def _create_worktree(slug: str, *, project_root: Path) -> Path:
+    async def _create_worktree(slug: str, base_ref: str | None = None, *, project_root: Path) -> Path:
         nonlocal call_count
         call_count += 1
         if call_count == 1:
@@ -2904,3 +2914,67 @@ async def test_integration_zero_invocations_missed(
         slug = f"story-{i + 1}"
         assert slug in current_budget.per_story
         assert current_budget.per_story[slug].invocations == 1
+
+
+# ---------------------------------------------------------------------------
+# Story 9.2 — preflight_node fetch_and_sync integration tests (AC: #5, #6)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_preflight_calls_fetch_and_sync(
+    story_state_with_project: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """preflight_node calls fetch_and_sync before create_worktree when base_ref is None."""
+    mock_fetch = AsyncMock(return_value="deadbeef1234567890deadbeef1234567890dead")
+    monkeypatch.setattr("arcwright_ai.engine.nodes.fetch_and_sync", mock_fetch)
+    monkeypatch.setattr(
+        "arcwright_ai.engine.nodes._detect_default_branch",
+        AsyncMock(return_value="main"),
+    )
+
+    await preflight_node(story_state_with_project)
+
+    mock_fetch.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_preflight_base_ref_bypasses_fetch(
+    story_state_with_project: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """preflight_node skips fetch_and_sync entirely when state.base_ref is already set."""
+    mock_fetch = AsyncMock(return_value="shouldnotbecalled")
+    monkeypatch.setattr("arcwright_ai.engine.nodes.fetch_and_sync", mock_fetch)
+
+    state_with_base_ref = story_state_with_project.model_copy(update={"base_ref": "explicit-sha-abc123"})
+    await preflight_node(state_with_base_ref)
+
+    mock_fetch.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_preflight_passes_fetch_sha_to_create_worktree(
+    story_state_with_project: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """preflight_node passes the SHA returned by fetch_and_sync as base_ref to create_worktree."""
+    expected_sha = "cafebabe1234567890cafebabe1234567890cafe"
+    monkeypatch.setattr(
+        "arcwright_ai.engine.nodes.fetch_and_sync",
+        AsyncMock(return_value=expected_sha),
+    )
+    monkeypatch.setattr(
+        "arcwright_ai.engine.nodes._detect_default_branch",
+        AsyncMock(return_value="main"),
+    )
+    mock_create = AsyncMock(return_value=Path("/project/.arcwright-ai/worktrees/2-6-preflight-node"))
+    monkeypatch.setattr("arcwright_ai.engine.nodes.create_worktree", mock_create)
+
+    await preflight_node(story_state_with_project)
+
+    mock_create.assert_called_once()
+    _args, _kwargs = mock_create.call_args
+    # base_ref is the second positional arg
+    assert _args[1] == expected_sha

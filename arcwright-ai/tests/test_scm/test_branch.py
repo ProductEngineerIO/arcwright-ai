@@ -19,6 +19,7 @@ from arcwright_ai.scm.branch import (
     create_branch,
     delete_branch,
     delete_remote_branch,
+    fetch_and_sync,
     list_branches,
     push_branch,
 )
@@ -905,3 +906,168 @@ async def test_delete_remote_branch_logs_warning_on_failure(
         await delete_remote_branch(_BRANCH, project_root=tmp_path)
 
     assert any("git.remote_branch.delete.error" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Story 9.2 — fetch_and_sync unit tests (AC: #1, #2, #3, #4, #13)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fetch_and_sync_calls_git_fetch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """fetch_and_sync calls git fetch <remote> <default_branch> with correct args (AC: #13a)."""
+    sha = "abc1234567890abcdef1234567890abcdef123456"
+    mock_git = AsyncMock(
+        side_effect=[
+            _ok(),  # fetch
+            _ok(sha),  # rev-parse remote/branch
+            _ok("HEAD"),  # rev-parse --abbrev-ref HEAD (detached)
+        ]
+    )
+    monkeypatch.setattr("arcwright_ai.scm.branch.git", mock_git)
+
+    await fetch_and_sync("main", "origin", project_root=tmp_path)
+
+    mock_git.assert_any_call("fetch", "origin", "main", cwd=tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_fetch_and_sync_resolves_remote_sha(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """fetch_and_sync calls git rev-parse and returns resolved SHA (AC: #13b, #13c)."""
+    sha = "deadbeef1234567890deadbeef1234567890dead"
+    mock_git = AsyncMock(
+        side_effect=[
+            _ok(),  # fetch
+            _ok(sha + "\n"),  # rev-parse (with trailing newline)
+            _ok("HEAD"),  # rev-parse --abbrev-ref HEAD
+        ]
+    )
+    monkeypatch.setattr("arcwright_ai.scm.branch.git", mock_git)
+
+    result = await fetch_and_sync("main", "origin", project_root=tmp_path)
+
+    assert result == sha
+    mock_git.assert_any_call("rev-parse", "origin/main", cwd=tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_fetch_and_sync_ff_merge_on_default_branch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """When on default branch, fetch_and_sync attempts git merge --ff-only (AC: #13d)."""
+    sha = "cafebabe1234567890cafebabe1234567890cafe"
+    mock_git = AsyncMock(
+        side_effect=[
+            _ok(),  # fetch
+            _ok(sha),  # rev-parse origin/main
+            _ok("main"),  # rev-parse --abbrev-ref HEAD → on default branch
+            _ok(),  # merge --ff-only (success)
+        ]
+    )
+    monkeypatch.setattr("arcwright_ai.scm.branch.git", mock_git)
+
+    result = await fetch_and_sync("main", "origin", project_root=tmp_path)
+
+    assert result == sha
+    mock_git.assert_any_call("merge", "--ff-only", "origin/main", cwd=tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_fetch_and_sync_ff_merge_failure_continues(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    """When ff-only fails, a warning is logged and the remote SHA is still returned (AC: #13e)."""
+    sha = "fedc1234567890abcdef1234567890abcdef1234"
+    mock_git = AsyncMock(
+        side_effect=[
+            _ok(),  # fetch
+            _ok(sha),  # rev-parse origin/main
+            _ok("main"),  # rev-parse --abbrev-ref HEAD
+            ScmError(
+                "merge diverged", details={"stderr": "fatal: Not possible to fast-forward"}
+            ),  # merge --ff-only fails
+        ]
+    )
+    monkeypatch.setattr("arcwright_ai.scm.branch.git", mock_git)
+
+    with caplog.at_level(logging.WARNING, logger="arcwright_ai.scm.branch"):
+        result = await fetch_and_sync("main", "origin", project_root=tmp_path)
+
+    assert result == sha
+    assert any("git.fetch_and_sync.ff_failed" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_fetch_and_sync_skips_merge_not_on_default(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """When not on default branch, fetch_and_sync skips merge and returns SHA (AC: #13f)."""
+    sha = "aabbccdd1234567890aabbccdd1234567890aabb"
+    merge_call = AsyncMock()
+    mock_git = AsyncMock(
+        side_effect=[
+            _ok(),  # fetch
+            _ok(sha),  # rev-parse origin/main
+            _ok("feature/other-branch"),  # rev-parse --abbrev-ref HEAD → NOT on default
+        ]
+    )
+    monkeypatch.setattr("arcwright_ai.scm.branch.git", mock_git)
+    monkeypatch.setattr("arcwright_ai.scm.branch.git", mock_git)
+
+    result = await fetch_and_sync("main", "origin", project_root=tmp_path)
+
+    assert result == sha
+    # Verify no merge call was made (only 3 calls total: fetch, rev-parse SHA, rev-parse HEAD)
+    assert mock_git.call_count == 3
+    merge_call.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_fetch_and_sync_network_failure_raises_scm_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """When git fetch fails, ScmError is raised with network connectivity message (AC: #4, #13g)."""
+    mock_git = AsyncMock(side_effect=ScmError("fatal: unable to connect", details={"stderr": "network error"}))
+    monkeypatch.setattr("arcwright_ai.scm.branch.git", mock_git)
+
+    with pytest.raises(ScmError) as exc_info:
+        await fetch_and_sync("main", "origin", project_root=tmp_path)
+
+    assert "check network connectivity" in exc_info.value.message
+    assert exc_info.value.details is not None
+    assert exc_info.value.details["remote"] == "origin"
+    assert exc_info.value.details["branch"] == "main"
+
+
+@pytest.mark.asyncio
+async def test_fetch_and_sync_logs_structured_event(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    """fetch_and_sync emits a structured git.fetch_and_sync log event on success (AC: #13h)."""
+    sha = "1234abcd5678efgh1234abcd5678efgh12345678"
+    mock_git = AsyncMock(
+        side_effect=[
+            _ok(),  # fetch
+            _ok(sha),  # rev-parse
+            _ok("HEAD"),  # rev-parse --abbrev-ref HEAD (detached)
+        ]
+    )
+    monkeypatch.setattr("arcwright_ai.scm.branch.git", mock_git)
+
+    with caplog.at_level(logging.INFO, logger="arcwright_ai.scm.branch"):
+        await fetch_and_sync("main", "origin", project_root=tmp_path)
+
+    assert any("git.fetch_and_sync" in r.message for r in caplog.records)

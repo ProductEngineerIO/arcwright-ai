@@ -143,6 +143,9 @@ async def test_full_story_lifecycle_with_scm(
     monkeypatch.setattr("arcwright_ai.engine.nodes.update_story_status", AsyncMock())
     monkeypatch.setattr("arcwright_ai.engine.nodes.update_run_status", AsyncMock())
     monkeypatch.setattr("arcwright_ai.engine.nodes.write_success_summary", AsyncMock())
+    # Story 9.2: mock fetch so real-git integration test doesn't need a remote
+    monkeypatch.setattr("arcwright_ai.engine.nodes.fetch_and_sync", AsyncMock(return_value="HEAD"))
+    monkeypatch.setattr("arcwright_ai.engine.nodes._detect_default_branch", AsyncMock(return_value="main"))
 
     # Step 1: preflight — creates real worktree
     state_after_preflight = await preflight_node(scm_story_state)
@@ -245,6 +248,9 @@ async def test_escalated_preserves_worktree(
     monkeypatch.setattr("arcwright_ai.engine.nodes.update_story_status", AsyncMock())
     monkeypatch.setattr("arcwright_ai.engine.nodes.update_run_status", AsyncMock())
     monkeypatch.setattr("arcwright_ai.engine.nodes.write_halt_report", AsyncMock())
+    # Story 9.2: mock fetch so real-git integration test doesn't need a remote
+    monkeypatch.setattr("arcwright_ai.engine.nodes.fetch_and_sync", AsyncMock(return_value="HEAD"))
+    monkeypatch.setattr("arcwright_ai.engine.nodes._detect_default_branch", AsyncMock(return_value="main"))
 
     # preflight creates worktree
     state_after_preflight = await preflight_node(scm_story_state)

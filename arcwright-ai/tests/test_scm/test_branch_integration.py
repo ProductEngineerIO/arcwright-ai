@@ -15,6 +15,7 @@ from arcwright_ai.scm.branch import (
     commit_story,
     create_branch,
     delete_branch,
+    fetch_and_sync,
     list_branches,
 )
 from arcwright_ai.scm.git import git
@@ -247,3 +248,123 @@ async def test_delete_branch_idempotent_real_git(git_repo: Path) -> None:
     # Should not raise
     await delete_branch(branch, project_root=git_repo)
     await delete_branch(branch, project_root=git_repo)
+
+
+# ---------------------------------------------------------------------------
+# Story 9.2 — fetch_and_sync integration tests (AC: #14)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def bare_remote_and_clone(tmp_path: Path) -> tuple[Path, Path]:
+    """Create a bare remote repo and a clone of it for fetch integration tests.
+
+    Returns (bare_path, clone_path) where:
+    - bare_path is a bare git repository acting as the "remote"
+    - clone_path is a full clone with 'origin' pointing at bare_path
+
+    Args:
+        tmp_path: pytest-provided temporary directory.
+
+    Returns:
+        Tuple of (bare_repo_path, clone_path).
+    """
+    bare = tmp_path / "bare.git"
+    clone = tmp_path / "clone"
+
+    # Create bare repo
+    await git("init", "--bare", str(bare), cwd=tmp_path)
+
+    # Create scratch repo to populate the bare
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    await git("init", cwd=scratch)
+    await git("config", "user.email", "test@test.com", cwd=scratch)
+    await git("config", "user.name", "Test", cwd=scratch)
+    (scratch / "README.md").write_text("# Initial")
+    await git("add", ".", cwd=scratch)
+    await git("commit", "-m", "Initial commit", cwd=scratch)
+    await git("remote", "add", "origin", str(bare), cwd=scratch)
+    await git("push", "origin", "HEAD:main", cwd=scratch)
+
+    # Clone from bare
+    await git("clone", str(bare), str(clone), cwd=tmp_path)
+    await git("config", "user.email", "test@test.com", cwd=clone)
+    await git("config", "user.name", "Test", cwd=clone)
+    # Ensure worktrees directory exists
+    (clone / ".arcwright-ai" / "worktrees").mkdir(parents=True)
+
+    return bare, clone
+
+
+async def test_fetch_and_sync_real_git(bare_remote_and_clone: tuple[Path, Path]) -> None:
+    """fetch_and_sync with real git + bare remote returns updated SHA (AC: #14a)."""
+    bare, clone = bare_remote_and_clone
+
+    # Push a new commit to bare from scratch
+    scratch = bare.parent / "scratch"
+    (scratch / "new_file.txt").write_text("New content")
+    await git("add", ".", cwd=scratch)
+    await git("commit", "-m", "Second commit", cwd=scratch)
+    await git("push", "origin", "HEAD:main", cwd=scratch)
+
+    # Get expected SHA from bare
+    expected_result = await git("rev-parse", "main", cwd=bare)
+    expected_sha = expected_result.stdout.strip()
+
+    # fetch_and_sync should fetch and return that SHA
+    result = await fetch_and_sync("main", "origin", project_root=clone)
+
+    assert result == expected_sha
+
+
+async def test_fetch_and_sync_diverged_local(bare_remote_and_clone: tuple[Path, Path]) -> None:
+    """fetch_and_sync with diverged local — ff-only fails gracefully, returns remote tip (AC: #14b)."""
+    bare, clone = bare_remote_and_clone
+    scratch = bare.parent / "scratch"
+
+    # Push new commit to remote so local diverges
+    (scratch / "remote_only.txt").write_text("Remote")
+    await git("add", ".", cwd=scratch)
+    await git("commit", "-m", "Remote-only commit", cwd=scratch)
+    await git("push", "origin", "HEAD:main", cwd=scratch)
+
+    # Create a diverging local commit on clone's main branch
+    await git("checkout", "main", cwd=clone)
+    (clone / "local_only.txt").write_text("Local")
+    await git("add", ".", cwd=clone)
+    await git("commit", "--allow-empty-message", "-m", "", cwd=clone)
+
+    # fetch_and_sync should handle ff-only failure and still return remote tip
+    result_sha = await fetch_and_sync("main", "origin", project_root=clone)
+
+    # Verify it returns a valid SHA (non-empty)
+    assert len(result_sha) == 40
+
+
+async def test_worktree_from_fetched_sha(bare_remote_and_clone: tuple[Path, Path]) -> None:
+    """Worktree created with fetched SHA as base_ref has the correct starting commit (AC: #14c)."""
+    bare, clone = bare_remote_and_clone
+    scratch = bare.parent / "scratch"
+
+    # Push a fresh commit to remote
+    (scratch / "feature.txt").write_text("Feature")
+    await git("add", ".", cwd=scratch)
+    await git("commit", "-m", "Feature commit", cwd=scratch)
+    await git("push", "origin", "HEAD:main", cwd=scratch)
+
+    # Use fetch_and_sync to get the latest SHA
+    resolved_sha = await fetch_and_sync("main", "origin", project_root=clone)
+
+    # Create worktree using the resolved SHA
+    slug = "9-2-worktree-test"
+    wt_path = await create_worktree(slug, resolved_sha, project_root=clone)
+
+    # Verify the worktree HEAD matches the resolved SHA
+    head_result = await git("rev-parse", "HEAD", cwd=wt_path)
+    assert head_result.stdout.strip() == resolved_sha
+
+    # Cleanup
+    from arcwright_ai.scm.worktree import remove_worktree
+
+    await remove_worktree(slug, project_root=clone, delete_branch=True, force=True)

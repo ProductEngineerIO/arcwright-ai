@@ -49,6 +49,7 @@ __all__: list[str] = [
     "create_branch",
     "delete_branch",
     "delete_remote_branch",
+    "fetch_and_sync",
     "list_branches",
     "push_branch",
 ]
@@ -688,3 +689,96 @@ async def delete_branch(
         "git.branch.delete",
         extra={"data": {"branch": branch_name, "force": force}},
     )
+
+
+# ---------------------------------------------------------------------------
+# fetch_and_sync
+# ---------------------------------------------------------------------------
+
+
+async def fetch_and_sync(
+    default_branch: str,
+    remote: str = "origin",
+    *,
+    project_root: Path,
+) -> str:
+    """Fetch the latest commits from a remote branch and return its tip SHA.
+
+    Runs ``git fetch <remote> <default_branch>`` then resolves the remote tip
+    via ``git rev-parse <remote>/<default_branch>``.  When the local checkout
+    is on *default_branch*, also attempts a ``git merge --ff-only`` to keep
+    the local branch current.  A failed fast-forward is non-fatal — the
+    returned SHA is still the remote tip, which is safe to use as a worktree
+    base ref.
+
+    Args:
+        default_branch: Name of the remote branch to fetch (e.g. ``"main"``).
+        remote: Name of the git remote to fetch from (default: ``"origin"``).
+        project_root: Absolute path to the root of the git repository.
+
+    Returns:
+        The resolved commit SHA of ``<remote>/<default_branch>`` after fetching.
+
+    Raises:
+        ScmError: If ``git fetch`` fails, with message
+            ``"Failed to fetch from remote — check network connectivity"``
+            and ``details`` containing ``remote`` and ``branch``.
+    """
+    # Fetch latest commits from remote
+    try:
+        await git("fetch", remote, default_branch, cwd=project_root)
+    except ScmError as exc:
+        logger.error(
+            "git.fetch_and_sync.fetch_failed",
+            extra={
+                "data": {
+                    "remote": remote,
+                    "branch": default_branch,
+                    "error": exc.message,
+                    "details": exc.details,
+                }
+            },
+        )
+        raise ScmError(
+            "Failed to fetch from remote \u2014 check network connectivity",
+            details={"remote": remote, "branch": default_branch},
+        ) from exc
+
+    # Resolve the remote tip SHA
+    result = await git("rev-parse", f"{remote}/{default_branch}", cwd=project_root)
+    remote_sha = result.stdout.strip()
+
+    # Detect current branch; attempt ff-only merge if on default branch
+    current_branch_result = await git("rev-parse", "--abbrev-ref", "HEAD", cwd=project_root)
+    current_branch = current_branch_result.stdout.strip()
+
+    ff_merged = False
+    if current_branch == default_branch:
+        try:
+            await git("merge", "--ff-only", f"{remote}/{default_branch}", cwd=project_root)
+            ff_merged = True
+        except ScmError as exc:
+            logger.warning(
+                "git.fetch_and_sync.ff_failed",
+                extra={
+                    "data": {
+                        "remote": remote,
+                        "branch": default_branch,
+                        "error": exc.message,
+                    }
+                },
+            )
+            # Non-fatal: worktree will be based on remote tip SHA regardless
+
+    logger.info(
+        "git.fetch_and_sync",
+        extra={
+            "data": {
+                "remote": remote,
+                "default_branch": default_branch,
+                "remote_sha": remote_sha,
+                "ff_merged": ff_merged,
+            }
+        },
+    )
+    return remote_sha

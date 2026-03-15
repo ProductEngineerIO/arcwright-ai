@@ -278,6 +278,15 @@ def test_dispatch_story_end_to_end_with_mock_sdk(
     )
     monkeypatch.setattr("arcwright_ai.engine.nodes.remove_worktree", AsyncMock())
     monkeypatch.setattr("arcwright_ai.engine.nodes.commit_story", AsyncMock(return_value="abc1234"))
+    # Story 9.2: mock fetch_and_sync and _detect_default_branch
+    monkeypatch.setattr(
+        "arcwright_ai.engine.nodes.fetch_and_sync",
+        AsyncMock(return_value="abc1234567890abcdef1234567890abcdef123456"),
+    )
+    monkeypatch.setattr(
+        "arcwright_ai.engine.nodes._detect_default_branch",
+        AsyncMock(return_value="main"),
+    )
 
     result = runner.invoke(app, ["dispatch", "--story", "2.1"], catch_exceptions=False)
 

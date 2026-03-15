@@ -33,8 +33,8 @@ from arcwright_ai.engine.state import StoryState  # noqa: TC001
 from arcwright_ai.output.provenance import append_entry, render_validation_row
 from arcwright_ai.output.run_manager import update_run_status, update_story_status
 from arcwright_ai.output.summary import write_halt_report, write_success_summary
-from arcwright_ai.scm.branch import commit_story, delete_remote_branch, push_branch
-from arcwright_ai.scm.pr import generate_pr_body, open_pull_request
+from arcwright_ai.scm.branch import commit_story, delete_remote_branch, fetch_and_sync, push_branch
+from arcwright_ai.scm.pr import _detect_default_branch, generate_pr_body, open_pull_request
 from arcwright_ai.scm.worktree import create_worktree, remove_worktree
 from arcwright_ai.validation.pipeline import PipelineOutcome, PipelineResult, run_validation_pipeline
 from arcwright_ai.validation.v6_invariant import V6CheckResult, V6ValidationResult
@@ -102,8 +102,21 @@ async def preflight_node(state: StoryState) -> StoryState:
     worktree_path = None
     try:
         story_slug = str(state.story_id)
+
+        # Resolve base_ref: use user-provided --base-ref or fetch remote tip (AC: #5, #6)
+        if state.base_ref is not None:
+            resolved_base_ref: str | None = state.base_ref
+        else:
+            default_branch = await _detect_default_branch(
+                state.project_root,
+                story_slug,
+                default_branch_override=state.config.scm.default_branch,
+            )
+            remote = state.config.scm.remote.strip() or "origin"
+            resolved_base_ref = await fetch_and_sync(default_branch, remote, project_root=state.project_root)
+
         try:
-            worktree_path = await create_worktree(story_slug, project_root=state.project_root)
+            worktree_path = await create_worktree(story_slug, resolved_base_ref, project_root=state.project_root)
         except ScmError as stale_exc:
             # If a worktree was preserved from a prior escalated run, remove it
             # and retry rather than escalating immediately.  This allows fresh
@@ -125,7 +138,7 @@ async def preflight_node(state: StoryState) -> StoryState:
                 # a non-fast-forward rejection from the prior run's push.
                 remote = state.config.scm.remote.strip() if state.config.scm.remote.strip() else "origin"
                 await delete_remote_branch(BRANCH_PREFIX + story_slug, project_root=state.project_root, remote=remote)
-                worktree_path = await create_worktree(story_slug, project_root=state.project_root)
+                worktree_path = await create_worktree(story_slug, resolved_base_ref, project_root=state.project_root)
             else:
                 raise
         logger.info(

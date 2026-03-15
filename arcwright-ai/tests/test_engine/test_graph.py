@@ -45,6 +45,15 @@ def _mock_output_functions(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     monkeypatch.setattr("arcwright_ai.engine.nodes.remove_worktree", AsyncMock())
     monkeypatch.setattr("arcwright_ai.engine.nodes.commit_story", AsyncMock(return_value="abc1234"))
+    # Story 9.2: fetch_and_sync and _detect_default_branch mocks
+    monkeypatch.setattr(
+        "arcwright_ai.engine.nodes.fetch_and_sync",
+        AsyncMock(return_value="abc1234567890abcdef1234567890abcdef123456"),
+    )
+    monkeypatch.setattr(
+        "arcwright_ai.engine.nodes._detect_default_branch",
+        AsyncMock(return_value="main"),
+    )
 
 
 def make_initial_state() -> StoryState:

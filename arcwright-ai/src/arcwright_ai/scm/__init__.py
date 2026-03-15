@@ -7,6 +7,7 @@ from arcwright_ai.scm.branch import (
     commit_story,
     create_branch,
     delete_branch,
+    fetch_and_sync,
     list_branches,
 )
 from arcwright_ai.scm.git import GitResult, git
@@ -20,6 +21,7 @@ __all__: list[str] = [
     "create_branch",
     "create_worktree",
     "delete_branch",
+    "fetch_and_sync",
     "generate_pr_body",
     "git",
     "list_branches",

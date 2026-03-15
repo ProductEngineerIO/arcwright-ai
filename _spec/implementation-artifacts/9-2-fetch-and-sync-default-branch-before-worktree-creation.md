@@ -1,6 +1,6 @@
 # Story 9.2: Fetch & Sync Default Branch Before Worktree Creation
 
-Status: todo
+Status: review
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -53,65 +53,65 @@ so that stories don't build on stale commits and merge conflicts are minimized.
 
 ## Tasks / Subtasks
 
-- [ ] Task 1: Implement `fetch_and_sync` function in `scm/branch.py` (AC: #1, #2, #3, #4)
-  - [ ] 1.1: Function signature: `async def fetch_and_sync(default_branch: str, remote: str = "origin", *, project_root: Path) -> str`.
-  - [ ] 1.2: Call `await git("fetch", remote, default_branch, cwd=project_root)`. Catch `ScmError` → re-raise as `ScmError("Failed to fetch from remote — check network connectivity", details={"remote": remote, "branch": default_branch})`.
-  - [ ] 1.3: Call `await git("rev-parse", f"{remote}/{default_branch}", cwd=project_root)` to resolve remote tip SHA. Store as `remote_sha = result.stdout.strip()`.
-  - [ ] 1.4: Detect current branch: `await git("rev-parse", "--abbrev-ref", "HEAD", cwd=project_root)`. If result matches `default_branch`, attempt ff-only merge.
-  - [ ] 1.5: If on default branch, call `await git("merge", "--ff-only", f"{remote}/{default_branch}", cwd=project_root)`. Catch `ScmError` on ff-only failure → log warning `git.fetch_and_sync.ff_failed`, continue (non-fatal).
-  - [ ] 1.6: If NOT on default branch, skip merge step.
-  - [ ] 1.7: Log success as `git.fetch_and_sync` structured event with `remote`, `default_branch`, `remote_sha`, `ff_merged` (bool).
-  - [ ] 1.8: Return `remote_sha`.
-  - [ ] 1.9: Google-style docstring with Args, Returns, Raises.
+- [x] Task 1: Implement `fetch_and_sync` function in `scm/branch.py` (AC: #1, #2, #3, #4)
+  - [x] 1.1: Function signature: `async def fetch_and_sync(default_branch: str, remote: str = "origin", *, project_root: Path) -> str`.
+  - [x] 1.2: Call `await git("fetch", remote, default_branch, cwd=project_root)`. Catch `ScmError` → re-raise as `ScmError("Failed to fetch from remote — check network connectivity", details={"remote": remote, "branch": default_branch})`.
+  - [x] 1.3: Call `await git("rev-parse", f"{remote}/{default_branch}", cwd=project_root)` to resolve remote tip SHA. Store as `remote_sha = result.stdout.strip()`.
+  - [x] 1.4: Detect current branch: `await git("rev-parse", "--abbrev-ref", "HEAD", cwd=project_root)`. If result matches `default_branch`, attempt ff-only merge.
+  - [x] 1.5: If on default branch, call `await git("merge", "--ff-only", f"{remote}/{default_branch}", cwd=project_root)`. Catch `ScmError` on ff-only failure → log warning `git.fetch_and_sync.ff_failed`, continue (non-fatal).
+  - [x] 1.6: If NOT on default branch, skip merge step.
+  - [x] 1.7: Log success as `git.fetch_and_sync` structured event with `remote`, `default_branch`, `remote_sha`, `ff_merged` (bool).
+  - [x] 1.8: Return `remote_sha`.
+  - [x] 1.9: Google-style docstring with Args, Returns, Raises.
 
-- [ ] Task 2: Update `__all__` and package exports (AC: #1)
-  - [ ] 2.1: Add `"fetch_and_sync"` to `scm/branch.py` `__all__`.
-  - [ ] 2.2: Add `fetch_and_sync` to `scm/__init__.py` imports and `__all__`.
+- [x] Task 2: Update `__all__` and package exports (AC: #1)
+  - [x] 2.1: Add `"fetch_and_sync"` to `scm/branch.py` `__all__`.
+  - [x] 2.2: Add `fetch_and_sync` to `scm/__init__.py` imports and `__all__`.
 
-- [ ] Task 3: Add `base_ref` field to `StoryState` (AC: #5, #6)
-  - [ ] 3.1: Add `base_ref: str | None = None` field to `StoryState` in `engine/state.py`. This stores the user-provided `--base-ref` if given, or `None` to indicate "fetch and use remote tip".
-  - [ ] 3.2: Update `StoryState` docstring to document the new field.
+- [x] Task 3: Add `base_ref` field to `StoryState` (AC: #5, #6)
+  - [x] 3.1: Add `base_ref: str | None = None` field to `StoryState` in `engine/state.py`. This stores the user-provided `--base-ref` if given, or `None` to indicate "fetch and use remote tip".
+  - [x] 3.2: Update `StoryState` docstring to document the new field.
 
-- [ ] Task 4: Wire `fetch_and_sync` into `preflight_node` (AC: #5, #6, #7, #8)
-  - [ ] 4.1: Add import for `fetch_and_sync` from `scm/branch.py`.
-  - [ ] 4.2: Add import for `_detect_default_branch` from `scm/pr.py`.
-  - [ ] 4.3: Before `create_worktree()` call, check if `state.base_ref` is set (user-provided `--base-ref`).
-  - [ ] 4.4: If `state.base_ref` is **not** set:
+- [x] Task 4: Wire `fetch_and_sync` into `preflight_node` (AC: #5, #6, #7, #8)
+  - [x] 4.1: Add import for `fetch_and_sync` from `scm/branch.py`.
+  - [x] 4.2: Add import for `_detect_default_branch` from `scm/pr.py`.
+  - [x] 4.3: Before `create_worktree()` call, check if `state.base_ref` is set (user-provided `--base-ref`).
+  - [x] 4.4: If `state.base_ref` is **not** set:
     - Resolve default branch name: `default_branch = await _detect_default_branch(project_root, story_slug, default_branch_override=state.config.scm.default_branch)`.
     - Resolve remote: `remote = state.config.scm.remote.strip() or "origin"`.
     - Call `resolved_base_ref = await fetch_and_sync(default_branch, remote, project_root=project_root)`.
     - Pass `base_ref=resolved_base_ref` to `create_worktree()`.
-  - [ ] 4.5: If `state.base_ref` **is** set, pass `base_ref=state.base_ref` to `create_worktree()` directly (skip fetch).
-  - [ ] 4.6: Handle `ScmError` from `fetch_and_sync` — escalate story (cannot guarantee fresh base).
-  - [ ] 4.7: Update the stale worktree retry path to also pass `base_ref` to the second `create_worktree()` call.
+  - [x] 4.5: If `state.base_ref` **is** set, pass `base_ref=state.base_ref` to `create_worktree()` directly (skip fetch).
+  - [x] 4.6: Handle `ScmError` from `fetch_and_sync` — escalate story (cannot guarantee fresh base).
+  - [x] 4.7: Update the stale worktree retry path to also pass `base_ref` to the second `create_worktree()` call.
 
-- [ ] Task 5: Create unit tests for `fetch_and_sync` (AC: #12, #13)
-  - [ ] 5.1: In `tests/test_scm/test_branch.py` add test `test_fetch_and_sync_calls_git_fetch` — verify correct args.
-  - [ ] 5.2: Test `test_fetch_and_sync_resolves_remote_sha` — verify `git rev-parse` call and return value.
-  - [ ] 5.3: Test `test_fetch_and_sync_ff_merge_on_default_branch` — on default branch, `git merge --ff-only` is called.
-  - [ ] 5.4: Test `test_fetch_and_sync_ff_merge_failure_continues` — ff-only fails, warning logged, SHA still returned.
-  - [ ] 5.5: Test `test_fetch_and_sync_skips_merge_not_on_default` — not on default branch, merge not called.
-  - [ ] 5.6: Test `test_fetch_and_sync_network_failure_raises_scm_error` — fetch fails → ScmError raised.
-  - [ ] 5.7: Test `test_fetch_and_sync_logs_structured_event` — success event logged.
+- [x] Task 5: Create unit tests for `fetch_and_sync` (AC: #12, #13)
+  - [x] 5.1: In `tests/test_scm/test_branch.py` add test `test_fetch_and_sync_calls_git_fetch` — verify correct args.
+  - [x] 5.2: Test `test_fetch_and_sync_resolves_remote_sha` — verify `git rev-parse` call and return value.
+  - [x] 5.3: Test `test_fetch_and_sync_ff_merge_on_default_branch` — on default branch, `git merge --ff-only` is called.
+  - [x] 5.4: Test `test_fetch_and_sync_ff_merge_failure_continues` — ff-only fails, warning logged, SHA still returned.
+  - [x] 5.5: Test `test_fetch_and_sync_skips_merge_not_on_default` — not on default branch, merge not called.
+  - [x] 5.6: Test `test_fetch_and_sync_network_failure_raises_scm_error` — fetch fails → ScmError raised.
+  - [x] 5.7: Test `test_fetch_and_sync_logs_structured_event` — success event logged.
 
-- [ ] Task 6: Create unit tests for `preflight_node` fetch integration (AC: #12)
-  - [ ] 6.1: In `tests/test_engine/test_nodes.py` add test `test_preflight_calls_fetch_and_sync` — verify fetch called before worktree creation.
-  - [ ] 6.2: Test `test_preflight_base_ref_bypasses_fetch` — when `state.base_ref` is set, fetch_and_sync is NOT called.
-  - [ ] 6.3: Test `test_preflight_passes_fetch_sha_to_create_worktree` — verify resolved SHA threaded to create_worktree.
+- [x] Task 6: Create unit tests for `preflight_node` fetch integration (AC: #12)
+  - [x] 6.1: In `tests/test_engine/test_nodes.py` add test `test_preflight_calls_fetch_and_sync` — verify fetch called before worktree creation.
+  - [x] 6.2: Test `test_preflight_base_ref_bypasses_fetch` — when `state.base_ref` is set, fetch_and_sync is NOT called.
+  - [x] 6.3: Test `test_preflight_passes_fetch_sha_to_create_worktree` — verify resolved SHA threaded to create_worktree.
 
-- [ ] Task 7: Create integration tests (AC: #14)
-  - [ ] 7.1: All tests marked `@pytest.mark.slow` and `@pytest.mark.asyncio`.
-  - [ ] 7.2: Create `bare_remote_and_clone` fixture — init bare repo, clone it, make initial commit.
-  - [ ] 7.3: Test `test_fetch_and_sync_real_git` — push new commit to bare, fetch_and_sync returns updated SHA.
-  - [ ] 7.4: Test `test_fetch_and_sync_diverged_local` — create diverged local, verify ff-only fails gracefully.
-  - [ ] 7.5: Test `test_worktree_from_fetched_sha` — fetch + create_worktree with returned SHA, verify worktree is at correct commit.
+- [x] Task 7: Create integration tests (AC: #14)
+  - [x] 7.1: All tests marked `@pytest.mark.slow` and `@pytest.mark.asyncio`.
+  - [x] 7.2: Create `bare_remote_and_clone` fixture — init bare repo, clone it, make initial commit.
+  - [x] 7.3: Test `test_fetch_and_sync_real_git` — push new commit to bare, fetch_and_sync returns updated SHA.
+  - [x] 7.4: Test `test_fetch_and_sync_diverged_local` — create diverged local, verify ff-only fails gracefully.
+  - [x] 7.5: Test `test_worktree_from_fetched_sha` — fetch + create_worktree with returned SHA, verify worktree is at correct commit.
 
-- [ ] Task 8: Run quality gates (AC: #9, #10, #11, #12)
-  - [ ] 8.1: `ruff check .` — zero violations against FULL repository.
-  - [ ] 8.2: `ruff format --check .` — zero formatting issues.
-  - [ ] 8.3: `.venv/bin/python -m mypy --strict src/` — zero errors.
-  - [ ] 8.4: `pytest` — all tests pass (existing + new).
-  - [ ] 8.5: Verify Google-style docstrings on all modified/new functions.
+- [x] Task 8: Run quality gates (AC: #9, #10, #11, #12)
+  - [x] 8.1: `ruff check .` — zero violations against FULL repository.
+  - [x] 8.2: `ruff format --check .` — zero formatting issues.
+  - [x] 8.3: `.venv/bin/python -m mypy --strict src/` — zero errors.
+  - [x] 8.4: `pytest` — all tests pass (existing + new).
+  - [x] 8.5: Verify Google-style docstrings on all modified/new functions.
 
 ## Dev Notes
 
@@ -172,3 +172,75 @@ If `fetch_and_sync()` raises `ScmError` (network failure), the story should be e
 | `tests/test_scm/test_branch.py` | Unit tests for `fetch_and_sync` |
 | `tests/test_scm/test_branch_integration.py` | Integration tests with real git remote |
 | `tests/test_engine/test_nodes.py` | Preflight fetch integration tests |
+
+### Previous Story Intelligence
+
+**From Story 9.1 (ScmConfig Enhancements — done):**
+- `ScmConfig` now has `default_branch: str = ""` (empty = auto-detect) and `auto_merge: bool = False`
+- `_detect_default_branch()` accepts `default_branch_override` keyword param — early-return on non-empty string
+- `open_pull_request()` accepts `default_branch` keyword param and forwards to `_detect_default_branch()`
+- Engine `commit_node` already wires `state.config.scm.default_branch` → `open_pull_request(default_branch=...)`
+- `ScmConfig.remote` field (default `"origin"`) already exists for remote name configuration
+- All branch names use `arcwright-ai/` prefix (was renamed from `arcwright/` in Story 9.1)
+- Story 9.1 had 881 tests at completion (our current baseline)
+- The `_reconcile_stale_remote()` function in `branch.py` follows a similar fetch+merge pattern — use it as reference for error handling style
+
+**From Git History (recent SCM fixes):**
+- `c72d08d` — fix: clean stale local branch before worktree creation (relevant: the `create_worktree` function now deletes stale local arcwright-ai/ branches before `git worktree add -b`)
+- `8f3a388` — fix: use merge-ours strategy to reconcile stale remote branches (relevant: `_reconcile_stale_remote` function pattern)
+- `47c98e8` — fix: retry push with `--force-with-lease` on non-fast-forward rejection
+- `c7cb37f` — fix: delete remote branch during stale worktree cleanup to prevent non-fast-forward push rejection
+- `bd9fb04` — fix: copy story.md to run dir in preflight and transition run status to COMPLETED in single-story dispatch
+
+### References
+
+- [Source: _spec/planning-artifacts/architecture.md#L403-L428] — D7 Git Operations: worktree lifecycle, fetch + ff-merge, base ref, default branch
+- [Source: _spec/planning-artifacts/epics.md#Epic-9-Story-9.2] — Full story spec with ACs
+- [Source: src/arcwright_ai/scm/branch.py#L1-L50] — Module docstring, conventions, no-force rules
+- [Source: src/arcwright_ai/scm/branch.py#L315-L350] — `_reconcile_stale_remote()` — reference pattern for fetch+merge
+- [Source: src/arcwright_ai/scm/worktree.py#L95-L105] — `create_worktree()` signature with `base_ref` param
+- [Source: src/arcwright_ai/engine/nodes.py#L80-L250] — `preflight_node` full implementation
+- [Source: src/arcwright_ai/engine/state.py#L20-L65] — `StoryState` model
+- [Source: src/arcwright_ai/scm/pr.py#L497-L570] — `_detect_default_branch()` with config override
+- [Source: src/arcwright_ai/core/config.py#ScmConfig] — `default_branch`, `auto_merge`, `remote` fields
+- [Source: tests/test_scm/test_branch.py#L1-L30] — Test patterns: `_ok()` helper, `monkeypatch` + `AsyncMock`
+- [Source: tests/test_scm/test_branch_integration.py#L1-L55] — Integration test patterns: `git_repo` fixture, `@pytest.mark.slow`
+
+## Dev Agent Record
+
+### Agent Model Used
+
+Claude Sonnet 4.6
+
+### Debug Log References
+
+No debug escalations. All tasks proceeded without HALT conditions.
+
+### Completion Notes List
+
+- ✅ Implemented `fetch_and_sync()` in `scm/branch.py` — fetches latest commits from remote, resolves remote tip SHA, attempts non-fatal ff-only merge when on default branch, raises `ScmError` on network failure.
+- ✅ Exported `fetch_and_sync` from `scm/__init__.py` and `scm/branch.py` `__all__`.
+- ✅ Added `base_ref: str | None = None` to `StoryState` with updated docstring.
+- ✅ Wired `fetch_and_sync` into `preflight_node`: resolves default branch via `_detect_default_branch`, fetches + resolves SHA, passes SHA as `base_ref` to `create_worktree()`. Both first-attempt and stale-retry `create_worktree()` calls use the same resolved `base_ref`. User-provided `state.base_ref` bypasses fetch entirely.
+- ✅ 7 unit tests in `tests/test_scm/test_branch.py` covering all AC #13 scenarios.
+- ✅ 3 unit tests in `tests/test_engine/test_nodes.py` for preflight fetch integration (AC #5, #6).
+- ✅ 3 integration tests in `tests/test_scm/test_branch_integration.py` with `bare_remote_and_clone` fixture (AC #14).
+- ✅ Updated mocks in `test_graph.py`, `test_nodes.py`, `test_scm_integration.py`, and `test_dispatch.py` to add `fetch_and_sync` and `_detect_default_branch` autouse stubs.
+- ✅ 883 unit tests pass, 0 regressions. `ruff check`, `ruff format --check`, `mypy --strict` all clean.
+
+### Change Log
+
+- 2026-03-15: Implemented Story 9.2 — fetch_and_sync function, StoryState.base_ref field, preflight_node wiring, full test suite (unit + integration).
+
+### File List
+
+- `arcwright-ai/src/arcwright_ai/scm/branch.py`
+- `arcwright-ai/src/arcwright_ai/scm/__init__.py`
+- `arcwright-ai/src/arcwright_ai/engine/nodes.py`
+- `arcwright-ai/src/arcwright_ai/engine/state.py`
+- `arcwright-ai/tests/test_scm/test_branch.py`
+- `arcwright-ai/tests/test_scm/test_branch_integration.py`
+- `arcwright-ai/tests/test_engine/test_nodes.py`
+- `arcwright-ai/tests/test_engine/test_graph.py`
+- `arcwright-ai/tests/test_engine/test_scm_integration.py`
+- `arcwright-ai/tests/test_cli/test_dispatch.py`

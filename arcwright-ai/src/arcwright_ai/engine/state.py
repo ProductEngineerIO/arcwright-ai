@@ -32,6 +32,11 @@ class StoryState(BaseModel):
         worktree_path: Absolute path to the git worktree for this story.
             Set by ``preflight_node`` after ``create_worktree`` succeeds.
             ``None`` means no SCM integration (backward-compatible default).
+        base_ref: Explicit git ref (commit SHA or branch) to use as the
+            worktree base.  When set (e.g. via ``--base-ref`` CLI flag),
+            ``preflight_node`` skips ``fetch_and_sync`` and passes this
+            value directly to ``create_worktree``.  ``None`` means resolve
+            the latest remote tip via ``fetch_and_sync``.
         status: Current lifecycle state (queued → ... → success/escalated).
         context_bundle: Assembled context from preflight (None until preflight runs).
         agent_output: Raw agent response text (None until agent runs).
@@ -50,6 +55,7 @@ class StoryState(BaseModel):
     story_path: Path
     project_root: Path
     worktree_path: Path | None = None
+    base_ref: str | None = None
     pr_url: str | None = None
     status: TaskState = TaskState.QUEUED
     context_bundle: ContextBundle | None = None
