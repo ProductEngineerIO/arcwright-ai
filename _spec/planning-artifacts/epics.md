@@ -5,13 +5,13 @@ inputDocuments:
   - '_spec/planning-artifacts/architecture.md'
 date: 2026-03-02
 author: Ed
-epicCount: 8
-storyCount: 38
-totalPoints: 186
+epicCount: 10
+storyCount: 39
+totalPoints: 189
 frCoverage: '36/36'
 nfrCoverage: '20/20'
-amendedDate: 2026-03-11
-amendedBy: Bob (SM)
+amendedDate: 2026-03-15
+amendedBy: Ed
 ---
 
 # Arcwright AI - Epic Breakdown
@@ -1300,3 +1300,40 @@ So that fetch → worktree → commit → push → PR → merge works as an unbr
 **Files touched:**
 - `tests/test_scm/test_scm_integration.py` — New integration test file covering all 6 scenarios
 - `tests/conftest.py` — Shared fixture for creating local bare remote + clone pair
+
+---
+
+## Epic 10: Ad-Hoc Improvements & Housekeeping
+
+**Added:** 2026-03-15 | **Stories:** 1+ (ad-hoc — stories added as needed) | **Points:** 3+
+
+**Purpose:** Collects small, cross-cutting improvements that don't warrant their own epic. These are housekeeping tasks, build infrastructure changes, and quality-of-life improvements identified during or after the main implementation sprints.
+
+**Scope:** Non-functional improvements to build, packaging, CI, developer experience, and project hygiene. Stories in this epic do NOT modify core application logic and carry minimal regression risk.
+
+---
+
+### Story 10.1: Dynamic Versioning with hatch-vcs
+
+**Priority**: MEDIUM | **Points**: 3
+**Requirements**: NFR19 (idempotency), Architecture Decision 1 (Starter Template / Hatchling backend)
+**Dependencies**: Story 1.1 (project scaffold)
+
+**Description:**
+As a maintainer of Arcwright AI,
+I want the package version to be derived automatically from git tags using hatch-vcs,
+So that version management requires zero manual edits, dev builds are uniquely identifiable, and releases are a simple `git tag` + push.
+
+**Acceptance Criteria:**
+
+**Given** `pyproject.toml` exists with a static `version = "0.1.0"` **When** the migration is applied **Then** the `version` key is removed from `[project]`, `"version"` is added to the `dynamic` list, and `[tool.hatch.version]` configures `hatch-vcs` as the version source
+**And** `[build-system].requires` includes both `"hatchling"` and `"hatch-vcs"`
+**And** `src/arcwright_ai/__init__.py` reads version dynamically via `importlib.metadata.version("arcwright-ai")` with a `PackageNotFoundError` fallback to `"0.0.0.dev0"`
+**And** `git tag -a v0.1.0` is created on the current HEAD as the initial version baseline
+**And** `pip install -e .` produces a package reporting version `0.1.0`
+**And** dev builds after the tag produce PEP 440 versions like `0.1.1.dev3`
+**And** `ruff check`, `mypy --strict`, and `pytest` all pass with zero issues
+
+**Files touched:**
+- `pyproject.toml` — Build system requires, dynamic version, hatch.version config
+- `src/arcwright_ai/__init__.py` — Dynamic version resolution via importlib.metadata

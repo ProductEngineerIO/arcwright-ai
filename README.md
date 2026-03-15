@@ -328,7 +328,7 @@ o.cleanup()
 
 ## Project Status
 
-Arcwright AI is in **active development**. MVP is complete — the sequential pipeline, V3+V6 validation, decision provenance, halt-and-notify, cost tracking, and resume are all implemented. Current work focuses on SCM enhancements and polish.
+Arcwright AI is in **active development** and [available on PyPI](https://pypi.org/project/arcwright-ai/). MVP is complete — the sequential pipeline, V3+V6 validation, decision provenance, halt-and-notify, cost tracking, resume, SCM integration with auto-merge, role-based model registry, and dynamic versioning are all implemented. Automated publishing via GitHub Actions triggers on version tags.
 
 ### Roadmap
 
@@ -425,7 +425,7 @@ Arcwright AI is open-source and welcomes contributions. Whether you're fixing bu
 ### Development Setup
 
 ```bash
-git clone https://github.com/KLPTechCo/arcwright-ai.git
+git clone https://github.com/ProductEngineerIO/arcwright-ai.git
 cd arcwright-ai
 pip install -e .
 ```
@@ -436,6 +436,39 @@ pip install -e .
 - **Validation patterns** — new validators, artifact-specific pipelines
 - **Workflow definitions** — encode your team's development methodology as an executable workflow
 - **Documentation** — guides, tutorials, API reference improvements
+
+### Versioning & Releases
+
+Arcwright AI uses [hatch-vcs](https://github.com/ofek/hatch-vcs) for automatic versioning from git tags. **No files need editing to cut a release.**
+
+**How versions are resolved:**
+
+| Repo state | Resolved version | Example |
+|------------|-----------------|---------|
+| Exactly on a tag | Tag version | `v0.2.0` → `0.2.0` |
+| N commits after a tag | Next-patch dev build | 3 commits after `v0.2.0` → `0.2.1.dev3` |
+| No tags at all | `0.0.0.dev<N>` | fallback for fresh clones without history |
+
+**Merging a PR to `main` does NOT create a new version tag.** Every commit on `main` after the last tag automatically gets a PEP 440 dev version (e.g., `0.2.1.dev5`). This is the expected state between releases.
+
+**To cut a release:**
+
+```bash
+# 1. Ensure main is clean and CI is green
+git checkout main && git pull
+
+# 2. Create an annotated tag (the ONLY step that matters)
+git tag -a v0.2.0 -m "v0.2.0 — brief description of what's in this release"
+
+# 3. Push the tag
+git push origin v0.2.0
+```
+
+That's it. The next `pip install` or wheel build will report `0.2.0`.
+
+**Version scheme:** `guess-next-dev` with `no-local-version` — produces clean PyPI-compatible versions with no `+gABCDEF` local identifiers.
+
+**Rollback:** If hatch-vcs causes issues, revert to a static `version = "X.Y.Z"` in `pyproject.toml` and a hardcoded `__version__` in `__init__.py`. No application code depends on the versioning mechanism.
 
 ### Community Workflow Definitions
 

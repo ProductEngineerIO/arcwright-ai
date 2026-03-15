@@ -3,10 +3,12 @@ stepsCompleted: [1, 2, 3, 4, 5, 6, 7, 8]
 lastStep: 8
 status: 'amended'
 completedAt: '2026-02-27'
-amendedAt: '2026-03-11'
+amendedAt: '2026-03-15'
 amendments:
   - date: '2026-03-11'
     description: 'Decision 9: Role-Based Model Registry — dual-model support for code generation vs. review with extensible role pattern'
+  - date: '2026-03-15'
+    description: 'Build & Distribution: Updated to hatch-vcs dynamic versioning from git tags (Epic 10, Story 10.1)'
 inputDocuments:
   - '_spec/planning-artifacts/prd.md'
   - '_spec/planning-artifacts/product-brief-arcwright-ai-2026-02-26.md'
@@ -165,7 +167,8 @@ pip install -e ".[dev]"
 - pre-commit hooks for CI consistency
 
 **Build & Distribution:**
-- `pyproject.toml` with `hatchling` or `setuptools` backend
+- `pyproject.toml` with `hatchling` backend + `hatch-vcs` for git tag-based dynamic versioning
+- Version derived from git tags (e.g., `v0.1.0` → `0.1.0`; dev builds → `0.1.1.dev3`)
 - PyPI: `pip install arcwright-ai`
 - Development: `pip install -e ".[dev]"`
 
