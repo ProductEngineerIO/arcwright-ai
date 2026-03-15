@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from arcwright_ai.agent.invoker import InvocationResult
-from arcwright_ai.core.config import ApiConfig, LimitsConfig, ModelRole, RunConfig
+from arcwright_ai.core.config import ApiConfig, LimitsConfig, ModelRole, RunConfig, ScmConfig
 from arcwright_ai.core.constants import (
     AGENT_OUTPUT_FILENAME,
     BRANCH_PREFIX,
@@ -99,6 +99,15 @@ def _mock_output_functions(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "arcwright_ai.engine.nodes._detect_default_branch",
         AsyncMock(return_value="main"),
+    )
+    # Story 9.3: merge_pull_request mock — defaults False (auto_merge=False in RunConfig)
+    monkeypatch.setattr(
+        "arcwright_ai.engine.nodes.merge_pull_request",
+        AsyncMock(return_value=False),
+    )
+    monkeypatch.setattr(
+        "arcwright_ai.engine.nodes.get_pull_request_merge_sha",
+        AsyncMock(return_value=None),
     )
 
 
@@ -2992,3 +3001,165 @@ async def test_preflight_passes_fetch_sha_to_create_worktree(
     _args, _kwargs = mock_create.call_args
     # base_ref is the second positional arg
     assert _args[1] == expected_sha
+
+
+# ---------------------------------------------------------------------------
+# Story 9.3 — commit_node auto-merge integration tests (AC: #16)
+# ---------------------------------------------------------------------------
+
+
+def _make_run_config_with_auto_merge() -> RunConfig:
+    """Build a RunConfig with auto_merge=True for Story 9.3 tests."""
+    config = make_run_config()
+    return config.model_copy(update={"scm": ScmConfig(auto_merge=True)})
+
+
+@pytest.mark.asyncio
+async def test_commit_node_calls_merge_when_auto_merge_enabled(
+    make_story_state: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """commit_node calls merge_pull_request when auto_merge=True and pr_url is set."""
+    worktree_path = Path("/project/.arcwright-ai/worktrees/2-1-state-models")
+    state = make_story_state.model_copy(
+        update={
+            "status": TaskState.SUCCESS,
+            "worktree_path": worktree_path,
+            "config": _make_run_config_with_auto_merge(),
+        }
+    )
+    expected_url = "https://github.com/owner/repo/pull/42"
+    monkeypatch.setattr("arcwright_ai.engine.nodes.push_branch", AsyncMock(return_value=True))
+    monkeypatch.setattr("arcwright_ai.engine.nodes.generate_pr_body", AsyncMock(return_value="body"))
+    monkeypatch.setattr("arcwright_ai.engine.nodes.open_pull_request", AsyncMock(return_value=expected_url))
+    mock_merge = AsyncMock(return_value=True)
+    monkeypatch.setattr("arcwright_ai.engine.nodes.merge_pull_request", mock_merge)
+
+    await commit_node(state)
+
+    mock_merge.assert_called_once()
+    call_args = mock_merge.call_args
+    assert call_args.args[0] == expected_url
+    assert call_args.kwargs["strategy"] == "squash"
+    assert call_args.kwargs["project_root"] == state.project_root
+
+
+@pytest.mark.asyncio
+async def test_commit_node_skips_merge_when_auto_merge_disabled(
+    make_story_state: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """commit_node does NOT call merge_pull_request when auto_merge=False."""
+    worktree_path = Path("/project/.arcwright-ai/worktrees/2-1-state-models")
+    state = make_story_state.model_copy(
+        update={
+            "status": TaskState.SUCCESS,
+            "worktree_path": worktree_path,
+            # default config has auto_merge=False
+        }
+    )
+    expected_url = "https://github.com/owner/repo/pull/42"
+    monkeypatch.setattr("arcwright_ai.engine.nodes.push_branch", AsyncMock(return_value=True))
+    monkeypatch.setattr("arcwright_ai.engine.nodes.generate_pr_body", AsyncMock(return_value="body"))
+    monkeypatch.setattr("arcwright_ai.engine.nodes.open_pull_request", AsyncMock(return_value=expected_url))
+    mock_merge = AsyncMock(return_value=True)
+    monkeypatch.setattr("arcwright_ai.engine.nodes.merge_pull_request", mock_merge)
+
+    await commit_node(state)
+
+    mock_merge.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_commit_node_skips_merge_when_pr_url_none(
+    make_story_state: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """commit_node does NOT call merge_pull_request when pr_url is None even if auto_merge=True."""
+    worktree_path = Path("/project/.arcwright-ai/worktrees/2-1-state-models")
+    state = make_story_state.model_copy(
+        update={
+            "status": TaskState.SUCCESS,
+            "worktree_path": worktree_path,
+            "config": _make_run_config_with_auto_merge(),
+        }
+    )
+    # push succeeds but PR creation returns None
+    monkeypatch.setattr("arcwright_ai.engine.nodes.push_branch", AsyncMock(return_value=True))
+    monkeypatch.setattr("arcwright_ai.engine.nodes.generate_pr_body", AsyncMock(return_value="body"))
+    monkeypatch.setattr("arcwright_ai.engine.nodes.open_pull_request", AsyncMock(return_value=None))
+    mock_merge = AsyncMock(return_value=True)
+    monkeypatch.setattr("arcwright_ai.engine.nodes.merge_pull_request", mock_merge)
+
+    await commit_node(state)
+
+    mock_merge.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_commit_node_records_merge_provenance(
+    make_story_state: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """commit_node calls append_entry with ProvenanceEntry containing 'Auto-merge' in decision."""
+    worktree_path = Path("/project/.arcwright-ai/worktrees/2-1-state-models")
+    state = make_story_state.model_copy(
+        update={
+            "status": TaskState.SUCCESS,
+            "worktree_path": worktree_path,
+            "config": _make_run_config_with_auto_merge(),
+        }
+    )
+    expected_url = "https://github.com/owner/repo/pull/42"
+    monkeypatch.setattr("arcwright_ai.engine.nodes.push_branch", AsyncMock(return_value=True))
+    monkeypatch.setattr("arcwright_ai.engine.nodes.generate_pr_body", AsyncMock(return_value="body"))
+    monkeypatch.setattr("arcwright_ai.engine.nodes.open_pull_request", AsyncMock(return_value=expected_url))
+    monkeypatch.setattr("arcwright_ai.engine.nodes.merge_pull_request", AsyncMock(return_value=True))
+    monkeypatch.setattr("arcwright_ai.engine.nodes.get_pull_request_merge_sha", AsyncMock(return_value="abc1234"))
+
+    mock_append = AsyncMock()
+    monkeypatch.setattr("arcwright_ai.engine.nodes.append_entry", mock_append)
+
+    await commit_node(state)
+
+    # At least one append_entry call should be for the merge provenance
+    merge_entries = [
+        call
+        for call in mock_append.call_args_list
+        if "Auto-merge" in (call.args[1].decision if len(call.args) > 1 else "")
+    ]
+    assert merge_entries, "Expected ProvenanceEntry with 'Auto-merge' in decision"
+    entry = merge_entries[0].args[1]
+    assert "FR39" in entry.ac_references
+    assert "D7" in entry.ac_references
+    assert "merge_attempted_at=" in entry.rationale
+    assert "status=success" in entry.rationale
+    assert "strategy=squash" in entry.rationale
+    assert "merge_sha=abc1234" in entry.rationale
+
+
+@pytest.mark.asyncio
+async def test_commit_node_status_success_on_merge_failure(
+    make_story_state: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """commit_node status remains SUCCESS when merge_pull_request returns False (non-fatal)."""
+    worktree_path = Path("/project/.arcwright-ai/worktrees/2-1-state-models")
+    state = make_story_state.model_copy(
+        update={
+            "status": TaskState.SUCCESS,
+            "worktree_path": worktree_path,
+            "config": _make_run_config_with_auto_merge(),
+        }
+    )
+    expected_url = "https://github.com/owner/repo/pull/42"
+    monkeypatch.setattr("arcwright_ai.engine.nodes.push_branch", AsyncMock(return_value=True))
+    monkeypatch.setattr("arcwright_ai.engine.nodes.generate_pr_body", AsyncMock(return_value="body"))
+    monkeypatch.setattr("arcwright_ai.engine.nodes.open_pull_request", AsyncMock(return_value=expected_url))
+    # merge fails
+    monkeypatch.setattr("arcwright_ai.engine.nodes.merge_pull_request", AsyncMock(return_value=False))
+
+    result = await commit_node(state)
+
+    assert result.status == TaskState.SUCCESS
+    assert result.pr_url == expected_url

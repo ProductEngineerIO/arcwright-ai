@@ -201,14 +201,14 @@ pip install arcwright-ai
 2. **Configure** your API key:
 
    ```bash
-   export ARCWRIGHT_AI_API_KEY="sk-..."
+   export ARCWRIGHT_API_CLAUDE_API_KEY="sk-ant-..."
    ```
 
    Or add it to `~/.arcwright-ai/config.yaml`:
 
    ```yaml
    api:
-     claude_api_key: "sk-..."
+     claude_api_key: "sk-ant-..."
    ```
 
 3. **Validate** your setup:
@@ -308,7 +308,7 @@ reproducibility:
 
 | Variable | Purpose |
 |----------|---------|
-| `ARCWRIGHT_AI_API_KEY` | Claude API key (avoids committing keys to config) |
+| `ARCWRIGHT_API_CLAUDE_API_KEY` | Claude API key (avoids committing keys to config) |
 | `ARCWRIGHT_AI_MODEL_VERSION` | Override model version |
 
 ## Python API
@@ -328,7 +328,7 @@ o.cleanup()
 
 ## Project Status
 
-Arcwright AI is in **active early development** (pre-MVP). The project is currently in the planning phase — product brief and PRD are complete. Architecture, epics, and story breakdown are next.
+Arcwright AI is in **active development**. MVP is complete — the sequential pipeline, V3+V6 validation, decision provenance, halt-and-notify, cost tracking, and resume are all implemented. Current work focuses on SCM enhancements and polish.
 
 ### Roadmap
 
@@ -340,7 +340,7 @@ Arcwright AI is in **active early development** (pre-MVP). The project is curren
 
 ## BMAD Workflow Customizations
 
-This project ships with customizations to the default BMAD dev-story workflow. These changes live in `_bmad/mmm/workflows/4-implementation/dev-story/` and are tracked by force-adding them to git (the `_bmad/` directory is otherwise gitignored, matching the standard BMAD installation model).
+This project ships with customizations to the default BMAD dev-story workflow. These changes live in `_bmad/bmm/workflows/4-implementation/dev-story/` and are tracked by force-adding them to git (the `_bmad/` directory is otherwise gitignored, matching the standard BMAD installation model).
 
 ### Why `_bmad/` is gitignored
 
@@ -425,8 +425,8 @@ Arcwright AI is open-source and welcomes contributions. Whether you're fixing bu
 ### Development Setup
 
 ```bash
-git clone https://github.com/KLPTechCo/bmad-graph-swarm.git
-cd bmad-graph-swarm
+git clone https://github.com/KLPTechCo/arcwright-ai.git
+cd arcwright-ai
 pip install -e .
 ```
 

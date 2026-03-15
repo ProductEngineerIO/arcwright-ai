@@ -10,7 +10,13 @@ import pytest
 
 from arcwright_ai.core.constants import STORY_COPY_FILENAME, VALIDATION_FILENAME
 from arcwright_ai.core.exceptions import ScmError
-from arcwright_ai.scm.pr import _detect_default_branch, generate_pr_body, open_pull_request
+from arcwright_ai.scm.pr import (
+    _detect_default_branch,
+    generate_pr_body,
+    get_pull_request_merge_sha,
+    merge_pull_request,
+    open_pull_request,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -879,3 +885,312 @@ async def test_open_pull_request_passes_default_branch(
     assert result == pr_url
     # The --base argument should be "develop" (from the config override)
     assert captured_base == ["develop"]
+
+
+# ---------------------------------------------------------------------------
+# Story 9.3 — merge_pull_request unit tests (AC: #15)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_merge_pull_request_calls_gh_merge_squash(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """merge_pull_request calls gh pr merge <number> --squash --delete-branch."""
+    monkeypatch.setattr("arcwright_ai.scm.pr.shutil.which", lambda _: "/usr/local/bin/gh")
+
+    captured_args: list[tuple[str, ...]] = []
+    mock_proc = MagicMock()
+    mock_proc.returncode = 0
+    mock_proc.communicate = AsyncMock(return_value=(b"Squashed and merged pull request #42", b""))
+
+    async def _mock_exec(*args: str, **kwargs: object) -> MagicMock:
+        captured_args.append(args)
+        return mock_proc
+
+    with patch("arcwright_ai.scm.pr.asyncio.create_subprocess_exec", _mock_exec):
+        await merge_pull_request(
+            "https://github.com/owner/repo/pull/42",
+            project_root=tmp_path,
+        )
+
+    assert len(captured_args) == 1
+    args = captured_args[0]
+    assert args[0] == "gh"
+    assert args[1] == "pr"
+    assert args[2] == "merge"
+    assert args[3] == "42"
+    assert "--squash" in args
+    assert "--delete-branch" in args
+
+
+@pytest.mark.asyncio
+async def test_merge_pull_request_returns_true_on_success(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """merge_pull_request returns True when gh exits with returncode 0."""
+    monkeypatch.setattr("arcwright_ai.scm.pr.shutil.which", lambda _: "/usr/local/bin/gh")
+
+    mock_proc = MagicMock()
+    mock_proc.returncode = 0
+    mock_proc.communicate = AsyncMock(return_value=(b"Merged", b""))
+
+    with patch("arcwright_ai.scm.pr.asyncio.create_subprocess_exec", AsyncMock(return_value=mock_proc)):
+        result = await merge_pull_request(
+            "https://github.com/owner/repo/pull/42",
+            project_root=tmp_path,
+        )
+
+    assert result is True
+
+
+@pytest.mark.asyncio
+async def test_merge_pull_request_returns_false_on_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """merge_pull_request returns False on non-zero returncode without raising."""
+    monkeypatch.setattr("arcwright_ai.scm.pr.shutil.which", lambda _: "/usr/local/bin/gh")
+
+    mock_proc = MagicMock()
+    mock_proc.returncode = 1
+    mock_proc.communicate = AsyncMock(return_value=(b"", b"merge conflict"))
+
+    with patch("arcwright_ai.scm.pr.asyncio.create_subprocess_exec", AsyncMock(return_value=mock_proc)):
+        result = await merge_pull_request(
+            "https://github.com/owner/repo/pull/42",
+            project_root=tmp_path,
+        )
+
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_merge_pull_request_extracts_pr_number_from_url(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """merge_pull_request correctly parses PR number from a full GitHub URL."""
+    monkeypatch.setattr("arcwright_ai.scm.pr.shutil.which", lambda _: "/usr/local/bin/gh")
+
+    captured_args: list[tuple[str, ...]] = []
+    mock_proc = MagicMock()
+    mock_proc.returncode = 0
+    mock_proc.communicate = AsyncMock(return_value=(b"Merged", b""))
+
+    async def _mock_exec(*args: str, **kwargs: object) -> MagicMock:
+        captured_args.append(args)
+        return mock_proc
+
+    with patch("arcwright_ai.scm.pr.asyncio.create_subprocess_exec", _mock_exec):
+        await merge_pull_request(
+            "https://github.com/owner/repo/pull/42",
+            project_root=tmp_path,
+        )
+
+    assert captured_args[0][3] == "42"
+
+
+@pytest.mark.asyncio
+async def test_merge_pull_request_returns_false_gh_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """merge_pull_request returns False immediately when gh CLI is not on PATH."""
+    monkeypatch.setattr("arcwright_ai.scm.pr.shutil.which", lambda _: None)
+
+    result = await merge_pull_request(
+        "https://github.com/owner/repo/pull/42",
+        project_root=tmp_path,
+    )
+
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_merge_pull_request_passes_merge_strategy(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """merge_pull_request passes --merge flag when strategy='merge'."""
+    monkeypatch.setattr("arcwright_ai.scm.pr.shutil.which", lambda _: "/usr/local/bin/gh")
+
+    captured_args: list[tuple[str, ...]] = []
+    mock_proc = MagicMock()
+    mock_proc.returncode = 0
+    mock_proc.communicate = AsyncMock(return_value=(b"Merged", b""))
+
+    async def _mock_exec(*args: str, **kwargs: object) -> MagicMock:
+        captured_args.append(args)
+        return mock_proc
+
+    with patch("arcwright_ai.scm.pr.asyncio.create_subprocess_exec", _mock_exec):
+        await merge_pull_request(
+            "https://github.com/owner/repo/pull/42",
+            "merge",
+            project_root=tmp_path,
+        )
+
+    assert "--merge" in captured_args[0]
+    assert "--squash" not in captured_args[0]
+
+
+@pytest.mark.asyncio
+async def test_merge_pull_request_passes_rebase_strategy(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """merge_pull_request passes --rebase flag when strategy='rebase'."""
+    monkeypatch.setattr("arcwright_ai.scm.pr.shutil.which", lambda _: "/usr/local/bin/gh")
+
+    captured_args: list[tuple[str, ...]] = []
+    mock_proc = MagicMock()
+    mock_proc.returncode = 0
+    mock_proc.communicate = AsyncMock(return_value=(b"Rebased", b""))
+
+    async def _mock_exec(*args: str, **kwargs: object) -> MagicMock:
+        captured_args.append(args)
+        return mock_proc
+
+    with patch("arcwright_ai.scm.pr.asyncio.create_subprocess_exec", _mock_exec):
+        await merge_pull_request(
+            "https://github.com/owner/repo/pull/42",
+            "rebase",
+            project_root=tmp_path,
+        )
+
+    assert "--rebase" in captured_args[0]
+    assert "--squash" not in captured_args[0]
+
+
+@pytest.mark.asyncio
+async def test_merge_pull_request_logs_success_event(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    """merge_pull_request logs scm.pr.merge info event with metadata on success."""
+    monkeypatch.setattr("arcwright_ai.scm.pr.shutil.which", lambda _: "/usr/local/bin/gh")
+
+    mock_proc = MagicMock()
+    mock_proc.returncode = 0
+    mock_proc.communicate = AsyncMock(return_value=(b"abc1234 Squashed and merged", b""))
+
+    with (
+        patch("arcwright_ai.scm.pr.asyncio.create_subprocess_exec", AsyncMock(return_value=mock_proc)),
+        caplog.at_level(logging.INFO, logger="arcwright_ai.scm.pr"),
+    ):
+        await merge_pull_request(
+            "https://github.com/owner/repo/pull/42",
+            project_root=tmp_path,
+        )
+
+    merge_records = [r for r in caplog.records if r.message == "scm.pr.merge"]
+    assert merge_records, "Expected scm.pr.merge info event"
+    data = getattr(merge_records[0], "data", {})
+    assert data.get("pr_number") == "42"
+    assert data.get("strategy") == "squash"
+    assert data.get("merge_sha") != ""
+
+
+@pytest.mark.asyncio
+async def test_merge_pull_request_logs_failure_warning(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    """merge_pull_request logs scm.pr.merge.failed warning on non-zero returncode."""
+    monkeypatch.setattr("arcwright_ai.scm.pr.shutil.which", lambda _: "/usr/local/bin/gh")
+
+    mock_proc = MagicMock()
+    mock_proc.returncode = 1
+    mock_proc.communicate = AsyncMock(return_value=(b"", b"required review"))
+
+    with (
+        patch("arcwright_ai.scm.pr.asyncio.create_subprocess_exec", AsyncMock(return_value=mock_proc)),
+        caplog.at_level(logging.WARNING, logger="arcwright_ai.scm.pr"),
+    ):
+        await merge_pull_request(
+            "https://github.com/owner/repo/pull/42",
+            project_root=tmp_path,
+        )
+
+    fail_records = [r for r in caplog.records if r.message == "scm.pr.merge.failed"]
+    assert fail_records, "Expected scm.pr.merge.failed warning"
+    data = getattr(fail_records[0], "data", {})
+    assert data.get("returncode") == 1
+
+
+@pytest.mark.asyncio
+async def test_merge_pull_request_returns_false_on_invalid_url(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """merge_pull_request returns False when PR URL has no /pull/<number>."""
+    monkeypatch.setattr("arcwright_ai.scm.pr.shutil.which", lambda _: "/usr/local/bin/gh")
+
+    result = await merge_pull_request(
+        "https://github.com/owner/repo/issues/42",
+        project_root=tmp_path,
+    )
+
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_merge_pull_request_returns_false_on_subprocess_exception(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """merge_pull_request returns False when subprocess raises an exception."""
+    monkeypatch.setattr("arcwright_ai.scm.pr.shutil.which", lambda _: "/usr/local/bin/gh")
+
+    async def _raise(*args: object, **kwargs: object) -> None:
+        raise OSError("file not found")
+
+    with patch("arcwright_ai.scm.pr.asyncio.create_subprocess_exec", _raise):
+        result = await merge_pull_request(
+            "https://github.com/owner/repo/pull/42",
+            project_root=tmp_path,
+        )
+
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_get_pull_request_merge_sha_returns_sha_on_success(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """get_pull_request_merge_sha returns merge commit SHA from gh pr view."""
+    monkeypatch.setattr("arcwright_ai.scm.pr.shutil.which", lambda _: "/usr/local/bin/gh")
+
+    mock_proc = MagicMock()
+    mock_proc.returncode = 0
+    mock_proc.communicate = AsyncMock(return_value=(b"abc1234def5678", b""))
+
+    with patch("arcwright_ai.scm.pr.asyncio.create_subprocess_exec", AsyncMock(return_value=mock_proc)):
+        result = await get_pull_request_merge_sha(
+            "https://github.com/owner/repo/pull/42",
+            project_root=tmp_path,
+        )
+
+    assert result == "abc1234def5678"
+
+
+@pytest.mark.asyncio
+async def test_get_pull_request_merge_sha_returns_none_on_invalid_url(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """get_pull_request_merge_sha returns None for non-PR URLs."""
+    monkeypatch.setattr("arcwright_ai.scm.pr.shutil.which", lambda _: "/usr/local/bin/gh")
+
+    result = await get_pull_request_merge_sha(
+        "https://github.com/owner/repo/issues/42",
+        project_root=tmp_path,
+    )
+
+    assert result is None
