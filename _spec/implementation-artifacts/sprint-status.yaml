@@ -117,4 +117,4 @@ development_status:
   9-2-fetch-and-sync-default-branch-before-worktree-creation: done
   9-3-auto-merge-pr-after-creation: done
   9-4-end-to-end-scm-enhancement-integration-tests: done
-  epic-9-retrospective: optional
+  epic-9-retrospective: done

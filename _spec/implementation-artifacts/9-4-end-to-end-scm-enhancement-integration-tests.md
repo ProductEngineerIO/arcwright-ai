@@ -367,6 +367,7 @@ Changes Requested
 - 2026-03-15: AI code review completed — 4 findings logged (2 HIGH, 2 MEDIUM), follow-up tasks added, story moved to `in-progress` pending follow-up completion.
 - 2026-03-15: AI review follow-ups addressed — strengthened AC #5/#6 assertions, tightened merge-conflict checks, expanded File List traceability, and moved story to `review`.
 - 2026-03-15: Full validation rerun passed (`pytest -q`, `ruff check .`, `mypy --strict src/`); story accepted and moved to `done`.
+- 2026-03-15: Epic 9 retrospective completed — see `_spec/implementation-artifacts/epic-9-retro-2026-03-15.md`.
 
 ### File List
 
