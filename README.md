@@ -197,7 +197,7 @@ pip install arcwright-ai
 To version-control the dependency, add a `requirements.txt` to your project:
 
 ```text
-arcwright-ai>=0.2.3
+arcwright-ai>=0.2.4
 ```
 
 Then anyone cloning the project can reproduce the environment:

@@ -155,7 +155,7 @@ When Arcwright AI halts an epic after exhausting retry budget, the user's experi
 **Evaluation:** Before committing, the developer assesses fit. Their job at this stage is distinct: *"Help me see if this thing works on a small, low-risk scope before I trust it with real work."* They install Arcwright AI, point it at a small existing project or a test scope, and run in **observe mode** to watch the system work without committing to autonomous execution. The evaluation gate: does the system produce valid, observable, explainable output?
 
 **Onboarding (10-20 minutes):**
-1. `pip install arcwright-ai-ai`
+1. `pip install arcwright-ai`
 2. Configure `.arcwright-ai/config.yaml` with SDK keys and methodology path
 3. Point at existing planning artifacts (e.g., BMAD `_spec/` directory)
 4. Run `arcwright-ai validate-setup` to confirm dependencies and configuration

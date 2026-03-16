@@ -29,7 +29,7 @@ Arcwright AI is the third and final piece of the agentic coding stack — a dete
 
 Arcwright AI is a LangGraph-based orchestration engine. Developers design collaboratively during the day (brainstorming, PRDs, architecture, story planning) and dispatch autonomous overnight runs that execute, validate, and produce decision-auditable output by morning. The developer controls scope down to individual story granularity — `arcwright-ai dispatch --epic EPIC-45` or `arcwright-ai dispatch --story STORY-123`. The system earns trust through transparency, not by demanding it upfront.
 
-The platform ships as a Python CLI (`pip install arcwright-ai-ai`) with four internal subsystems behind one entry point: an orchestration engine (LangGraph StateGraph for workflow DAG execution), a validation framework (six artifact-specific validation patterns with retry budgets), a process runtime (Claude Code SDK for stateless agent invocation), and SCM integration (git worktree isolation for parallel agent execution). BMAD is the reference methodology implementation, but the orchestration engine is methodology-agnostic — any development process can be encoded as an executable workflow definition. The long-term vision is an open-source community where every methodology trapped in someone's head or wiki becomes an executable workflow.
+The platform ships as a Python CLI (`pip install arcwright-ai`) with four internal subsystems behind one entry point: an orchestration engine (LangGraph StateGraph for workflow DAG execution), a validation framework (six artifact-specific validation patterns with retry budgets), a process runtime (Claude Code SDK for stateless agent invocation), and SCM integration (git worktree isolation for parallel agent execution). BMAD is the reference methodology implementation, but the orchestration engine is methodology-agnostic — any development process can be encoded as an executable workflow definition. The long-term vision is an open-source community where every methodology trapped in someone's head or wiki becomes an executable workflow.
 
 **Why now:** Claude Code SDK and LangGraph now provide the programmatic foundation that didn't exist 12 months ago. Each piece of the agentic coding stack was blocked until the previous piece existed — agents came first, then BMAD for context, and now the SDK and graph runtime make autonomous orchestration viable for the first time.
 
@@ -238,7 +238,7 @@ He didn't lose the 4 completed stories. He didn't re-run anything that already p
 Marcus has heard about Arcwright AI. He's intrigued but skeptical — he's been burned by autonomous tools that produce garbage and call it done. He installs:
 
 ```bash
-pip install arcwright-ai-ai
+pip install arcwright-ai
 ```
 
 He configures `.arcwright-ai/config.yaml` with his Claude API key and points it at his existing BMAD `_spec/` directory. He runs `arcwright-ai validate-setup`:
@@ -560,7 +560,7 @@ reproducibility:
 
 ### Shell Completion
 
-Ships with completion scripts for **bash**, **zsh**, and **fish**. Installed automatically via `pip install arcwright-ai-ai` using standard Python packaging hooks (e.g., `argcomplete` or Click's built-in completion). Completes commands, flags, and dynamic values (epic IDs, run IDs) where feasible.
+Ships with completion scripts for **bash**, **zsh**, and **fish**. Installed automatically via `pip install arcwright-ai` using standard Python packaging hooks (e.g., `argcomplete` or Click's built-in completion). Completes commands, flags, and dynamic values (epic IDs, run IDs) where feasible.
 
 ### Python API Surface
 
@@ -587,9 +587,9 @@ o.cleanup()
 
 | Method | Command | Scope |
 |--------|---------|-------|
-| PyPI | `pip install arcwright-ai-ai` | MVP |
+| PyPI | `pip install arcwright-ai` | MVP |
 | Development | `pip install -e .` | MVP |
-| pipx (isolated) | `pipx install arcwright-ai-ai` | MVP (supported, not primary) |
+| pipx (isolated) | `pipx install arcwright-ai` | MVP (supported, not primary) |
 
 **Python version:** 3.11+ (LangGraph requirement)
 
