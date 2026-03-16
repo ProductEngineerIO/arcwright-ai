@@ -36,6 +36,16 @@ _BACKOFF_MAX_RETRIES: int = 7
 _RATE_LIMIT_RE: re.Pattern[str] = re.compile(r"rate.?limit|429|too many requests", re.IGNORECASE)
 _FILE_WRITE_TOOLS: frozenset[str] = frozenset({"CreateFile", "Edit", "MultiEdit", "Write"})
 
+_SCM_GUARDRAIL_PROMPT: str = (
+    "CRITICAL: Do NOT run any git or version control commands. "
+    "Specifically, do NOT run: git commit, git push, git checkout, git branch, "
+    "git merge, git rebase, git reset, git stash, git tag, or any command that "
+    "modifies the git repository state. All version control operations "
+    "(commit, push, branch, PR creation) are managed by the Arcwright AI pipeline. "
+    "You must only create, modify, or delete files. The pipeline will handle "
+    "all git operations after you complete your work."
+)
+
 # Flag prevents double-patching across multiple invoke_agent calls.
 _SDK_PARSER_PATCHED: bool = False
 
@@ -508,6 +518,7 @@ async def invoke_agent(
         cwd=str(cwd),
         permission_mode="bypassPermissions",
         max_turns=max_turns,
+        system_prompt=_SCM_GUARDRAIL_PROMPT,
         can_use_tool=_make_tool_validator(sandbox, cwd),
     )
 

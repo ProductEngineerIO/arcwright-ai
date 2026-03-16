@@ -1308,7 +1308,7 @@ So that fetch → worktree → commit → push → PR → merge works as an unbr
 
 ## Epic 10: Ad-Hoc Improvements & Housekeeping
 
-**Added:** 2026-03-15 | **Stories:** 3 (ad-hoc — stories added as needed) | **Points:** 12+
+**Added:** 2026-03-15 | **Stories:** 4 (ad-hoc — stories added as needed) | **Points:** 17+
 
 **Purpose:** Collects small, cross-cutting improvements that don't warrant their own epic. These are housekeeping tasks, build infrastructure changes, and quality-of-life improvements identified during or after the main implementation sprints.
 
@@ -1392,6 +1392,35 @@ So that the application is not exposed to CVE-2026-28277 (unsafe msgpack deseria
 - `uv.lock` — Lockfile regeneration
 - `src/arcwright_ai/engine/` — Graph construction, node implementations (migration to 1.x API)
 - `tests/` — Test fixture and mock updates for 1.x API surface
+
+---
+
+### Story 10.4: Agent SCM Guardrails & Commit-Node Resilience
+
+**Priority**: HIGH | **Points**: 5
+**Requirements**: Architecture (commit node pipeline), NFR (reliable SCM pipeline)
+**Dependencies**: Story 2.5 (agent invoker), Story 2.7 (commit node)
+
+**Description:**
+As a user running Arcwright AI story execution,
+I want the pipeline to always push a branch and create a PR when the agent produces code changes,
+So that successful validation runs are not silently left unpushed due to the agent committing changes itself during dispatch.
+
+**Bug:** The agent (Claude) runs with `permission_mode="bypassPermissions"` and no system prompt. It can — and does — run `git commit` itself during the dispatch phase. The pipeline's `commit_node` then finds `git status --porcelain` empty, raises `BranchError("no_changes")`, and the entire push → PR → auto-merge chain is silently skipped.
+
+**Acceptance Criteria:**
+
+**Given** the agent is invoked via `claude_code_sdk.query()` in `invoker.py` **When** `ClaudeCodeOptions` is constructed **Then** a `system_prompt` is set prohibiting the agent from running `git commit`, `git push`, `git checkout`, `git branch`, or any SCM-mutating commands, stating that all SCM operations are managed by the pipeline
+**Given** the agent has already committed changes during dispatch (worktree is clean, but HEAD has advanced past the branch creation point) **When** `commit_story()` runs **Then** it detects the agent-created commits by comparing HEAD against the base ref, logs at INFO level, and returns the latest commit hash without raising `BranchError`
+**Given** the agent committed some changes but also left additional uncommitted changes **When** `commit_story()` runs **Then** it stages and commits the remaining changes on top, returning the new commit hash
+**Given** the worktree is truly empty (no agent commits, no uncommitted changes) **When** `commit_story()` runs **Then** it raises `BranchError` as before
+**And** `ruff check`, `mypy --strict`, and `pytest` all pass with zero regressions
+
+**Files touched:**
+- `src/arcwright_ai/agent/invoker.py` — System prompt with SCM guardrails
+- `src/arcwright_ai/scm/branch.py` — `commit_story()` resilience for agent-created commits
+- `src/arcwright_ai/engine/nodes.py` — Pass base ref to `commit_story()`
+- `tests/` — New tests for all commit scenarios
 
 ---
 

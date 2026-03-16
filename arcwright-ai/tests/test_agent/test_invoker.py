@@ -510,3 +510,71 @@ async def test_suppress_bg_cancel_scope_errors_installs_handler(
     finally:
         loop.set_exception_handler(original_handler)
         monkeypatch.setattr(_invoker_mod, "_BG_HANDLER_INSTALLED", False)
+
+
+# ---------------------------------------------------------------------------
+# Tests: SCM guardrail system prompt (Story 10.4 — Task 1.3 / AC: #1)
+# ---------------------------------------------------------------------------
+
+
+async def test_invoke_agent_sets_system_prompt_on_options(
+    mock_sdk: MockSDKClient,
+    project_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ClaudeCodeOptions receives a system_prompt field that is not None or empty."""
+    import claude_code_sdk
+
+    captured: list[Any] = []
+    original_cls = claude_code_sdk.ClaudeCodeOptions
+
+    def capturing_cls(*args: Any, **kwargs: Any) -> Any:
+        opts = original_cls(*args, **kwargs)
+        captured.append(opts)
+        return opts
+
+    monkeypatch.setattr(claude_code_sdk, "ClaudeCodeOptions", capturing_cls)
+    monkeypatch.setattr(claude_code_sdk, "query", mock_sdk.query)
+
+    await invoke_agent(
+        prompt="Implement the story.",
+        model="claude-test",
+        cwd=project_root,
+        sandbox=validate_path,
+    )
+
+    assert len(captured) >= 1
+    opts = captured[0]
+    assert opts.system_prompt is not None
+    assert len(opts.system_prompt) > 0
+
+
+async def test_invoke_agent_system_prompt_prohibits_scm_commands(
+    mock_sdk: MockSDKClient,
+    project_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """system_prompt contains explicit prohibition for each SCM-mutating command."""
+    import claude_code_sdk
+
+    captured: list[Any] = []
+    original_cls = claude_code_sdk.ClaudeCodeOptions
+
+    def capturing_cls(*args: Any, **kwargs: Any) -> Any:
+        opts = original_cls(*args, **kwargs)
+        captured.append(opts)
+        return opts
+
+    monkeypatch.setattr(claude_code_sdk, "ClaudeCodeOptions", capturing_cls)
+    monkeypatch.setattr(claude_code_sdk, "query", mock_sdk.query)
+
+    await invoke_agent(
+        prompt="Implement the story.",
+        model="claude-test",
+        cwd=project_root,
+        sandbox=validate_path,
+    )
+
+    system_prompt = captured[0].system_prompt
+    for keyword in ("git commit", "git push", "git checkout", "git branch", "git merge"):
+        assert keyword in system_prompt, f"system_prompt missing SCM prohibition for: {keyword!r}"

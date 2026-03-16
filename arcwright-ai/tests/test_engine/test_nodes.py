@@ -47,6 +47,7 @@ from arcwright_ai.engine.nodes import (
     validate_node,
 )
 from arcwright_ai.engine.state import StoryState
+from arcwright_ai.scm.git import GitResult
 from arcwright_ai.validation.pipeline import PipelineOutcome, PipelineResult
 from arcwright_ai.validation.v3_reflexion import (
     ACResult,
@@ -1822,14 +1823,18 @@ async def test_commit_node_commits_and_removes_worktree(
     make_story_state: StoryState,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """commit_node calls commit_story and remove_worktree with correct args when worktree_path set."""
+    """commit_node resolves base_ref and calls commit_story/remove_worktree when worktree_path is set."""
     worktree_path = Path("/project/.arcwright-ai/worktrees/2-1-state-models")
     state = make_story_state.model_copy(update={"status": TaskState.SUCCESS, "worktree_path": worktree_path})
 
     mock_commit = AsyncMock(return_value="deadbeef")
     mock_remove = AsyncMock()
+    mock_detect_default_branch = AsyncMock(return_value="main")
+    mock_git = AsyncMock(return_value=GitResult(stdout="base123\n", stderr="", returncode=0))
     monkeypatch.setattr("arcwright_ai.engine.nodes.commit_story", mock_commit)
     monkeypatch.setattr("arcwright_ai.engine.nodes.remove_worktree", mock_remove)
+    monkeypatch.setattr("arcwright_ai.engine.nodes._detect_default_branch", mock_detect_default_branch)
+    monkeypatch.setattr("arcwright_ai.engine.nodes.git", mock_git)
 
     result = await commit_node(state)
 
@@ -1838,6 +1843,13 @@ async def test_commit_node_commits_and_removes_worktree(
     call_kwargs = mock_commit.call_args[1]
     assert call_kwargs["story_slug"] == str(state.story_id)
     assert call_kwargs["worktree_path"] == worktree_path
+    assert call_kwargs["base_ref"] == "base123"
+    mock_detect_default_branch.assert_called_once_with(
+        state.project_root,
+        str(state.story_id),
+        default_branch_override=state.config.scm.default_branch,
+    )
+    mock_git.assert_any_call("merge-base", "HEAD", "main", cwd=worktree_path)
 
     mock_remove.assert_called_once_with(str(state.story_id), project_root=state.project_root)
 

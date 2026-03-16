@@ -120,10 +120,11 @@ development_status:
   epic-9-retrospective: done
 
   # Epic 10: Ad-Hoc Improvements & Housekeeping
-  epic-10: done
+  epic-10: in-progress
   10-1-dynamic-versioning-with-hatch-vcs: done
   10-2-pyjwt-crit-header-vulnerability-remediation: done
   10-3-langgraph-major-upgrade-deserialization-vulnerability-remediation: done
+  10-4-agent-scm-guardrails-and-commit-node-resilience: done
 
   # Epic 11: BMAD 6.1 Framework Upgrade (3 stories, 13 pts)
   epic-11: done

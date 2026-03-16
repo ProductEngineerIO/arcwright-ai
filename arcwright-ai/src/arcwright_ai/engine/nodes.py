@@ -34,6 +34,7 @@ from arcwright_ai.output.provenance import append_entry, render_validation_row
 from arcwright_ai.output.run_manager import update_run_status, update_story_status
 from arcwright_ai.output.summary import write_halt_report, write_success_summary
 from arcwright_ai.scm.branch import commit_story, delete_remote_branch, fetch_and_sync, push_branch
+from arcwright_ai.scm.git import git
 from arcwright_ai.scm.pr import (
     _detect_default_branch,
     generate_pr_body,
@@ -1392,12 +1393,34 @@ async def commit_node(state: StoryState) -> StoryState:
         # Commit story changes in worktree (best-effort, non-fatal)
         commit_hash: str | None = None
         try:
+            # Resolve branch-creation base ref for agent-commit detection (Story 10.4).
+            # git merge-base HEAD <default_branch> returns the point where the worktree
+            # branch was cut from the default branch.  If HEAD has advanced past that
+            # point the agent already committed; commit_story() detects this and returns
+            # the agent's commit hash without making an additional commit.
+            resolved_base_ref: str | None = None
+            try:
+                default_branch = await _detect_default_branch(
+                    project_root,
+                    story_slug,
+                    default_branch_override=state.config.scm.default_branch,
+                )
+                base_result = await git("merge-base", "HEAD", default_branch, cwd=state.worktree_path)
+                resolved_base_ref = base_result.stdout.strip()
+            except Exception as base_exc:
+                logger.debug(
+                    "scm.commit.base_ref_resolution_failed",
+                    extra={"data": {"story": story_slug, "error": str(base_exc)}},
+                )
+                # Fall through with None — commit_story() falls back to existing behaviour.
+
             commit_hash = await commit_story(
                 story_slug=story_slug,
                 story_title=story_title,
                 story_path=str(state.story_path),
                 run_id=run_id,
                 worktree_path=state.worktree_path,
+                base_ref=resolved_base_ref,
             )
             logger.info(
                 "scm.commit",

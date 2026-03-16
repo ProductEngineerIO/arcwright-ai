@@ -186,6 +186,7 @@ async def commit_story(
     run_id: str,
     *,
     worktree_path: Path,
+    base_ref: str | None = None,
 ) -> str:
     """Stage all changes in a worktree and commit with a structured message.
 
@@ -196,6 +197,13 @@ async def commit_story(
     All operations run with ``cwd=worktree_path`` — only files in the
     worktree's working directory are staged.
 
+    When ``base_ref`` is provided, a clean working tree (nothing to stage)
+    does not immediately raise :exc:`BranchError`.  Instead the function
+    checks whether the agent already committed by comparing ``HEAD`` against
+    ``base_ref``.  If ``HEAD != base_ref`` the agent's latest commit hash is
+    returned directly; if ``HEAD == base_ref`` there are genuinely no changes
+    and :exc:`BranchError` is raised as normal.
+
     Args:
         story_slug: Story identifier for log events and error context.
         story_title: Human-readable story title used in the commit subject.
@@ -204,6 +212,9 @@ async def commit_story(
         run_id: Unique run identifier embedded in the commit body.
         worktree_path: Absolute path to the worktree root where the story
             agent wrote its output.
+        base_ref: Optional branch-creation commit SHA used to detect
+            agent-created commits when the worktree is clean.  When
+            ``None`` (default) the legacy behaviour is preserved.
 
     Returns:
         str: The full commit hash of the new commit (output of
@@ -221,6 +232,27 @@ async def commit_story(
     # "nothing to commit" message to stdout (not stderr) in most versions.
     status_result = await git("status", "--porcelain", cwd=worktree_path)
     if not status_result.stdout.strip():
+        # Worktree is clean — check whether the agent already committed.
+        if base_ref is not None:
+            head_result = await git("rev-parse", "HEAD", cwd=worktree_path)
+            head_sha = head_result.stdout.strip()
+            if head_sha != base_ref:
+                # Agent has committed — HEAD has advanced past the branch
+                # creation point.  Return the agent's commit hash directly so
+                # push → PR → auto-merge proceed normally.
+                logger.info(
+                    "scm.commit.agent_created",
+                    extra={
+                        "data": {
+                            "story_slug": story_slug,
+                            "commit_hash": head_sha,
+                            "base_ref": base_ref,
+                            "worktree_path": str(worktree_path),
+                        }
+                    },
+                )
+                return head_sha
+        # Truly empty — no agent commits and no uncommitted changes.
         logger.error(
             "git.commit.error",
             extra={

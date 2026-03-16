@@ -1110,3 +1110,158 @@ async def test_fetch_and_sync_logs_fetch_failed_event(
         await fetch_and_sync("main", "origin", project_root=tmp_path)
 
     assert any("git.fetch_and_sync.fetch_failed" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Story 10.4 — commit_story agent-commit detection (AC: #2, #4, #5, #6)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_commit_story_returns_agent_hash_when_clean_but_head_advanced(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    """commit_story returns agent's commit hash when worktree is clean but HEAD != base_ref (AC: #2, #3, #6)."""
+    agent_sha = "aabbccdd11223344aabbccdd11223344aabbccdd"
+    base_sha = "0000000000000000000000000000000000000000"
+    side_effects: list[GitResult] = [
+        _ok(),  # git add .
+        _ok(stdout=""),  # git status --porcelain — clean
+        _ok(stdout=agent_sha),  # git rev-parse HEAD — agent committed
+    ]
+    mock_git = AsyncMock(side_effect=side_effects)
+    monkeypatch.setattr("arcwright_ai.scm.branch.git", mock_git)
+
+    with caplog.at_level(logging.INFO, logger="arcwright_ai.scm.branch"):
+        result = await commit_story(
+            story_slug=_SLUG,
+            story_title="My Story",
+            story_path="_spec/s.md",
+            run_id="run-001",
+            worktree_path=tmp_path,
+            base_ref=base_sha,
+        )
+
+    assert result == agent_sha
+    assert any("scm.commit.agent_created" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_commit_story_agent_created_log_contains_hash_and_slug(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    """scm.commit.agent_created log event contains story_slug and commit_hash (AC: #6)."""
+    agent_sha = "deadbeef12345678deadbeef12345678deadbeef"
+    base_sha = "0000000000000000000000000000000000000000"
+    side_effects: list[GitResult] = [
+        _ok(),
+        _ok(stdout=""),
+        _ok(stdout=agent_sha),
+    ]
+    mock_git = AsyncMock(side_effect=side_effects)
+    monkeypatch.setattr("arcwright_ai.scm.branch.git", mock_git)
+
+    with caplog.at_level(logging.INFO, logger="arcwright_ai.scm.branch"):
+        await commit_story(
+            story_slug=_SLUG,
+            story_title="My Story",
+            story_path="_spec/s.md",
+            run_id="run-001",
+            worktree_path=tmp_path,
+            base_ref=base_sha,
+        )
+
+    agent_created_records = [r for r in caplog.records if "scm.commit.agent_created" in r.message]
+    assert len(agent_created_records) == 1
+    log_data = agent_created_records[0].__dict__.get("data", {})
+    assert log_data.get("story_slug") == _SLUG
+    assert log_data.get("commit_hash") == agent_sha
+
+
+@pytest.mark.asyncio
+async def test_commit_story_raises_branch_error_when_clean_head_equals_base_ref(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """commit_story raises BranchError when clean and HEAD == base_ref — truly no changes (AC: #2, backward compat)."""
+    stable_sha = "abcdef1234567890abcdef1234567890abcdef12"
+    side_effects: list[GitResult] = [
+        _ok(),  # git add .
+        _ok(stdout=""),  # git status --porcelain — clean
+        _ok(stdout=stable_sha),  # git rev-parse HEAD — same as base_ref
+    ]
+    mock_git = AsyncMock(side_effect=side_effects)
+    monkeypatch.setattr("arcwright_ai.scm.branch.git", mock_git)
+
+    with pytest.raises(BranchError, match="No changes to commit"):
+        await commit_story(
+            story_slug=_SLUG,
+            story_title="My Story",
+            story_path="_spec/s.md",
+            run_id="run-001",
+            worktree_path=tmp_path,
+            base_ref=stable_sha,  # HEAD == base_ref → no agent commits
+        )
+
+
+@pytest.mark.asyncio
+async def test_commit_story_raises_branch_error_when_base_ref_none_and_clean(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """commit_story raises BranchError when base_ref=None and worktree is clean — backward compatibility (AC: #4)."""
+    side_effects: list[GitResult] = [
+        _ok(),  # git add .
+        _ok(stdout=""),  # git status --porcelain — clean
+    ]
+    mock_git = AsyncMock(side_effect=side_effects)
+    monkeypatch.setattr("arcwright_ai.scm.branch.git", mock_git)
+
+    with pytest.raises(BranchError, match="No changes to commit"):
+        await commit_story(
+            story_slug=_SLUG,
+            story_title="My Story",
+            story_path="_spec/s.md",
+            run_id="run-001",
+            worktree_path=tmp_path,
+            # base_ref omitted — defaults to None
+        )
+
+    # Must only have called git add + git status (no rev-parse)
+    assert mock_git.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_commit_story_commits_on_top_of_agent_commit_when_dirty(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """commit_story stages and commits additional uncommitted changes on top of agent commits (AC: #5)."""
+    final_hash = "ffaabb00112233445566778899aabbccddeeff00"
+    base_sha = "0000000000000000000000000000000000000000"
+    side_effects: list[GitResult] = [
+        _ok(),  # git add .
+        _ok(stdout="M extra_file.py\n"),  # git status --porcelain — dirty (mixed scenario)
+        _ok(),  # git commit -m ...
+        _ok(stdout=final_hash),  # git rev-parse HEAD
+    ]
+    mock_git = AsyncMock(side_effect=side_effects)
+    monkeypatch.setattr("arcwright_ai.scm.branch.git", mock_git)
+
+    result = await commit_story(
+        story_slug=_SLUG,
+        story_title="My Story",
+        story_path="_spec/s.md",
+        run_id="run-001",
+        worktree_path=tmp_path,
+        base_ref=base_sha,
+    )
+
+    assert result == final_hash
+    # Verify the commit call was made (index 2)
+    commit_call = mock_git.call_args_list[2]
+    assert commit_call.args[0] == "commit"
