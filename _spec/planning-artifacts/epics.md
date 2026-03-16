@@ -5,13 +5,16 @@ inputDocuments:
   - '_spec/planning-artifacts/architecture.md'
 date: 2026-03-02
 author: Ed
-epicCount: 8
-storyCount: 38
-totalPoints: 186
+epicCount: 11
+storyCount: 44
+totalPoints: 209
 frCoverage: '36/36'
 nfrCoverage: '20/20'
-amendedDate: 2026-03-11
-amendedBy: Bob (SM)
+amendedDate: 2026-03-15
+amendedBy: Ed
+amendments:
+  - date: '2026-03-15'
+    description: 'Epic 11: BMAD 6.1 Framework Upgrade — 3 stories, 13 pts. Course correction CC-2026-03-15 approved.'
 ---
 
 # Arcwright AI - Epic Breakdown
@@ -1300,3 +1303,180 @@ So that fetch → worktree → commit → push → PR → merge works as an unbr
 **Files touched:**
 - `tests/test_scm/test_scm_integration.py` — New integration test file covering all 6 scenarios
 - `tests/conftest.py` — Shared fixture for creating local bare remote + clone pair
+
+---
+
+## Epic 10: Ad-Hoc Improvements & Housekeeping
+
+**Added:** 2026-03-15 | **Stories:** 3 (ad-hoc — stories added as needed) | **Points:** 12+
+
+**Purpose:** Collects small, cross-cutting improvements that don't warrant their own epic. These are housekeeping tasks, build infrastructure changes, and quality-of-life improvements identified during or after the main implementation sprints.
+
+**Scope:** Non-functional improvements to build, packaging, CI, developer experience, and project hygiene. Stories in this epic do NOT modify core application logic and carry minimal regression risk.
+
+---
+
+### Story 10.1: Dynamic Versioning with hatch-vcs
+
+**Priority**: MEDIUM | **Points**: 3
+**Requirements**: NFR19 (idempotency), Architecture Decision 1 (Starter Template / Hatchling backend)
+**Dependencies**: Story 1.1 (project scaffold)
+
+**Description:**
+As a maintainer of Arcwright AI,
+I want the package version to be derived automatically from git tags using hatch-vcs,
+So that version management requires zero manual edits, dev builds are uniquely identifiable, and releases are a simple `git tag` + push.
+
+**Acceptance Criteria:**
+
+**Given** `pyproject.toml` exists with a static `version = "0.1.0"` **When** the migration is applied **Then** the `version` key is removed from `[project]`, `"version"` is added to the `dynamic` list, and `[tool.hatch.version]` configures `hatch-vcs` as the version source
+**And** `[build-system].requires` includes both `"hatchling"` and `"hatch-vcs"`
+**And** `src/arcwright_ai/__init__.py` reads version dynamically via `importlib.metadata.version("arcwright-ai")` with a `PackageNotFoundError` fallback to `"0.0.0.dev0"`
+**And** `git tag -a v0.1.0` is created on the current HEAD as the initial version baseline
+**And** `pip install -e .` produces a package reporting version `0.1.0`
+**And** dev builds after the tag produce PEP 440 versions like `0.1.1.dev3`
+**And** `ruff check`, `mypy --strict`, and `pytest` all pass with zero issues
+
+**Files touched:**
+- `pyproject.toml` — Build system requires, dynamic version, hatch.version config
+- `src/arcwright_ai/__init__.py` — Dynamic version resolution via importlib.metadata
+
+---
+
+### Story 10.2: PyJWT `crit` Header Extension Vulnerability Remediation
+
+**Priority**: HIGH | **Points**: 2
+**Requirements**: NFR20 (security), Dependabot Alert #3
+**Dependencies**: None
+
+**Description:**
+As a maintainer of Arcwright AI,
+I want to upgrade the transitive PyJWT dependency from 2.11.0 to ≥2.12.0,
+So that the application is not exposed to CVE-2026-32597 (High), where PyJWT accepts unknown `crit` header extensions without validation.
+
+**Acceptance Criteria:**
+
+**Given** PyJWT 2.11.0 is pinned in `uv.lock` as a transitive dependency (via `mcp` → `claude-code-sdk`) **When** `uv lock --upgrade-package pyjwt` is run **Then** the lockfile resolves PyJWT to ≥2.12.0
+**And** no changes to `pyproject.toml` dependency declarations are needed (unless upstream constrains conflict)
+**And** `ruff check`, `mypy --strict`, and `pytest` all pass with zero regressions
+**And** Dependabot alert #3 (CVE-2026-32597) is auto-closed after merge
+
+**Files touched:**
+- `uv.lock` — Lockfile regeneration with upgraded PyJWT pin
+
+---
+
+### Story 10.3: LangGraph Major Version Upgrade & Deserialization Vulnerability Remediation
+
+**Priority**: HIGH | **Points**: 5
+**Requirements**: NFR20 (security), Dependabot Alerts #1, #2
+**Dependencies**: None
+
+**Description:**
+As a maintainer of Arcwright AI,
+I want to upgrade langgraph from 0.6.x to ≥1.0.10 (and transitively langgraph-checkpoint from 3.x to ≥4.0.0),
+So that the application is not exposed to CVE-2026-28277 (unsafe msgpack deserialization in checkpoint loading) or CVE-2026-27794 (BaseCache deserialization of untrusted data leading to potential RCE).
+
+**Note:** This story covers _two_ CVEs because the packages are tightly coupled — upgrading `langgraph` to ≥1.0.10 requires `langgraph-checkpoint` ≥4.0.0. This is a **major version upgrade** (0.x → 1.x) that will likely require code migration in the orchestration engine.
+
+**Acceptance Criteria:**
+
+**Given** `pyproject.toml` specifies `langgraph>=0.2,<1.0` **When** the upgrade is applied **Then** the constraint is changed to `langgraph>=1.0.10,<2.0`
+**And** the lockfile resolves `langgraph` ≥1.0.10 and `langgraph-checkpoint` ≥4.0.0
+**And** all source code and tests are migrated to the langgraph 1.x API surface
+**And** `ruff check`, `mypy --strict`, and `pytest` all pass with zero regressions
+**And** Dependabot alerts #1 (CVE-2026-27794) and #2 (CVE-2026-28277) are auto-closed after merge
+
+**Files touched:**
+- `pyproject.toml` — Version constraint change (`langgraph>=1.0.10,<2.0`)
+- `uv.lock` — Lockfile regeneration
+- `src/arcwright_ai/engine/` — Graph construction, node implementations (migration to 1.x API)
+- `tests/` — Test fixture and mock updates for 1.x API surface
+
+---
+
+## Epic 11: BMAD 6.1 Framework Upgrade
+
+> **Value prop**: Developer upgrades the project's BMAD development infrastructure from v6.0.3 to v6.1.0, gaining the new skills-based architecture, Edge Case Hunter code review capability, critical bug fixes, and a 91% smaller framework footprint — without any disruption to the product's source code or test suite.
+
+### Story 11.1: Pre-Upgrade Audit & Backup
+
+**Priority**: HIGH | **Points**: 3
+**Requirements**: NFR19 (idempotency)
+**Dependencies**: None
+
+**Description:**
+As the maintainer of Arcwright AI,
+I want to audit the current `_bmad/` installation for any custom modifications and create a backup before the 6.1 upgrade,
+So that no custom work is lost and the upgrade can be safely rolled back if needed.
+
+**Acceptance Criteria:**
+
+**Given** the project is on BMAD v6.0.3 (installed 2026-02-26) **When** the pre-upgrade audit is performed **Then** a diff is generated between the stock 6.0.3 installation and the current `_bmad/` directory to identify any custom modifications to agents, workflows, configs, or memory files
+**And** the `_bmad/_memory/` sidecar directory contents are documented (these are user customizations that must survive the upgrade)
+**And** the `.github/copilot-instructions.md` current content is documented as the baseline for post-upgrade comparison
+**And** a full backup of `_bmad/` is created at `_bmad-backup-6.0.3/` (gitignored)
+**And** the audit results are documented in a brief markdown report listing: (1) custom modifications found (if any), (2) sidecar data to preserve, (3) copilot-instructions.md baseline, (4) backup location verified
+**And** no product source code (`src/`, `tests/`) is modified in this story
+
+**Files touched:**
+- `.gitignore` — Add `_bmad-backup-*` exclusion
+- `_spec/implementation-artifacts/11-1-pre-upgrade-audit-and-backup.md` — Story file
+
+---
+
+### Story 11.2: Execute BMAD 6.1 Installation & Migration
+
+**Priority**: HIGH | **Points**: 5
+**Requirements**: NFR19 (idempotency), NFR5 (config validation at startup)
+**Dependencies**: Story 11.1
+
+**Description:**
+As the maintainer of Arcwright AI,
+I want to run the BMAD 6.1 installer to upgrade the project's development infrastructure from the workflow/XML engine to the new skills-based architecture,
+So that the project uses the latest BMAD framework with all bug fixes, the Edge Case Hunter capability, and the leaner skills-based workflow execution model.
+
+**Acceptance Criteria:**
+
+**Given** the pre-upgrade audit (Story 11.1) is complete and backup verified **When** `npx bmad-method@6.1.0 install` is executed in the project root **Then** the installer completes successfully, upgrading all installed modules: core (6.0.3→6.1.0), bmm (6.0.3→6.1.0), bmb, cis, tea to their 6.1-compatible versions
+**And** `_bmad/_config/manifest.yaml` reflects the new version numbers
+**And** all `_bmad/bmm/workflows/` are converted to the new skills-based format (SKILL.md entrypoints replacing workflow.yaml + workflow.xml engine)
+**And** `.github/copilot-instructions.md` is regenerated with 6.1 agent/skill references
+**And** `_bmad/_memory/` sidecar data is preserved through the upgrade (tech-writer-sidecar, storyteller-sidecar contents unchanged)
+**And** `_bmad/bmm/config.yaml` retains all project-specific values (user_name, paths, language settings)
+**And** if the installer fails or produces errors, the backup from Story 11.1 is used to restore `_bmad/` to the pre-upgrade state
+**And** no product source code (`src/`, `tests/`) is modified in this story
+
+**Files touched:**
+- `_bmad/` — Full framework upgrade (installer-managed)
+- `.github/copilot-instructions.md` — Regenerated by installer
+- `_bmad/_config/manifest.yaml` — Updated version metadata
+
+---
+
+### Story 11.3: Post-Upgrade Verification & Development Workflow Smoke Test
+
+**Priority**: HIGH | **Points**: 5
+**Requirements**: NFR1 (no silent failures), NFR5 (config validation)
+**Dependencies**: Story 11.2
+
+**Description:**
+As the maintainer of Arcwright AI,
+I want to verify that the 6.1 upgrade did not break any product functionality or development workflows,
+So that I can confidently continue development using the new skills-based BMAD infrastructure.
+
+**Acceptance Criteria:**
+
+**Given** BMAD 6.1 installation is complete (Story 11.2) **When** the verification suite is executed **Then** `ruff check` passes with zero issues across all source code
+**And** `mypy --strict` passes with zero issues
+**And** `pytest` full suite passes with zero failures (confirming product code is unaffected by the `_bmad/` upgrade)
+**And** `arcwright-ai validate-setup` passes all checks when run against the project (confirming the CLI still detects BMAD artifacts correctly)
+**And** the BMAD development workflows are functional under the new skills-based system: (1) `/bmad-bmm-create-story` or equivalent skill can be invoked, (2) `/bmad-bmm-dev-story` or equivalent skill can be invoked, (3) `/bmad-bmm-code-review` or equivalent skill can be invoked
+**And** the `_spec/` planning artifacts (prd.md, architecture.md, epics.md) are unchanged and accessible
+**And** the `_spec/implementation-artifacts/sprint-status.yaml` is unchanged
+**And** the backup directory `_bmad-backup-6.0.3/` is removed after successful verification
+**And** no product source code (`src/`, `tests/`) is modified in this story
+
+**Files touched:**
+- `.gitignore` — Remove `_bmad-backup-*` exclusion (cleanup)
+- `_spec/implementation-artifacts/11-3-post-upgrade-verification.md` — Story file

@@ -328,7 +328,7 @@ o.cleanup()
 
 ## Project Status
 
-Arcwright AI is in **active development**. MVP is complete — the sequential pipeline, V3+V6 validation, decision provenance, halt-and-notify, cost tracking, and resume are all implemented. Current work focuses on SCM enhancements and polish.
+Arcwright AI is in **active development** and [available on PyPI](https://pypi.org/project/arcwright-ai/). MVP is complete — the sequential pipeline, V3+V6 validation, decision provenance, halt-and-notify, cost tracking, resume, SCM integration with auto-merge, role-based model registry, and dynamic versioning are all implemented. Automated publishing via GitHub Actions triggers on version tags.
 
 ### Roadmap
 
@@ -340,83 +340,24 @@ Arcwright AI is in **active development**. MVP is complete — the sequential pi
 
 ## BMAD Workflow Customizations
 
-This project ships with customizations to the default BMAD dev-story workflow. These changes live in `_bmad/bmm/workflows/4-implementation/dev-story/` and are tracked by force-adding them to git (the `_bmad/` directory is otherwise gitignored, matching the standard BMAD installation model).
+This project maintains customizations to the default BMAD dev-story workflow. These changes live in `_bmad/bmm/workflows/4-implementation/dev-story/` and are applied manually after each BMAD framework upgrade.
 
 ### Why `_bmad/` is gitignored
 
 The BMAD framework is installed *into* a project, not built alongside it. It ships as a set of files dropped into `_bmad/` by the BMAD installer/updater. Because these files are owned by the framework distribution rather than the application project, the standard BMAD `.gitignore` excludes all of `_bmad/` — just as you would not commit `node_modules/` or a Python `.venv`. Committing them would create merge conflicts every time BMAD releases an update.
 
-### What was customized and why
+### What is customized and why
 
 | File | Change | Reason |
 |------|--------|--------|
-| `_bmad/bmm/workflows/4-implementation/dev-story/instructions.xml` | Added git diff audit block in Step 9 | 8 of 12 stories across Epics 2–4 (67%) had Dev Agent Record File Lists that did not match the files actually changed. The audit runs `git diff --name-only HEAD`, compares against the story's File List, and blocks code-review submission until all discrepancies are resolved. |
-| `_bmad/bmm/workflows/4-implementation/dev-story/checklist.md` | Updated "File List Complete" DoD item to reference the Step 9 audit | Keeps the Definition of Done checklist in sync with the automated enforcement added above. |
+| `_bmad/bmm/workflows/4-implementation/dev-story/instructions.xml` | Added Step 3 (review-continuation detection), git diff reconciliation audit in Step 9, enhanced review follow-up handling in Step 8, and expanded completion/communication steps | 8 of 12 stories across Epics 2–4 (67%) had Dev Agent Record File Lists that did not match the files actually changed. The audit runs `git diff --name-only HEAD`, compares against the story's File List, and blocks code-review submission until all discrepancies are resolved. Review-continuation detection was added to preserve context when resuming after a code review. |
+| `_bmad/bmm/workflows/4-implementation/dev-story/checklist.md` | Replaced stock checklist with an enhanced Definition of Done checklist: added emoji section headers, `[AI-Review]` review follow-up tracking items, a git diff File List reconciliation requirement, a Final Validation Output block with template variables, and a Story Structure Compliance item | Keeps the Definition of Done checklist in sync with the automated enforcement added to `instructions.xml`, and adds explicit review follow-up tracking to close the loop between code review findings and story completion. |
 
-### ⚠️ Manual migration required after any BMAD update
+### Re-applying after a BMAD update
 
-Because `_bmad/` is gitignored, a BMAD framework update (via `bmad update` or equivalent) will **overwrite** the customized files above with the unmodified originals, silently losing these changes.
+A BMAD framework update (via `npx bmad-method@<version> install` or equivalent) will overwrite the customized files above with stock originals. Re-apply the customizations manually after each upgrade — the current working state of both files is always in `_bmad/` and serves as the live reference.
 
-**After every BMAD update, re-apply the following changes manually:**
-
-#### `_bmad/bmm/workflows/4-implementation/dev-story/instructions.xml` — Step 9
-
-Locate the line `<action>Run the full regression suite (do not skip)</action>` inside `<step n="9">` and insert the following block immediately after it (before `<action>Execute enhanced definition-of-done validation</action>`):
-
-```xml
-<!-- GIT DIFF AUDIT: Reconcile actual changed files against Dev Agent Record File List -->
-<action>Run: git diff --name-only HEAD to get all files changed since the last commit</action>
-<action>Also run: git status --short to surface any untracked or unstaged files relevant to this story</action>
-<action>Extract the current File List from Dev Agent Record → File List section of the story file</action>
-<action>Compare the two lists:
-  - Files in git diff output but NOT in File List  → Missing entries (must be added before review)
-  - Files in File List but NOT in git diff output  → Phantom entries (verify intent or remove)
-  - Files appearing in both                        → Confirmed ✅
-</action>
-<action>Output a reconciliation table: filename | in-git-diff | in-file-list | status</action>
-
-<check if="any files appear in git diff but are absent from the File List">
-  <output>⚠️  FILE LIST DISCREPANCY — Missing Entries
-    The following changed files are NOT recorded in Dev Agent Record → File List:
-    {{missing_files}}
-    You MUST add these entries before the story can move to review.
-  </output>
-  <action>Update Dev Agent Record → File List to include all missing files (repo-root-relative paths)</action>
-  <action>Re-save the story file after updating the File List</action>
-</check>
-
-<check if="any files appear in the File List but are absent from git diff output">
-  <output>⚠️  FILE LIST DISCREPANCY — Phantom Entries
-    The following files are listed in Dev Agent Record → File List but show no git changes:
-    {{phantom_files}}
-    Confirm these files were intentionally included (e.g. deletions tracked separately) or remove them.
-  </output>
-</check>
-
-<check if="git diff output and File List match exactly">
-  <output>✅ Git diff audit passed — all changed files are accounted for in the File List</output>
-</check>
-
-<action if="File List was updated during audit">Re-save the story file before proceeding</action>
-```
-
-#### `_bmad/bmm/workflows/4-implementation/dev-story/checklist.md` — File List item
-
-Find the line:
-```
-- [ ] **File List Complete:** File List includes EVERY new, modified, or deleted file (paths relative to repo root)
-```
-Replace it with:
-```
-- [ ] **File List Complete:** File List includes EVERY new, modified, or deleted file (paths relative to repo root) — reconciled against `git diff --name-only HEAD` by the automated audit in Step 9
-```
-
-The two customized files are force-tracked in git (`git add -f`) so you always have a reference copy of what the correct state should look like:
-
-```bash
-git show HEAD:_bmad/bmm/workflows/4-implementation/dev-story/instructions.xml
-git show HEAD:_bmad/bmm/workflows/4-implementation/dev-story/checklist.md
-```
+**Symptom of missing customizations:** Dev agent File Lists stop matching `git diff` output, or the agent no longer detects review-continuation context after a code review. See the troubleshooting entry in [`arcwright-ai/README.md`](arcwright-ai/README.md#dev-agent-file-list-is-consistently-incomplete-or-doesnt-match-git-diff-output-after-a-bmad-update).
 
 ## Contributing
 
@@ -425,7 +366,7 @@ Arcwright AI is open-source and welcomes contributions. Whether you're fixing bu
 ### Development Setup
 
 ```bash
-git clone https://github.com/KLPTechCo/arcwright-ai.git
+git clone https://github.com/ProductEngineerIO/arcwright-ai.git
 cd arcwright-ai
 pip install -e .
 ```
@@ -436,6 +377,39 @@ pip install -e .
 - **Validation patterns** — new validators, artifact-specific pipelines
 - **Workflow definitions** — encode your team's development methodology as an executable workflow
 - **Documentation** — guides, tutorials, API reference improvements
+
+### Versioning & Releases
+
+Arcwright AI uses [hatch-vcs](https://github.com/ofek/hatch-vcs) for automatic versioning from git tags. **No files need editing to cut a release.**
+
+**How versions are resolved:**
+
+| Repo state | Resolved version | Example |
+|------------|-----------------|---------|
+| Exactly on a tag | Tag version | `v0.2.0` → `0.2.0` |
+| N commits after a tag | Next-patch dev build | 3 commits after `v0.2.0` → `0.2.1.dev3` |
+| No tags at all | `0.0.0.dev<N>` | fallback for fresh clones without history |
+
+**Merging a PR to `main` does NOT create a new version tag.** Every commit on `main` after the last tag automatically gets a PEP 440 dev version (e.g., `0.2.1.dev5`). This is the expected state between releases.
+
+**To cut a release:**
+
+```bash
+# 1. Ensure main is clean and CI is green
+git checkout main && git pull
+
+# 2. Create an annotated tag (the ONLY step that matters)
+git tag -a v0.2.0 -m "v0.2.0 — brief description of what's in this release"
+
+# 3. Push the tag
+git push origin v0.2.0
+```
+
+That's it. The next `pip install` or wheel build will report `0.2.0`.
+
+**Version scheme:** `guess-next-dev` with `no-local-version` — produces clean PyPI-compatible versions with no `+gABCDEF` local identifiers.
+
+**Rollback:** If hatch-vcs causes issues, revert to a static `version = "X.Y.Z"` in `pyproject.toml` and a hardcoded `__version__` in `__init__.py`. No application code depends on the versioning mechanism.
 
 ### Community Workflow Definitions
 

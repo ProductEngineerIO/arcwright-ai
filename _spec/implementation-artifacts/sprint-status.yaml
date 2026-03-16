@@ -118,3 +118,15 @@ development_status:
   9-3-auto-merge-pr-after-creation: done
   9-4-end-to-end-scm-enhancement-integration-tests: done
   epic-9-retrospective: done
+
+  # Epic 10: Ad-Hoc Improvements & Housekeeping
+  epic-10: in-progress
+  10-1-dynamic-versioning-with-hatch-vcs: done
+  10-2-pyjwt-crit-header-vulnerability-remediation: done
+  10-3-langgraph-major-upgrade-deserialization-vulnerability-remediation: done
+
+  # Epic 11: BMAD 6.1 Framework Upgrade (3 stories, 13 pts)
+  epic-11: in-progress
+  11-1-pre-upgrade-audit-and-backup: done
+  11-2-execute-bmad-6-1-installation-and-migration: done
+  11-3-post-upgrade-verification-and-development-workflow-smoke-test: done

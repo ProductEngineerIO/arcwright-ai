@@ -30,9 +30,17 @@ Arcwright AI takes BMAD planning artifacts (PRD, Architecture, Epics, Stories) a
 
 ## Installation
 
-From the `arcwright-ai/` directory:
+**From PyPI** (end users):
 
 ```bash
+pip install arcwright-ai
+```
+
+**From source** (contributors):
+
+```bash
+git clone https://github.com/ProductEngineerIO/arcwright-ai.git
+cd arcwright-ai/arcwright-ai
 python -m venv .venv
 .venv/bin/pip install -e ".[dev]"
 ```
@@ -287,6 +295,6 @@ Check `.arcwright-ai/config.yaml` in the target project. The `methodology.artifa
 
 **Dev agent File List is consistently incomplete or doesn't match `git diff` output after a BMAD update**
 
-The dev-story workflow in this project includes a custom git diff audit step (Step 9 of `instructions.xml`) that was added to address a systemic issue where 67% of stories had File List discrepancies. This customization lives in `_bmad/bmm/workflows/4-implementation/dev-story/` — a directory that is gitignored and gets overwritten by BMAD framework updates.
+The dev-story workflow in this project includes custom enhancements to `instructions.xml` (review-continuation detection, git diff File List audit in Step 9, review follow-up handling) and a fully enhanced `checklist.md`. These customizations live in `_bmad/bmm/workflows/4-implementation/dev-story/` — a directory that is gitignored and gets overwritten by BMAD framework updates.
 
-If you have recently run a BMAD update and agent File Lists are again going unaudited, the customization was likely overwritten. See the **BMAD Workflow Customizations** section in the root [`README.md`](../README.md#bmad-workflow-customizations) for the exact changes to re-apply.
+If you have recently run a BMAD update and agent File Lists are again going unaudited, the customizations were likely overwritten. Re-apply them manually — see the **BMAD Workflow Customizations** section in the root [`README.md`](../README.md#bmad-workflow-customizations) for details on what was changed and why.
