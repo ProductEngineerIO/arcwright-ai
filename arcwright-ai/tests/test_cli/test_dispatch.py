@@ -93,6 +93,19 @@ def test_dispatch_story_parses_hyphen_format(tmp_path: Path) -> None:
     assert epic_id == EpicId("epic-2")
 
 
+def test_dispatch_story_parses_story_prefix(tmp_path: Path) -> None:
+    """_find_story_file strips 'STORY-' prefix: 'STORY-2.7' → epic_num=2, story_num=7."""
+    impl = tmp_path / "_spec" / "implementation-artifacts"
+    impl.mkdir(parents=True)
+    story_file = impl / "2-7-agent-dispatch-node.md"
+    story_file.write_text("# Story 2.7\n", encoding="utf-8")
+
+    found_path, story_id, epic_id = _find_story_file("STORY-2.7", impl)
+    assert found_path == story_file
+    assert story_id == StoryId("2-7-agent-dispatch-node")
+    assert epic_id == EpicId("epic-2")
+
+
 # ---------------------------------------------------------------------------
 # Task 7.2 — _find_story_file raises on missing story
 # ---------------------------------------------------------------------------

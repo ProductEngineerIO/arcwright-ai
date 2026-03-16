@@ -234,10 +234,13 @@ def _find_story_file(story_spec: str, artifacts_dir: Path) -> tuple[Path, StoryI
     Raises:
         ProjectError: If the story file cannot be found or spec is invalid.
     """
+    # Strip common prefixes like "STORY-" or "story-"
     normalized = story_spec.replace(".", "-")
+    if normalized.upper().startswith("STORY-"):
+        normalized = normalized[6:]
     parts = normalized.split("-")
     if len(parts) < 2:
-        raise ProjectError(f"Invalid story spec: {story_spec!r}. Expected format: '2.7' or '2-7'")
+        raise ProjectError(f"Invalid story spec: {story_spec!r}. Expected format: '2.7', '2-7', or 'STORY-2.7'")
     epic_num = parts[0]
     story_num = parts[1]
 
