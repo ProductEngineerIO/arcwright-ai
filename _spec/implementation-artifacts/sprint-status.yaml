@@ -123,4 +123,4 @@ development_status:
   epic-10: in-progress
   10-1-dynamic-versioning-with-hatch-vcs: done
   10-2-pyjwt-crit-header-vulnerability-remediation: done
-  10-3-langgraph-major-upgrade-deserialization-vulnerability-remediation: in-progress
+  10-3-langgraph-major-upgrade-deserialization-vulnerability-remediation: review
