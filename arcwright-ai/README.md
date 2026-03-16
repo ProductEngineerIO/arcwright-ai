@@ -34,6 +34,8 @@ Arcwright AI takes BMAD planning artifacts (PRD, Architecture, Epics, Stories) a
 **From PyPI** (end users):
 
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate
 pip install arcwright-ai
 ```
 
