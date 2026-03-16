@@ -250,6 +250,30 @@ START → preflight → budget_check ──(ok)──→ agent_dispatch → vali
 
 ---
 
+## LangSmith Tracing
+
+LangGraph has built-in support for [LangSmith](https://smith.langchain.com) — LangChain's cloud observability platform. When enabled, every graph invocation is recorded as a trace you can inspect in the LangSmith web UI: node inputs/outputs, state transitions, timing, and token usage.
+
+### Setup
+
+1. Create a free account at [smith.langchain.com](https://smith.langchain.com)
+2. Go to **Settings → API Keys** and create an API key
+3. Set environment variables (add to your shell profile or `.env`):
+
+```bash
+export LANGCHAIN_TRACING_V2=true
+export LANGCHAIN_API_KEY="lsv2_pt_..."
+export LANGCHAIN_PROJECT="arcwright-ai"  # optional — names your project in the UI
+```
+
+The next `python -m arcwright_ai dispatch` will send traces automatically — no code changes required.
+
+To disable, unset `LANGCHAIN_TRACING_V2` or set it to `false`. Tracing is off by default.
+
+> **Note:** LangSmith tracing is independent of the local `.arcwright-ai/runs/` artifacts, which are always written regardless.
+
+---
+
 ## Development
 
 All development commands use the main `.venv` (Python 3.14):

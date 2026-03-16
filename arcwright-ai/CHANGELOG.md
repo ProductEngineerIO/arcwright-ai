@@ -5,6 +5,28 @@ All notable changes to arcwright-ai are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 Versions follow [PEP 440](https://peps.python.org/pep-0440/) via [hatch-vcs](https://github.com/ofek/hatch-vcs).
 
+## [0.2.6] — 2026-03-16
+
+### Added
+
+- LangSmith Tracing section in both READMEs — documents `LANGCHAIN_TRACING_V2`, `LANGCHAIN_API_KEY`, and `LANGCHAIN_PROJECT` env vars for cloud-based run observability
+- Environment Variables table in root README expanded with the three LangSmith-related vars
+
+## [0.2.5] — 2026-03-16
+
+### Added
+
+- `CHANGELOG.md` (this file) covering v0.1.0 through v0.2.4
+
+### Fixed
+
+- `arcwright-ai-ai` typo → `arcwright-ai` in PRD (4 occurrences) and product brief (1 occurrence)
+- Minimum version in `requirements.txt` examples bumped to `>=0.2.4`
+
+### Changed
+
+- Sprint status: epics 10 and 11 marked `done`
+
 ## [0.2.4] — 2026-03-16
 
 ### Added

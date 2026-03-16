@@ -331,8 +331,40 @@ reproducibility:
 | Variable | Purpose |
 |----------|---------|
 | `ARCWRIGHT_API_CLAUDE_API_KEY` | Claude API key (avoids committing keys to config) |
-| `ARCWRIGHT_AI_MODEL_VERSION` | Override model version |
+| `ARCWRIGHT_AI_MODEL_VERSION` | Override model version || `LANGCHAIN_TRACING_V2` | Set to `true` to enable LangSmith tracing (see below) |
+| `LANGCHAIN_API_KEY` | Your LangSmith API key |
+| `LANGCHAIN_PROJECT` | LangSmith project name (default: `default`) |
 
+## LangSmith Tracing
+
+Arcwright AI runs on LangGraph, which has built-in support for [LangSmith](https://smith.langchain.com) — LangChain's observability platform. When tracing is enabled, every graph invocation (preflight → budget_check → agent_dispatch → validate → commit → finalize) is recorded as a trace you can inspect in the LangSmith web UI.
+
+### Why enable it
+
+- See the full execution graph for each story dispatch in real time
+- Inspect node inputs/outputs, state transitions, and timing
+- Debug validation failures and agent responses visually
+- Track token usage and latency across runs
+
+### Setup
+
+1. Create a free account at [smith.langchain.com](https://smith.langchain.com)
+2. Go to **Settings → API Keys** and create an API key
+3. Set the following environment variables (add to your shell profile or `.env`):
+
+```bash
+export LANGCHAIN_TRACING_V2=true
+export LANGCHAIN_API_KEY="lsv2_pt_..."
+export LANGCHAIN_PROJECT="arcwright-ai"  # optional — names your project in the UI
+```
+
+That's it. The next `python -m arcwright_ai dispatch` will send traces to your LangSmith project automatically — no code changes required.
+
+### Disabling tracing
+
+Unset or remove `LANGCHAIN_TRACING_V2`, or set it to `false`. Tracing is off by default; runs produce no external network calls to LangSmith unless you opt in.
+
+> **Note:** LangSmith tracing is independent of the local `.arcwright-ai/runs/` artifacts. Run artifacts are always written locally regardless of whether LangSmith is enabled.
 ## Python API
 
 The CLI is a thin wrapper around a programmatic Python API:
