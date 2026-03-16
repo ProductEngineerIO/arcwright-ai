@@ -749,8 +749,12 @@ async def fetch_and_sync(
     remote_sha = result.stdout.strip()
 
     # Detect current branch; attempt ff-only merge if on default branch
-    current_branch_result = await git("rev-parse", "--abbrev-ref", "HEAD", cwd=project_root)
-    current_branch = current_branch_result.stdout.strip()
+    try:
+        current_branch_result = await git("rev-parse", "--abbrev-ref", "HEAD", cwd=project_root)
+        current_branch: str | None = current_branch_result.stdout.strip()
+    except ScmError:
+        # HEAD is unresolvable (detached, orphan, or empty repo)
+        current_branch = None
 
     ff_merged = False
     if current_branch == default_branch:

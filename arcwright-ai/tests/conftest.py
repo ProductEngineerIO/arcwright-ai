@@ -34,6 +34,7 @@ async def bare_remote_and_clone(tmp_path: Path) -> tuple[Path, Path, Path]:
 
     # Create bare repo
     await git("init", "--bare", str(bare), cwd=tmp_path)
+    await git("symbolic-ref", "HEAD", "refs/heads/main", cwd=bare)
 
     # Populate the bare repo via scratch
     scratch.mkdir()

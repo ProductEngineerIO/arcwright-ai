@@ -6,6 +6,7 @@ All tests use tmp_path for full filesystem isolation.
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 
 import pytest
@@ -18,6 +19,12 @@ from arcwright_ai.cli.app import app
 from arcwright_ai.core.constants import CONFIG_FILENAME, DIR_ARCWRIGHT
 
 runner = CliRunner()
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_RE.sub("", text)
 
 
 # ---------------------------------------------------------------------------
@@ -317,8 +324,9 @@ def test_validate_setup_help_lists_path_option() -> None:
     """`validate-setup --help` shows --path and -p options."""
     result = runner.invoke(app, ["validate-setup", "--help"], catch_exceptions=False)
     assert result.exit_code == 0
-    assert "--path" in result.output
-    assert "-p" in result.output
+    plain = _strip_ansi(result.output)
+    assert "--path" in plain
+    assert "-p" in plain
 
 
 # ---------------------------------------------------------------------------
