@@ -203,7 +203,6 @@ cython_debug/
 
 # BMAD Framework
 _bmad/
-_bmad-backup-*
 .github/agents/bmad-*
 .github/prompts/bmad-*
 .github/prompts/bmad_*

@@ -1,6 +1,6 @@
 # Story 11.3: Post-Upgrade Verification & Development Workflow Smoke Test
 
-Status: ready-for-dev
+Status: done
 
 ## Story
 
@@ -33,61 +33,61 @@ So that I can confidently continue development using the new skills-based BMAD i
 
 ## Tasks / Subtasks
 
-- [ ] Task 1: Product Code Quality Gate — Lint & Type Checks (AC: #1, #2)
-  - [ ] 1.1: Run `cd arcwright-ai && uv run ruff check` — must report zero issues across all source files
-  - [ ] 1.2: Run `cd arcwright-ai && uv run mypy --strict src/` — must report "Success: no issues found in 40 source files" (or current file count)
-  - [ ] 1.3: Document exact command output for both checks as evidence
+- [x] Task 1: Product Code Quality Gate — Lint & Type Checks (AC: #1, #2)
+  - [x] 1.1: Run `cd arcwright-ai && uv run ruff check` — must report zero issues across all source files
+  - [x] 1.2: Run `cd arcwright-ai && uv run mypy --strict src/` — must report "Success: no issues found in 40 source files" (or current file count)
+  - [x] 1.3: Document exact command output for both checks as evidence
 
-- [ ] Task 2: Product Code Quality Gate — Full Test Suite (AC: #3)
-  - [ ] 2.1: Run `cd arcwright-ai && uv run pytest -q` — must report 921 passed (baseline from Story 11.2)
-  - [ ] 2.2: If any test failures occur, investigate whether they are caused by `_bmad/` changes (they should NOT be — `_bmad/` is infrastructure, not imported by product code)
-  - [ ] 2.3: Document exact test result line (e.g., "921 passed, 544 warnings in X.XXs")
+- [x] Task 2: Product Code Quality Gate — Full Test Suite (AC: #3)
+  - [x] 2.1: Run `cd arcwright-ai && uv run pytest -q` — must report 921 passed (baseline from Story 11.2)
+  - [x] 2.2: If any test failures occur, investigate whether they are caused by `_bmad/` changes (they should NOT be — `_bmad/` is infrastructure, not imported by product code)
+  - [x] 2.3: Document exact test result line (e.g., "921 passed, 544 warnings in X.XXs")
 
-- [ ] Task 3: CLI validate-setup Verification (AC: #4)
-  - [ ] 3.1: Run `cd arcwright-ai && uv run arcwright-ai validate-setup` from the project root
-  - [ ] 3.2: Verify all checks pass: BMAD project structure detection, planning artifacts presence, story artifacts presence, config schema validation
-  - [ ] 3.3: The `validate-setup` command lives in `src/arcwright_ai/cli/status.py` (`validate_setup_command`) — it checks for BMAD project structure, planning artifacts (`_spec/planning-artifacts/`), story artifacts (`_spec/implementation-artifacts/`), and Arcwright AI config completeness
-  - [ ] 3.4: If validate-setup reports warnings about planning artifacts or story artifacts, that's acceptable — the command uses heuristic checks on `_spec/` paths. Only hard failures (exit code ≠ 0) are blockers.
-  - [ ] 3.5: Document full command output as evidence
+- [x] Task 3: CLI validate-setup Verification (AC: #4)
+  - [x] 3.1: Run `cd arcwright-ai && uv run arcwright-ai validate-setup` from the project root
+  - [x] 3.2: Verify all checks pass: BMAD project structure detection, planning artifacts presence, story artifacts presence, config schema validation
+  - [x] 3.3: The `validate-setup` command lives in `src/arcwright_ai/cli/status.py` (`validate_setup_command`) — it checks for BMAD project structure, planning artifacts (`_spec/planning-artifacts/`), story artifacts (`_spec/implementation-artifacts/`), and Arcwright AI config completeness
+  - [x] 3.4: If validate-setup reports warnings about planning artifacts or story artifacts, that's acceptable — the command uses heuristic checks on `_spec/` paths. Only hard failures (exit code ≠ 0) are blockers.
+  - [x] 3.5: Document full command output as evidence
 
-- [ ] Task 4: BMAD Development Workflow Smoke Test (AC: #5)
-  - [ ] 4.1: Verify `create-story` skill chain is functional:
+- [x] Task 4: BMAD Development Workflow Smoke Test (AC: #5)
+  - [x] 4.1: Verify `create-story` skill chain is functional:
     - `.github/skills/bmad-create-story/SKILL.md` exists and references `_bmad/bmm/workflows/4-implementation/create-story/workflow.md`
     - `_bmad/bmm/workflows/4-implementation/create-story/workflow.md` exists and is parseable (6.1 format)
     - `_bmad/bmm/workflows/4-implementation/create-story/template.md` exists
     - `_bmad/bmm/workflows/4-implementation/create-story/checklist.md` exists
-  - [ ] 4.2: Verify `dev-story` skill chain is functional:
+  - [x] 4.2: Verify `dev-story` skill chain is functional:
     - `.github/skills/bmad-dev-story/SKILL.md` exists and references `_bmad/bmm/workflows/4-implementation/dev-story/workflow.md`
     - `_bmad/bmm/workflows/4-implementation/dev-story/workflow.md` exists (6.1 format — replaces `instructions.xml`)
     - `_bmad/bmm/workflows/4-implementation/dev-story/checklist.md` exists (custom enhanced version preserved per Story 11.2)
     - Custom git diff reconciliation (Step 9 of workflow.md) is present (re-applied in Story 11.2)
-  - [ ] 4.3: Verify `code-review` skill chain is functional:
+  - [x] 4.3: Verify `code-review` skill chain is functional:
     - `.github/skills/bmad-code-review/SKILL.md` exists and references `_bmad/bmm/workflows/4-implementation/code-review/workflow.md`
     - `_bmad/bmm/workflows/4-implementation/code-review/workflow.md` exists and is parseable
-  - [ ] 4.4: Verify the new `edge-case-hunter` skill exists (6.1 capability):
+  - [x] 4.4: Verify the new `edge-case-hunter` skill exists (6.1 capability):
     - `.github/skills/bmad-review-edge-case-hunter/SKILL.md` exists
-  - [ ] 4.5: Document verification results for each skill chain (file existence + key content check)
+  - [x] 4.5: Document verification results for each skill chain (file existence + key content check)
 
-- [ ] Task 5: Planning Artifacts Integrity Check (AC: #6)
-  - [ ] 5.1: Verify `_spec/planning-artifacts/prd.md` exists and is non-empty
-  - [ ] 5.2: Verify `_spec/planning-artifacts/architecture.md` exists and is non-empty
-  - [ ] 5.3: Verify `_spec/planning-artifacts/epics.md` exists and is non-empty — confirm Epic 11 content is present (last section at line ~1398)
-  - [ ] 5.4: Run `git diff -- _spec/planning-artifacts/prd.md _spec/planning-artifacts/architecture.md` — both should show zero diff against HEAD (no changes from the upgrade process). Note: `epics.md` has been modified (Epic 11 added via course correction) — this is expected and acceptable.
+- [x] Task 5: Planning Artifacts Integrity Check (AC: #6)
+  - [x] 5.1: Verify `_spec/planning-artifacts/prd.md` exists and is non-empty
+  - [x] 5.2: Verify `_spec/planning-artifacts/architecture.md` exists and is non-empty
+  - [x] 5.3: Verify `_spec/planning-artifacts/epics.md` exists and is non-empty — confirm Epic 11 content is present (last section at line ~1398)
+  - [x] 5.4: Run `git diff -- _spec/planning-artifacts/prd.md _spec/planning-artifacts/architecture.md` — both should show zero diff against HEAD (no changes from the upgrade process). Note: `epics.md` has been modified (Epic 11 added via course correction) — this is expected and acceptable.
 
-- [ ] Task 6: Sprint Status Integrity Check (AC: #7)
-  - [ ] 6.1: Verify `_spec/implementation-artifacts/sprint-status.yaml` has not been corrupted — parse all development_status entries, confirm Epic 11 section is intact with stories 11-1 (done), 11-2 (done), 11-3 (ready-for-dev)
-  - [ ] 6.2: Verify all status entries for Epics 1-10 are unchanged from before the upgrade
+- [x] Task 6: Sprint Status Integrity Check (AC: #7)
+  - [x] 6.1: Verify `_spec/implementation-artifacts/sprint-status.yaml` has not been corrupted — parse all development_status entries, confirm Epic 11 section is intact with stories 11-1 (done), 11-2 (done), 11-3 (ready-for-dev)
+  - [x] 6.2: Verify all status entries for Epics 1-10 are unchanged from before the upgrade
 
-- [ ] Task 7: Backup Cleanup (AC: #8)
-  - [ ] 7.1: Verify all prior verifications (Tasks 1-6) have passed successfully — DO NOT proceed with cleanup if any verification failed
-  - [ ] 7.2: Remove backup directory: `rm -rf _bmad-backup-6.0.3/`
-  - [ ] 7.3: Verify removal: `ls -d _bmad-backup-6.0.3/ 2>/dev/null || echo "CLEANUP_COMPLETE"`
-  - [ ] 7.4: Remove `_bmad-backup-*` pattern from `.gitignore` (no longer needed)
+- [x] Task 7: Backup Cleanup (AC: #8)
+  - [x] 7.1: Verify all prior verifications (Tasks 1-6) have passed successfully — DO NOT proceed with cleanup if any verification failed
+  - [x] 7.2: Remove backup directory: `rm -rf _bmad-backup-6.0.3/`
+  - [x] 7.3: Verify removal: `ls -d _bmad-backup-6.0.3/ 2>/dev/null || echo "CLEANUP_COMPLETE"`
+  - [x] 7.4: Remove `_bmad-backup-*` pattern from `.gitignore` (no longer needed)
 
-- [ ] Task 8: Final No-Product-Code Verification (AC: #9)
-  - [ ] 8.1: Run `git diff --stat HEAD -- src/ tests/` — must show zero changes
-  - [ ] 8.2: Run `git diff --stat HEAD -- arcwright-ai/src/ arcwright-ai/tests/` — must show zero changes (alternate path check)
-  - [ ] 8.3: Document the output as final evidence
+- [x] Task 8: Final No-Product-Code Verification (AC: #9)
+  - [x] 8.1: Run `git diff --stat HEAD -- src/ tests/` — must show zero changes
+  - [x] 8.2: Run `git diff --stat HEAD -- arcwright-ai/src/ arcwright-ai/tests/` — must show zero changes (alternate path check)
+  - [x] 8.3: Document the output as final evidence
 
 ## Dev Notes
 
@@ -204,12 +204,70 @@ Recent commits (last 5):
 
 ### Agent Model Used
 
-{{agent_model_name_version}}
+Claude Sonnet 4.6 (GitHub Copilot)
 
 ### Debug Log References
 
+**Task 3 — validate-setup invocation note:** The `arcwright-ai validate-setup` command can only run successfully when invoked from the workspace root (`/Users/edhertzog/Documents/ProductEngineerIO/arcwright-ai/`) so that `_spec/` relative paths resolve correctly. The `.pth`-based editable install does not load `arcwright_ai` module when `python3` is invoked directly (Python 3.14 venv behaviour); PYTHONPATH workaround used: `PYTHONPATH=arcwright-ai/src arcwright-ai/.venv/bin/arcwright-ai validate-setup`. All 5 checks passed cleanly. This is not a regression — the command works correctly from the workspace root as designed.
+
 ### Completion Notes List
+
+- ✅ **Task 1 — Lint & Type Checks**: `ruff check` → "All checks passed!" | `mypy --strict src/` → "Success: no issues found in 40 source files"
+- ✅ **Task 2 — Full Test Suite**: `pytest -q` → **921 passed, 544 warnings in 9.19s** — matches Story 11.2 baseline exactly. Zero regressions.
+- ✅ **Task 3 — CLI validate-setup**: All 5 checks pass from workspace root: Claude API key ✅ | BMAD project structure ✅ | Planning artifacts ✅ | Story artifacts (50/51, note expected) ✅ | Config valid ✅
+- ✅ **Task 4 — BMAD Workflow Smoke Test**: All 4 skill chains confirmed functional. `create-story`, `dev-story`, `code-review` SKILL.md files exist and reference correct `workflow.md` files. `edge-case-hunter` SKILL.md exists (6.1 new capability). Custom git diff reconciliation confirmed present at Step 9 of `dev-story/workflow.md` (grep match lines 372–401).
+- ✅ **Task 5 — Planning Artifacts Integrity**: `prd.md` (67,242 bytes) ✅ | `architecture.md` (78,161 bytes) ✅ | `epics.md` (101,243 bytes, Epic 11 confirmed present) ✅ | `prd.md` and `architecture.md` zero diff against HEAD ✅
+- ✅ **Task 6 — Sprint Status Integrity**: YAML parses cleanly. Epic 11: in-progress. 11-1: done, 11-2: done, 11-3: in-progress. 65 done entries, 4 in-progress, 0 ready-for-dev — all Epics 1-10 unchanged.
+- ✅ **Task 7 — Backup Cleanup**: All Tasks 1-6 verified before proceeding. `rm -rf _bmad-backup-6.0.3/` → CLEANUP_COMPLETE. `_bmad-backup-*` pattern removed from `.gitignore` line 206.
+- ✅ **Task 8 — No-Product-Code Verification**: `git diff --stat HEAD -- src/ tests/` → empty. `git diff --stat HEAD -- arcwright-ai/src/ arcwright-ai/tests/` → empty. Zero product code touched.
+
+## Senior Developer Review (AI)
+
+Reviewer: Ed  
+Date: 2026-03-16  
+Outcome: Approved
+
+### Scope Reviewed
+
+- Story requirements and acceptance criteria for 11.3
+- Story File List versus actual git diff in working tree
+- Verification command evidence for lint/type/tests and validate-setup
+- BMAD skill/workflow chain availability checks for create-story, dev-story, and code-review
+
+### Findings
+
+1. **No HIGH issues found** — all acceptance criteria have executable evidence.
+2. **No MEDIUM issues found** — story File List matches actual changed files.
+3. **No LOW issues found** — documentation and status transitions are coherent.
+
+### Validation Results (rerun during CR)
+
+- `cd arcwright-ai && uv run ruff check`: pass
+- `cd arcwright-ai && uv run mypy --strict src/`: pass
+- `cd arcwright-ai && uv run pytest -q`: `921 passed, 544 warnings in 10.35s`
+- `PYTHONPATH=arcwright-ai/src arcwright-ai/.venv/bin/arcwright-ai validate-setup`: all checks passed
+- `ls -d _bmad-backup-6.0.3/ 2>/dev/null || echo CLEANUP_COMPLETE`: `CLEANUP_COMPLETE`
+- BMAD skill chain file checks: `SKILL_CHAIN_OK`
+
+### AC Coverage Assessment
+
+- AC #1: Implemented (`ruff check` passes)
+- AC #2: Implemented (`mypy --strict` passes)
+- AC #3: Implemented (`pytest -q` baseline maintained)
+- AC #4: Implemented (`validate-setup` passes all checks)
+- AC #5: Implemented (create-story/dev-story/code-review skill chains present and resolvable)
+- AC #6: Implemented (`prd.md` and `architecture.md` unchanged vs `HEAD`; planning artifacts accessible)
+- AC #7: Implemented (`sprint-status.yaml` structure intact; only story lifecycle transition updated)
+- AC #8: Implemented (backup directory removed)
+- AC #9: Implemented (no product source changes under `arcwright-ai/src/` or `arcwright-ai/tests/`)
 
 ### Change Log
 
+- **2026-03-16**: Story 11.3 implementation complete — all 9 ACs verified, backup removed, `.gitignore` cleaned (Date: 2026-03-16)
+- **2026-03-16**: Senior Developer Review (AI) approved — no outstanding findings; status moved to `done` and sprint tracking synced.
+
 ### File List
+
+- `.gitignore` (modified — removed `_bmad-backup-*` pattern, Task 7.4)
+- `_spec/implementation-artifacts/sprint-status.yaml` (modified — story status: ready-for-dev → in-progress → review → done)
+- `_spec/implementation-artifacts/11-3-post-upgrade-verification-and-development-workflow-smoke-test.md` (modified — this story file)
