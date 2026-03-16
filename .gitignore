@@ -203,9 +203,11 @@ cython_debug/
 
 # BMAD Framework
 _bmad/
+_bmad-backup-*
 .github/agents/bmad-*
 .github/prompts/bmad-*
 .github/prompts/bmad_*
+.github/skills/
 
 # LangGraph Studio (local runtime state — checkpoints, ops log, vector store)
 .langgraph_api/

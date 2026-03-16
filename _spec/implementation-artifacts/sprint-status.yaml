@@ -123,4 +123,10 @@ development_status:
   epic-10: in-progress
   10-1-dynamic-versioning-with-hatch-vcs: done
   10-2-pyjwt-crit-header-vulnerability-remediation: done
-  10-3-langgraph-major-upgrade-deserialization-vulnerability-remediation: review
+  10-3-langgraph-major-upgrade-deserialization-vulnerability-remediation: done
+
+  # Epic 11: BMAD 6.1 Framework Upgrade (3 stories, 13 pts)
+  epic-11: in-progress
+  11-1-pre-upgrade-audit-and-backup: done
+  11-2-execute-bmad-6-1-installation-and-migration: done
+  11-3-post-upgrade-verification-and-development-workflow-smoke-test: ready-for-dev
