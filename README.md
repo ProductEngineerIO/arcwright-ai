@@ -218,19 +218,21 @@ python3 -m venv .venv && source .venv/bin/activate && pip install -r requirement
    python -m arcwright_ai init
    ```
 
-   This scaffolds the `.arcwright-ai/` directory, generates a default config, adds temp/run directories to `.gitignore`, and detects existing BMAD artifacts.
+   This scaffolds the `.arcwright-ai/` directory, generates a default config, writes a `.env.example` template, adds temp/run directories and `.env` to `.gitignore`, and detects existing BMAD artifacts.
 
 2. **Configure** your API key:
 
+   Copy the generated `.env.example` and fill in your values:
+
    ```bash
-   export ARCWRIGHT_API_CLAUDE_API_KEY="sk-ant-..."
+   cp .env.example .env
+   # Edit .env — at minimum set ARCWRIGHT_API_CLAUDE_API_KEY
    ```
 
-   Or add it to `~/.arcwright-ai/config.yaml`:
+   Or export directly / add to `~/.arcwright-ai/config.yaml`:
 
-   ```yaml
-   api:
-     claude_api_key: "sk-ant-..."
+   ```bash
+   export ARCWRIGHT_API_CLAUDE_API_KEY="sk-ant-..."
    ```
 
 3. **Validate** your setup:
@@ -350,7 +352,7 @@ Arcwright AI runs on LangGraph, which has built-in support for [LangSmith](https
 
 1. Create a free account at [smith.langchain.com](https://smith.langchain.com)
 2. Go to **Settings → API Keys** and create an API key
-3. Set the following environment variables (add to your shell profile or `.env`):
+3. Set the following environment variables (add to your `.env` file or shell profile):
 
 ```bash
 export LANGCHAIN_TRACING_V2=true

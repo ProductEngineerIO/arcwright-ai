@@ -5,6 +5,20 @@ All notable changes to arcwright-ai are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 Versions follow [PEP 440](https://peps.python.org/pep-0440/) via [hatch-vcs](https://github.com/ofek/hatch-vcs).
 
+## [0.2.7] — 2026-03-16
+
+### Added
+
+- `.env` file support — arcwright-ai now loads a `.env` file automatically via `python-dotenv` on startup (project root, then cwd); existing env vars are never overwritten
+- `python-dotenv` added as a direct dependency
+- `arcwright-ai init` writes a `.env.example` template to the project root with all supported variables (ARCWRIGHT\_\*, LANGCHAIN\_\*)
+- `.env` added to the managed `.gitignore` entries (secrets never enter version control)
+
+### Changed
+
+- Both READMEs updated to document `.env` file usage, `cp .env.example .env` workflow, and security guidance
+- Default config comment header now references `.env` file alongside environment variables
+
 ## [0.2.6] — 2026-03-16
 
 ### Added

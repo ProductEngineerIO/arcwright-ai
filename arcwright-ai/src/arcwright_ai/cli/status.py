@@ -55,6 +55,7 @@ _FAILED_STATUSES: frozenset[str] = frozenset({"failed", "halted", "escalated"})
 _GITIGNORE_ENTRIES: list[str] = [
     ".arcwright-ai/tmp/",
     ".arcwright-ai/runs/",
+    ".env",
 ]
 
 # ---------------------------------------------------------------------------
@@ -63,8 +64,9 @@ _GITIGNORE_ENTRIES: list[str] = [
 
 _DEFAULT_CONFIG_YAML: str = """# Arcwright AI Project Configuration
 #
-# API keys must be set via environment variable:
-#   export ARCWRIGHT_API_CLAUDE_API_KEY="sk-ant-..."
+# API keys must be set via environment variable or .env file:
+#   ARCWRIGHT_API_CLAUDE_API_KEY="sk-ant-..."
+# See .env.example for the full list of supported variables.
 # Or in the global config file: ~/.arcwright-ai/config.yaml
 # The api section must NEVER appear in project-level config files.
 
@@ -97,6 +99,61 @@ scm:
 reproducibility:
   enabled: false
   retention: 30
+"""
+
+_DEFAULT_ENV_EXAMPLE: str = """# Arcwright AI — Environment Variables
+# Copy this file to .env and fill in your values.
+# The .env file is loaded automatically by arcwright-ai and is gitignored.
+#
+# See https://github.com/ProductEngineerIO/arcwright-ai for full docs.
+
+# ==========================================================================
+# Required — Anthropic API key for Claude
+# ==========================================================================
+ARCWRIGHT_API_CLAUDE_API_KEY=""
+
+# ==========================================================================
+# Model configuration (override config.yaml values)
+# ==========================================================================
+# ARCWRIGHT_AI_MODEL_GENERATE_VERSION="claude-sonnet-4-20250514"
+# ARCWRIGHT_AI_MODEL_REVIEW_VERSION="claude-sonnet-4-20250514"
+# ARCWRIGHT_AI_MODEL_GENERATE_PRICING_INPUT_RATE="3.00"
+# ARCWRIGHT_AI_MODEL_GENERATE_PRICING_OUTPUT_RATE="15.00"
+# ARCWRIGHT_AI_MODEL_REVIEW_PRICING_INPUT_RATE="3.00"
+# ARCWRIGHT_AI_MODEL_REVIEW_PRICING_OUTPUT_RATE="15.00"
+
+# ==========================================================================
+# Resource limits
+# ==========================================================================
+# ARCWRIGHT_LIMITS_TOKENS_PER_STORY="200000"
+# ARCWRIGHT_LIMITS_COST_PER_RUN="10.0"
+# ARCWRIGHT_LIMITS_RETRY_BUDGET="3"
+# ARCWRIGHT_LIMITS_TIMEOUT_PER_STORY="300"
+
+# ==========================================================================
+# Methodology
+# ==========================================================================
+# ARCWRIGHT_METHODOLOGY_ARTIFACTS_PATH="_spec"
+# ARCWRIGHT_METHODOLOGY_TYPE="bmad"
+
+# ==========================================================================
+# SCM (source control)
+# ==========================================================================
+# ARCWRIGHT_SCM_BRANCH_TEMPLATE="arcwright-ai/{story_slug}"
+
+# ==========================================================================
+# Reproducibility
+# ==========================================================================
+# ARCWRIGHT_REPRODUCIBILITY_ENABLED="false"
+# ARCWRIGHT_REPRODUCIBILITY_RETENTION="30"
+
+# ==========================================================================
+# LangSmith tracing (optional — cloud-based run observability)
+# https://smith.langchain.com
+# ==========================================================================
+# LANGCHAIN_TRACING_V2="true"
+# LANGCHAIN_API_KEY="lsv2_pt_..."
+# LANGCHAIN_PROJECT="arcwright-ai"
 """
 
 
@@ -175,6 +232,22 @@ def _write_default_config(project_root: Path) -> bool:
     if config_path.exists():
         return False
     config_path.write_text(_DEFAULT_CONFIG_YAML, encoding="utf-8")
+    return True
+
+
+def _write_env_example(project_root: Path) -> bool:
+    """Write .env.example to the project root.
+
+    Args:
+        project_root: Project root directory.
+
+    Returns:
+        True if .env.example was created, False if it already existed.
+    """
+    env_example_path = project_root / ".env.example"
+    if env_example_path.exists():
+        return False
+    env_example_path.write_text(_DEFAULT_ENV_EXAMPLE, encoding="utf-8")
     return True
 
 
@@ -284,6 +357,9 @@ def init_command(
     # Task 1.5 — write default config
     config_created = _write_default_config(project_root)
 
+    # Write .env.example template to project root
+    env_example_created = _write_env_example(project_root)
+
     # Task 1.6 — update .gitignore
     added_gitignore = _update_gitignore(project_root)
 
@@ -303,6 +379,13 @@ def init_command(
         typer.echo(f"  ✓ Created: {CONFIG_FILENAME}", err=True)
     else:
         typer.echo(f"  ✓ Preserved existing: {CONFIG_FILENAME}", err=True)
+
+    typer.echo("", err=True)
+    typer.echo(".env.example:", err=True)
+    if env_example_created:
+        typer.echo("  ✓ Created: .env.example (copy to .env and fill in values)", err=True)
+    else:
+        typer.echo("  ✓ Preserved existing: .env.example", err=True)
 
     typer.echo("", err=True)
     typer.echo(".gitignore:", err=True)
@@ -369,6 +452,9 @@ def _resolve_artifacts_path(project_root: Path) -> str:
 def _check_api_key() -> tuple[bool, str]:
     """Check if Claude API key is available.
 
+    Loads .env from cwd before checking so validate-setup works without
+    having to export variables to the shell first.
+
     Looks for the key in the environment variable first, then in the global
     config file (~/.arcwright-ai/config.yaml).  Never reads project-level
     config (NFR6).
@@ -376,6 +462,10 @@ def _check_api_key() -> tuple[bool, str]:
     Returns:
         Tuple of (passed, detail_message).
     """
+    from dotenv import load_dotenv
+
+    load_dotenv()  # cwd .env
+
     env_key = os.environ.get(ENV_API_CLAUDE_API_KEY, "").strip()
     if env_key:
         return True, "present (environment variable)"

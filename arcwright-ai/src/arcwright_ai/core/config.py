@@ -9,6 +9,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from dotenv import load_dotenv
 from pydantic import ConfigDict, Field, model_validator
 from pydantic import ValidationError as PydanticValidationError
 
@@ -724,6 +725,13 @@ def load_config(project_root: Path | None = None) -> RunConfig:
             type, or the project config contains an ``api`` section.
     """
     merged: dict[str, Any] = {}
+
+    # Tier 0: load .env file (project root, then cwd) so env vars are
+    # available for the override layer below.  Existing env vars are NOT
+    # overwritten ("first wins").
+    if project_root is not None:
+        load_dotenv(project_root / ".env")
+    load_dotenv()  # cwd fallback — no-op if already loaded above
 
     # Tier 1: global config (~/.arcwright-ai/config.yaml)
     global_cfg = Path.home() / GLOBAL_CONFIG_DIR / CONFIG_FILENAME

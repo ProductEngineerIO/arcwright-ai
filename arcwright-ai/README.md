@@ -62,6 +62,15 @@ Set your API key (add to your shell profile or `.env`):
 export ARCWRIGHT_API_CLAUDE_API_KEY="sk-ant-..."
 ```
 
+Or copy the generated `.env.example` and fill in your values:
+
+```bash
+cp .env.example .env
+# Edit .env — at minimum set ARCWRIGHT_API_CLAUDE_API_KEY
+```
+
+> **`.env` files** are loaded automatically by arcwright-ai on startup. The `.env` file is git-ignored by `init` — secrets never enter version control. See `.env.example` for the full list of supported variables.
+
 > **Tip — guaranteed local execution:** Use `python -m arcwright_ai` instead of
 > the bare `arcwright-ai` command. This always runs the copy installed in the
 > active virtual environment, never a stale global install.
@@ -90,6 +99,13 @@ This creates `.arcwright-ai/` with the following layout:
 └── tmp/              ← transient scratch space (git-ignored)
 ```
 
+It also places a `.env.example` in the project root. Copy it to get started:
+
+```bash
+cp .env.example .env
+# Fill in at minimum: ARCWRIGHT_API_CLAUDE_API_KEY
+```
+
 **`config.yaml` defaults** (edit to suit your project):
 
 ```yaml
@@ -110,9 +126,10 @@ scm:
   branch_template: "arcwright-ai/{story_slug}"
 ```
 
-> **API key security**: Never put your API key in `config.yaml`. Set it via
-> `ARCWRIGHT_API_CLAUDE_API_KEY` environment variable, or in the global
-> `~/.arcwright-ai/config.yaml` (user-level, outside any repo).
+> **API key security**: Never put your API key in `config.yaml`. Use the
+> `.env` file (git-ignored), the `ARCWRIGHT_API_CLAUDE_API_KEY` environment
+> variable, or the global `~/.arcwright-ai/config.yaml` (user-level, outside
+> any repo).
 
 Verify your setup:
 
@@ -258,7 +275,7 @@ LangGraph has built-in support for [LangSmith](https://smith.langchain.com) — 
 
 1. Create a free account at [smith.langchain.com](https://smith.langchain.com)
 2. Go to **Settings → API Keys** and create an API key
-3. Set environment variables (add to your shell profile or `.env`):
+3. Set environment variables (add to your `.env` file or shell profile):
 
 ```bash
 export LANGCHAIN_TRACING_V2=true

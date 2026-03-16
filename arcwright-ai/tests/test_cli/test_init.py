@@ -259,3 +259,36 @@ def test_root_help_lists_init_command() -> None:
     result = runner.invoke(app, ["--help"], catch_exceptions=False)
     assert result.exit_code == 0
     assert "init" in result.output
+
+
+# ---------------------------------------------------------------------------
+# .env.example creation
+# ---------------------------------------------------------------------------
+
+
+def test_init_creates_env_example(fresh_project: Path) -> None:
+    """arcwright-ai init creates .env.example at the project root."""
+    result = runner.invoke(app, ["init", "--path", str(fresh_project)], catch_exceptions=False)
+    assert result.exit_code == 0
+
+    env_example = fresh_project / ".env.example"
+    assert env_example.is_file()
+    content = env_example.read_text(encoding="utf-8")
+    assert "ARCWRIGHT_API_CLAUDE_API_KEY" in content
+    assert "LANGCHAIN_TRACING_V2" in content
+
+
+def test_init_preserves_existing_env_example(initialized_project: Path) -> None:
+    """Re-running init does not overwrite a user-modified .env.example."""
+    env_example = initialized_project / ".env.example"
+    env_example.write_text("# custom\n", encoding="utf-8")
+
+    runner.invoke(app, ["init", "--path", str(initialized_project)], catch_exceptions=False)
+    assert env_example.read_text(encoding="utf-8") == "# custom\n"
+
+
+def test_init_gitignore_includes_dotenv(fresh_project: Path) -> None:
+    """arcwright-ai init adds .env to .gitignore."""
+    runner.invoke(app, ["init", "--path", str(fresh_project)], catch_exceptions=False)
+    content = (fresh_project / ".gitignore").read_text(encoding="utf-8")
+    assert ".env" in content.splitlines()
