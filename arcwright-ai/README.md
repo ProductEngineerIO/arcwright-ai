@@ -31,12 +31,19 @@ Arcwright AI takes BMAD planning artifacts (PRD, Architecture, Epics, Stories) a
 
 ## Installation
 
-**From PyPI** (end users):
+**From PyPI** (end users — install in your target project):
 
 ```bash
+cd /path/to/your/project
 python3 -m venv .venv
-source .venv/bin/activate
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install arcwright-ai
+```
+
+To version-control the dependency, add a `requirements.txt` to your project:
+
+```text
+arcwright-ai>=0.2.3
 ```
 
 **From source** (contributors):
@@ -44,8 +51,9 @@ pip install arcwright-ai
 ```bash
 git clone https://github.com/ProductEngineerIO/arcwright-ai.git
 cd arcwright-ai/arcwright-ai
-python -m venv .venv
-.venv/bin/pip install -e ".[dev]"
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
 ```
 
 Set your API key (add to your shell profile or `.env`):
@@ -54,6 +62,10 @@ Set your API key (add to your shell profile or `.env`):
 export ARCWRIGHT_API_CLAUDE_API_KEY="sk-ant-..."
 ```
 
+> **Tip — guaranteed local execution:** Use `python -m arcwright_ai` instead of
+> the bare `arcwright-ai` command. This always runs the copy installed in the
+> active virtual environment, never a stale global install.
+
 ---
 
 ## Project Setup
@@ -61,11 +73,11 @@ export ARCWRIGHT_API_CLAUDE_API_KEY="sk-ant-..."
 Before dispatching stories, initialise Arcwright AI in your **target project** (the project whose stories you want to implement — not this repo):
 
 ```bash
-# From inside the target project root:
-arcwright-ai init
+# From inside the target project root (venv activated):
+python -m arcwright_ai init
 
 # Or point explicitly:
-arcwright-ai init --path /path/to/your/project
+python -m arcwright_ai init --path /path/to/your/project
 ```
 
 This creates `.arcwright-ai/` with the following layout:
@@ -105,7 +117,7 @@ scm:
 Verify your setup:
 
 ```bash
-arcwright-ai validate-setup
+python -m arcwright_ai validate-setup
 ```
 
 ---
@@ -115,11 +127,12 @@ arcwright-ai validate-setup
 Dispatch a single story by its `epic.story` identifier (e.g., story 4 of epic 2 is `2.4`):
 
 ```bash
-# From inside the target project root:
-arcwright-ai dispatch --story 2.4
+# From inside the target project root (venv activated):
+python -m arcwright_ai dispatch --story 2.4
 
-# Dashes also work:
-arcwright-ai dispatch --story 2-4
+# Dashes and STORY- prefix also work:
+python -m arcwright_ai dispatch --story 2-4
+python -m arcwright_ai dispatch --story STORY-2.4
 ```
 
 The pipeline runs:

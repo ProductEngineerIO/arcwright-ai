@@ -98,13 +98,13 @@ Granular, user-controlled scope selection:
 
 ```bash
 # Dispatch an entire epic
-arcwright-ai dispatch --epic EPIC-3
+python -m arcwright_ai dispatch --epic 3
 
 # Dispatch a single story
-arcwright-ai dispatch --story STORY-3.1
+python -m arcwright_ai dispatch --story 3.1
 
 # Resume a halted epic from the failure point
-arcwright-ai dispatch --epic EPIC-3 --resume
+python -m arcwright_ai dispatch --epic 3 --resume
 ```
 
 ### Validation Pipeline
@@ -185,20 +185,37 @@ flowchart TD
 
 ### Installation
 
-Create a virtual environment in your target project, then install:
+Create a virtual environment **inside your target project**, install, and pin the dependency:
 
 ```bash
+cd /path/to/your/project
 python3 -m venv .venv
-source .venv/bin/activate
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install arcwright-ai
 ```
+
+To version-control the dependency, add a `requirements.txt` to your project:
+
+```text
+arcwright-ai>=0.2.3
+```
+
+Then anyone cloning the project can reproduce the environment:
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
+```
+
+> **Tip — guaranteed local execution:** Use `python -m arcwright_ai` instead of
+> the bare `arcwright-ai` command. This always runs the copy installed in the
+> active virtual environment, never a stale global install.
 
 ### Quick Start
 
 1. **Initialize** your project:
 
    ```bash
-   arcwright-ai init
+   python -m arcwright_ai init
    ```
 
    This scaffolds the `.arcwright-ai/` directory, generates a default config, adds temp/run directories to `.gitignore`, and detects existing BMAD artifacts.
@@ -219,7 +236,7 @@ pip install arcwright-ai
 3. **Validate** your setup:
 
    ```bash
-   arcwright-ai validate-setup
+   python -m arcwright_ai validate-setup
    ```
 
    Expect output like:
@@ -236,7 +253,7 @@ pip install arcwright-ai
 4. **Dispatch** your first run:
 
    ```bash
-   arcwright-ai dispatch --story STORY-1.1
+   python -m arcwright_ai dispatch --story 1.1
    ```
 
 5. **Review** results in `.arcwright-ai/runs/<run-id>/summary.md`
@@ -269,7 +286,7 @@ pip install arcwright-ai
 All commands are composable in shell scripts:
 
 ```bash
-arcwright-ai dispatch --epic EPIC-3 && notify-slack "done"
+python -m arcwright_ai dispatch --epic 3 && notify-slack "done"
 ```
 
 ## Configuration
