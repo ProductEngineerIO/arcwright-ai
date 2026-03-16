@@ -24,6 +24,7 @@ Arcwright AI takes BMAD planning artifacts (PRD, Architecture, Epics, Stories) a
 
 - **Python 3.11+** (3.14 recommended; see [LangGraph Studio](#langgraph-studio) for the exception)
 - **Claude API key** (Anthropic): `ARCWRIGHT_API_CLAUDE_API_KEY`
+- **BMAD 6.1+** — planning artifacts and dev-story workflow features require BMAD 6.1 or later
 - A project initialised with BMAD (`_spec/planning-artifacts/` containing PRD, architecture, epics, and story files)
 
 ---
@@ -295,6 +296,6 @@ Check `.arcwright-ai/config.yaml` in the target project. The `methodology.artifa
 
 **Dev agent File List is consistently incomplete or doesn't match `git diff` output after a BMAD update**
 
-The dev-story workflow in this project includes custom enhancements to `instructions.xml` (review-continuation detection, git diff File List audit in Step 9, review follow-up handling) and a fully enhanced `checklist.md`. These customizations live in `_bmad/bmm/workflows/4-implementation/dev-story/` — a directory that is gitignored and gets overwritten by BMAD framework updates.
+The dev-story workflow in this project includes a custom enhancement to `workflow.md` — the Step 9 git diff File List reconciliation audit. This customization lives in `_bmad/bmm/workflows/4-implementation/dev-story/` — a directory that is gitignored and gets overwritten by BMAD framework updates. (Other features that were previously custom — review-continuation detection, `[AI-Review]` follow-up handling, enhanced checklist — are now stock in BMAD 6.1.)
 
-If you have recently run a BMAD update and agent File Lists are again going unaudited, the customizations were likely overwritten. Re-apply them manually — see the **BMAD Workflow Customizations** section in the root [`README.md`](../README.md#bmad-workflow-customizations) for details on what was changed and why.
+If you have recently run a BMAD update and agent File Lists are again going unaudited, the Step 9 customization was likely overwritten. Re-apply it manually — see the **BMAD Workflow Customizations** section in the root [`README.md`](../README.md#bmad-workflow-customizations) for details.

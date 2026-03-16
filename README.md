@@ -180,6 +180,7 @@ flowchart TD
 - Python 3.11 or later
 - Git 2.25 or later
 - A Claude API key
+- **BMAD 6.1 or later** — planning artifacts and dev-story workflow features require BMAD 6.1+
 - A project with BMAD planning artifacts (PRD, architecture, stories with acceptance criteria)
 
 ### Installation
@@ -340,7 +341,9 @@ Arcwright AI is in **active development** and [available on PyPI](https://pypi.o
 
 ## BMAD Workflow Customizations
 
-This project maintains customizations to the default BMAD dev-story workflow. These changes live in `_bmad/bmm/workflows/4-implementation/dev-story/` and are applied manually after each BMAD framework upgrade.
+This project maintains one customization to the default BMAD dev-story workflow. The change lives in `_bmad/bmm/workflows/4-implementation/dev-story/workflow.md` and must be re-applied manually after each BMAD framework upgrade.
+
+> **Note (BMAD 6.1):** Several features that were previously custom in this project — Step 3 review-continuation detection, Step 8 `[AI-Review]` follow-up handling, expanded Step 10 completion/communication, and the enhanced `checklist.md` — were adopted natively in BMAD 6.1. Only the Step 9 git diff audit below remains custom.
 
 ### Why `_bmad/` is gitignored
 
@@ -350,14 +353,13 @@ The BMAD framework is installed *into* a project, not built alongside it. It shi
 
 | File | Change | Reason |
 |------|--------|--------|
-| `_bmad/bmm/workflows/4-implementation/dev-story/instructions.xml` | Added Step 3 (review-continuation detection), git diff reconciliation audit in Step 9, enhanced review follow-up handling in Step 8, and expanded completion/communication steps | 8 of 12 stories across Epics 2–4 (67%) had Dev Agent Record File Lists that did not match the files actually changed. The audit runs `git diff --name-only HEAD`, compares against the story's File List, and blocks code-review submission until all discrepancies are resolved. Review-continuation detection was added to preserve context when resuming after a code review. |
-| `_bmad/bmm/workflows/4-implementation/dev-story/checklist.md` | Replaced stock checklist with an enhanced Definition of Done checklist: added emoji section headers, `[AI-Review]` review follow-up tracking items, a git diff File List reconciliation requirement, a Final Validation Output block with template variables, and a Story Structure Compliance item | Keeps the Definition of Done checklist in sync with the automated enforcement added to `instructions.xml`, and adds explicit review follow-up tracking to close the loop between code review findings and story completion. |
+| `_bmad/bmm/workflows/4-implementation/dev-story/workflow.md` | Replaced the stock Step 9 one-liner (`Confirm File List includes every changed file`) with a full git diff reconciliation audit | 8 of 12 stories across Epics 2–4 (67%) had Dev Agent Record File Lists that did not match the files actually changed. The audit runs `git diff --name-only HEAD` and `git status --short`, compares against the story's File List, outputs a reconciliation table, and blocks code-review submission until all discrepancies are resolved. |
 
 ### Re-applying after a BMAD update
 
-A BMAD framework update (via `npx bmad-method@<version> install` or equivalent) will overwrite the customized files above with stock originals. Re-apply the customizations manually after each upgrade — the current working state of both files is always in `_bmad/` and serves as the live reference.
+A BMAD framework update (via `npx bmad-method@<version> install` or equivalent) will overwrite `workflow.md` with the stock original. Re-apply the Step 9 git diff audit manually after each upgrade — the current working state of the file is always in `_bmad/` and serves as the live reference.
 
-**Symptom of missing customizations:** Dev agent File Lists stop matching `git diff` output, or the agent no longer detects review-continuation context after a code review. See the troubleshooting entry in [`arcwright-ai/README.md`](arcwright-ai/README.md#dev-agent-file-list-is-consistently-incomplete-or-doesnt-match-git-diff-output-after-a-bmad-update).
+**Symptom of missing customization:** Dev agent File Lists stop matching `git diff` output after a BMAD update. See the troubleshooting entry in [arcwright-ai/README.md](arcwright-ai/README.md#dev-agent-file-list-is-consistently-incomplete-or-doesnt-match-git-diff-output-after-a-bmad-update).
 
 ## Contributing
 
