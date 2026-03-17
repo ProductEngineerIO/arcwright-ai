@@ -12,6 +12,7 @@ from arcwright_ai.core.exceptions import (
     ContextError,
     ProjectError,
     RunError,
+    SandboxViolation,
     ScmError,
     ValidationError,
     WorktreeError,
@@ -96,6 +97,12 @@ def test_agent_timeout_error_is_agent_error() -> None:
 
 def test_agent_budget_error_is_agent_error() -> None:
     exc = AgentBudgetError("budget exceeded")
+    assert isinstance(exc, AgentError)
+    assert isinstance(exc, ArcwrightError)
+
+
+def test_sandbox_violation_is_agent_error() -> None:
+    exc = SandboxViolation("path outside boundary")
     assert isinstance(exc, AgentError)
     assert isinstance(exc, ArcwrightError)
 
