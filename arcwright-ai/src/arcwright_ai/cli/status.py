@@ -95,6 +95,8 @@ scm:
   branch_template: "arcwright-ai/{story_slug}"
   # default_branch: ""          # empty = auto-detect; set to "main", "develop", etc.
   # auto_merge: false            # set true for unattended overnight dispatch → merge chain
+  # merge_wait_timeout: 0        # seconds to wait for CI after auto-merge (0 = fire-and-forget)
+  #                              # recommended: 1200 (20 min) when auto_merge is true
 
 reproducibility:
   enabled: false

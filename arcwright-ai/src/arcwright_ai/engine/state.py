@@ -41,6 +41,8 @@ class StoryState(BaseModel):
         context_bundle: Assembled context from preflight (None until preflight runs).
         agent_output: Raw agent response text (None until agent runs).
         validation_result: Last validation pipeline result (None until validation runs).
+        merge_outcome: Structured merge result from commit_node. Read by dispatch
+            loop to decide epic continuation. ``None`` until commit_node runs.
         retry_history: Accumulated validation results across retry attempts.
         retry_count: Number of retry attempts so far.
         budget: Token/cost consumption tracker.
@@ -57,6 +59,7 @@ class StoryState(BaseModel):
     worktree_path: Path | None = None
     base_ref: str | None = None
     pr_url: str | None = None
+    merge_outcome: str | None = None
     status: TaskState = TaskState.QUEUED
     context_bundle: ContextBundle | None = None
     agent_output: str | None = None

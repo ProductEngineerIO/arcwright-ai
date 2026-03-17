@@ -11,11 +11,12 @@ from arcwright_ai.scm.branch import (
     list_branches,
 )
 from arcwright_ai.scm.git import GitResult, git
-from arcwright_ai.scm.pr import generate_pr_body, get_pull_request_merge_sha, merge_pull_request
+from arcwright_ai.scm.pr import MergeOutcome, generate_pr_body, get_pull_request_merge_sha, merge_pull_request
 from arcwright_ai.scm.worktree import create_worktree, list_worktrees, remove_worktree
 
 __all__: list[str] = [
     "GitResult",
+    "MergeOutcome",
     "branch_exists",
     "commit_story",
     "create_branch",

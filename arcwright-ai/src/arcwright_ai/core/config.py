@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import warnings
 from decimal import Decimal
@@ -40,6 +41,8 @@ from arcwright_ai.core.constants import (
 from arcwright_ai.core.exceptions import ConfigError
 from arcwright_ai.core.io import load_yaml
 from arcwright_ai.core.types import ArcwrightModel
+
+logger = logging.getLogger(__name__)
 
 __all__: list[str] = [
     "ApiConfig",
@@ -229,6 +232,9 @@ class ScmConfig(ArcwrightModel):
         auto_merge: When ``True``, automatically merge the PR after creation.
             Defaults to ``False`` (manual merge).  The actual merge call is
             wired in Story 9.3; this field only stores the preference.
+        merge_wait_timeout: Seconds to wait for CI checks to pass after
+            auto-merge before proceeding.  ``0`` means fire-and-forget
+            (backward-compatible default).
     """
 
     model_config = ConfigDict(frozen=True, extra="ignore", str_strip_whitespace=True)
@@ -237,6 +243,7 @@ class ScmConfig(ArcwrightModel):
     remote: str = "origin"
     default_branch: str = ""
     auto_merge: bool = False
+    merge_wait_timeout: int = 0
 
 
 class ReproducibilityConfig(ArcwrightModel):
@@ -777,9 +784,23 @@ def load_config(project_root: Path | None = None) -> RunConfig:
 
     # Tier 5: Pydantic validation
     try:
-        return RunConfig.model_validate(merged)
+        config = RunConfig.model_validate(merged)
     except PydanticValidationError as exc:
         _translate_pydantic_error(exc)
         # _translate_pydantic_error always raises; this is unreachable but
         # satisfies mypy's control-flow analysis.
         raise  # pragma: no cover
+
+    # Post-validation: emit footgun warning for auto_merge + timeout=0
+    if config.scm.auto_merge and config.scm.merge_wait_timeout == 0:
+        logger.warning(
+            "config.scm.merge_wait_no_ci_wait",
+            extra={
+                "data": {
+                    "auto_merge": True,
+                    "merge_wait_timeout": 0,
+                }
+            },
+        )
+
+    return config

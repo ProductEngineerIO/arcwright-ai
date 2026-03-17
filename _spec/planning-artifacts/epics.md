@@ -5,16 +5,18 @@ inputDocuments:
   - '_spec/planning-artifacts/architecture.md'
 date: 2026-03-02
 author: Ed
-epicCount: 11
-storyCount: 44
-totalPoints: 209
+epicCount: 12
+storyCount: 48
+totalPoints: 228
 frCoverage: '36/36'
 nfrCoverage: '20/20'
-amendedDate: 2026-03-15
+amendedDate: 2026-03-16
 amendedBy: Ed
 amendments:
   - date: '2026-03-15'
     description: 'Epic 11: BMAD 6.1 Framework Upgrade — 3 stories, 13 pts. Course correction CC-2026-03-15 approved.'
+  - date: '2026-03-16'
+    description: 'Epic 12: CI-Aware Merge Wait for Epic Chain Integrity — 4 stories, 19 pts. Tech spec ci-aware-merge-wait.md approved.'
 ---
 
 # Arcwright AI - Epic Breakdown
@@ -259,6 +261,12 @@ Developer can configure separate LLM models for code generation and code review,
 Developer dispatches an overnight epic run and every story starts from the latest upstream code, creates PRs against the correct default branch, and optionally auto-merges — the full chain from dispatch to merged code runs unattended.
 **FRs covered:** FR37, FR38, FR39
 **NFRs addressed:** NFR4, NFR19, NFR20
+
+### Epic 12: CI-Aware Merge Wait for Epic Chain Integrity
+Developer dispatches a multi-story epic with auto-merge enabled and the engine waits for each story's CI checks to pass and the PR to merge before starting the next story — ensuring every story builds on verified, merged code. If CI fails, the epic halts cleanly.
+**FRs covered:** FR4, FR39
+**NFRs addressed:** NFR1, NFR2, NFR19
+**Tech Spec:** `_spec/implementation-artifacts/ci-aware-merge-wait.md`
 
 ## Epic 1: Project Foundation & Configuration
 
@@ -1509,3 +1517,143 @@ So that I can confidently continue development using the new skills-based BMAD i
 **Files touched:**
 - `.gitignore` — Remove `_bmad-backup-*` exclusion (cleanup)
 - `_spec/implementation-artifacts/11-3-post-upgrade-verification.md` — Story file
+
+---
+
+## Epic 12: CI-Aware Merge Wait for Epic Chain Integrity
+
+> **Value prop**: Developer dispatches a multi-story epic overnight with `auto_merge: true` and the engine waits for each story's CI checks to pass and the PR to merge before starting the next story — ensuring every story builds on verified, merged code. If CI fails, the epic halts cleanly and the developer can fix the PR, let auto-merge complete, and `--resume`.
+
+### Story 12.1: MergeOutcome Enum, Config Field & State Plumbing
+
+**Priority**: HIGH | **Points**: 3
+**Requirements**: FR39 (auto-merge)
+**Dependencies**: Epic 9 (complete)
+**Tech Spec**: `_spec/implementation-artifacts/ci-aware-merge-wait.md` (Tasks 1, 5)
+
+**Description:**
+As a developer configuring Arcwright AI for CI-aware epic dispatch,
+I want a `merge_wait_timeout` config field and a `MergeOutcome` enum,
+So that the merge subsystem can report structured outcomes and the dispatch loop can make halt decisions.
+
+**Acceptance Criteria:**
+
+**Given** `core/config.py` `ScmConfig` Pydantic model
+**When** `merge_wait_timeout` is added
+**Then** `ScmConfig` gains `merge_wait_timeout: int = 0` — seconds to wait for CI after auto-merge; `0` = fire-and-forget (backward compatible default)
+**And** config validation emits a structured log warning when `auto_merge=True` and `merge_wait_timeout=0`: _"auto_merge is enabled but merge_wait_timeout is 0 — CI checks will not be waited for. Set merge_wait_timeout to enable chain integrity."_
+**And** `_KNOWN_SECTION_FIELDS["scm"]` auto-includes `merge_wait_timeout` via `ScmConfig.model_fields.keys()` (no manual update needed)
+**And** `MergeOutcome` StrEnum is defined in `scm/pr.py` with values: `MERGED`, `SKIPPED`, `CI_FAILED`, `TIMEOUT`, `ERROR`
+**And** `MergeOutcome` is exported from `scm/__init__.py`
+**And** `StoryState` in `engine/state.py` gains `merge_outcome: str | None = None`
+**And** `_DEFAULT_CONFIG_YAML` in `cli/status.py` includes commented-out `merge_wait_timeout` with `# recommended: 1200 (20 min) when auto_merge is true`
+**And** existing config round-trip tests still pass (new field has a default)
+**And** unit tests verify: (1) `merge_wait_timeout` defaults to 0, (2) config loads with explicit timeout, (3) footgun warning is logged when `auto_merge=True` + `timeout=0`, (4) `MergeOutcome` enum values match expected strings, (5) `StoryState` accepts `merge_outcome` field
+**And** `ruff check .` and `mypy --strict src/` pass with zero issues
+
+**Files touched:**
+- `src/arcwright_ai/core/config.py` — `ScmConfig.merge_wait_timeout` field
+- `src/arcwright_ai/scm/pr.py` — `MergeOutcome` StrEnum
+- `src/arcwright_ai/scm/__init__.py` — Export `MergeOutcome`
+- `src/arcwright_ai/engine/state.py` — `StoryState.merge_outcome` field
+- `src/arcwright_ai/cli/status.py` — Config template update
+- `tests/test_core/test_config.py` — Config field + warning tests
+- `tests/test_scm/test_pr.py` — `MergeOutcome` enum tests
+
+---
+
+### Story 12.2: Rewrite merge_pull_request() with CI Wait
+
+**Priority**: HIGH | **Points**: 8
+**Requirements**: FR39 (auto-merge), NFR1 (no silent incorrect output), NFR19 (idempotent)
+**Dependencies**: Story 12.1
+**Tech Spec**: `_spec/implementation-artifacts/ci-aware-merge-wait.md` (Task 2)
+
+**Description:**
+As a developer with `auto_merge: true` and `merge_wait_timeout > 0`,
+I want `merge_pull_request()` to queue auto-merge, wait for CI, and confirm the PR actually merged,
+So that subsequent stories in an epic always build on verified, merged code.
+
+**Acceptance Criteria:**
+
+**Given** `scm/pr.py` `merge_pull_request()` function
+**When** `wait_timeout > 0`
+**Then** signature changes to `async def merge_pull_request(pr_url, strategy, *, project_root, wait_timeout=0) -> MergeOutcome`
+**And** Step A: runs `gh pr merge <number> <strategy_flag> --delete-branch --auto` to queue auto-merge; parses stderr — if `"auto-merge is not allowed"` is found, returns `MergeOutcome.ERROR` with actionable log: _"Auto-merge is not enabled for this repository. Enable it in Settings → General → Allow auto-merge."_
+**And** Step B: runs `gh pr checks <number> --watch --fail-fast` wrapped in `asyncio.wait_for(timeout=wait_timeout)` — exit 0 → proceed to Step C; exit 1 → return `MergeOutcome.CI_FAILED`
+**And** on `asyncio.TimeoutError`: calls `proc.terminate()` + `await proc.wait()` with 5s grace period (falls back to `proc.kill()` if needed); runs `gh pr view --json state` to check if PR is already `MERGED` before returning `MergeOutcome.TIMEOUT`
+**And** Step C: verifies PR merged via `gh pr view <number> --json state --jq .state` — retries up to 3 times with 5s sleep if not yet `MERGED`; returns `MergeOutcome.MERGED` on success, `MergeOutcome.ERROR` if still not merged
+**And** when `wait_timeout == 0` (backward compatible): runs `gh pr merge <number> <strategy_flag> --delete-branch` (no `--auto`, immediate merge, same as current) — returns `MergeOutcome.MERGED` on success, `MergeOutcome.ERROR` on failure
+**And** guard clauses unchanged: `gh` not found → `MergeOutcome.ERROR`, invalid URL → `MergeOutcome.ERROR`
+**And** all outcomes logged via structured logging with `merge_outcome` field
+**And** all existing `merge_pull_request` tests updated from `bool` assertions to `MergeOutcome` assertions (return type is the only breaking change; all use `wait_timeout=0` default)
+**And** new unit tests: `test_merge_pr_auto_flag_when_wait_timeout_positive`, `test_merge_pr_checks_watch_called_after_auto`, `test_merge_pr_returns_merged_on_ci_pass`, `test_merge_pr_returns_ci_failed_on_check_failure`, `test_merge_pr_returns_timeout_on_asyncio_timeout`, `test_merge_pr_no_wait_when_timeout_zero`, `test_merge_pr_returns_skipped_never`, `test_merge_pr_timeout_verify_actually_merged`, `test_merge_pr_timeout_subprocess_sigterm` (timing simulation), `test_merge_pr_auto_merge_not_allowed_stderr`
+**And** `ruff check .` and `mypy --strict src/` pass with zero issues
+
+**Files touched:**
+- `src/arcwright_ai/scm/pr.py` — Rewrite `merge_pull_request()`, update return type
+- `tests/test_scm/test_pr.py` — Update existing tests (bool → MergeOutcome), add 10 new tests
+
+---
+
+### Story 12.3: commit_node MergeOutcome Integration
+
+**Priority**: HIGH | **Points**: 5
+**Requirements**: FR39, NFR1, NFR16 (provenance)
+**Dependencies**: Story 12.2
+**Tech Spec**: `_spec/implementation-artifacts/ci-aware-merge-wait.md` (Task 3)
+
+**Description:**
+As the engine's commit_node,
+I want to pass the configured `merge_wait_timeout` to `merge_pull_request()` and record the structured `MergeOutcome` on story state,
+So that merge results flow correctly into provenance records and are available for the dispatch loop to inspect.
+
+**Acceptance Criteria:**
+
+**Given** `engine/nodes.py` `commit_node` auto-merge block
+**When** `auto_merge` is `True`
+**Then** `merge_pull_request()` is called with `wait_timeout=state.config.scm.merge_wait_timeout`
+**And** the existing `merge_succeeded: bool` conditional is replaced with `MergeOutcome` switch logic:
+  - `MERGED` → call `get_pull_request_merge_sha()`, fetch merge SHA, record provenance as success
+  - `CI_FAILED` / `TIMEOUT` / `ERROR` → skip `get_pull_request_merge_sha()` (no merge SHA to fetch), record provenance with failure details
+**And** `state.merge_outcome = merge_outcome.value` is set on the returned state
+**And** when `auto_merge` is `False`, `merge_pull_request()` is never called and `state.merge_outcome = MergeOutcome.SKIPPED.value`
+**And** all outcomes recorded in provenance entries with the correct merge status
+**And** existing commit_node behavior preserved when `wait_timeout=0` (backward compatible)
+**And** unit tests: `test_commit_node_sets_merge_outcome_merged`, `test_commit_node_sets_merge_outcome_ci_failed`, `test_commit_node_sets_merge_outcome_skipped`, `test_commit_node_passes_wait_timeout_from_config`
+**And** `ruff check .` and `mypy --strict src/` pass with zero issues
+
+**Files touched:**
+- `src/arcwright_ai/engine/nodes.py` — Update auto-merge block: `wait_timeout` arg, `MergeOutcome` switch, state field
+- `tests/test_engine/test_nodes.py` — 4 new/updated commit_node tests
+
+---
+
+### Story 12.4: Dispatch Loop Halt on Merge Failure
+
+**Priority**: HIGH | **Points**: 3
+**Requirements**: FR4 (halt on failure), NFR2 (recoverable partial completion)
+**Dependencies**: Story 12.3
+**Tech Spec**: `_spec/implementation-artifacts/ci-aware-merge-wait.md` (Task 4)
+
+**Description:**
+As the epic dispatch loop,
+I want to inspect the `merge_outcome` on a completed story's state and halt the epic when CI failed or timed out,
+So that subsequent stories never build on stale, unmerged code.
+
+**Acceptance Criteria:**
+
+**Given** `cli/dispatch.py` `_dispatch_epic_async()` story loop
+**When** `graph.ainvoke()` returns a story with status SUCCESS
+**Then** the dispatch loop checks `result.merge_outcome`
+**And** if `merge_outcome` is `"ci_failed"` or `"timeout"`, the loop breaks with a warning log: _"Epic halted: Story {slug} PR merge failed (CI {outcome}). Fix the PR and run `arcwright dispatch --resume` to continue."_
+**And** if `merge_outcome` is `"merged"`, `"skipped"`, or `None`, the loop continues to the next story
+**And** the halt behavior does NOT change the story's SUCCESS status — the story code was valid, only the merge failed
+**And** backward compatibility: when `merge_outcome` is `None` (pre-existing stories without the field), the loop continues
+**And** `MergeOutcome` is imported from `arcwright_ai.scm` (enum, not bare strings) for the comparison
+**And** unit test: `test_dispatch_halts_on_ci_failed_merge_outcome`, `test_dispatch_halts_on_timeout_merge_outcome`, `test_dispatch_continues_on_merged_outcome`, `test_dispatch_continues_on_none_outcome`
+**And** `ruff check .` and `mypy --strict src/` pass with zero issues
+
+**Files touched:**
+- `src/arcwright_ai/cli/dispatch.py` — Merge outcome check after story SUCCESS
+- `tests/test_cli/test_dispatch.py` (or inline) — 4 dispatch halt tests

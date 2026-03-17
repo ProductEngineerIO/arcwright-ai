@@ -113,3 +113,26 @@ def test_project_state_forbids_extra_fields() -> None:
             config=config,
             unexpected="oops",
         )
+
+
+# ---------------------------------------------------------------------------
+# Story 12.1 — merge_outcome field on StoryState
+# ---------------------------------------------------------------------------
+
+
+def test_story_state_merge_outcome_default_none() -> None:
+    """StoryState.merge_outcome defaults to None."""
+    state = make_story_state()
+    assert state.merge_outcome is None
+
+
+def test_story_state_merge_outcome_accepts_string() -> None:
+    """StoryState accepts a string merge_outcome value."""
+    state = make_story_state(merge_outcome="merged")
+    assert state.merge_outcome == "merged"
+
+
+def test_story_state_merge_outcome_accepts_none() -> None:
+    """StoryState accepts explicit None for merge_outcome."""
+    state = make_story_state(merge_outcome=None)
+    assert state.merge_outcome is None

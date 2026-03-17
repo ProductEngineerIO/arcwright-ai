@@ -131,3 +131,10 @@ development_status:
   11-1-pre-upgrade-audit-and-backup: done
   11-2-execute-bmad-6-1-installation-and-migration: done
   11-3-post-upgrade-verification-and-development-workflow-smoke-test: done
+
+  # Epic 12: CI-Aware Merge Wait for Epic Chain Integrity (4 stories, 19 pts)
+  epic-12: in-progress
+  12-1-mergeoutcome-enum-config-field-and-state-plumbing: done
+  12-2-rewrite-merge-pull-request-with-ci-wait: ready-for-dev
+  12-3-commit-node-mergeoutcome-integration: ready-for-dev
+  12-4-dispatch-loop-halt-on-merge-failure: ready-for-dev

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import logging
 import warnings
 from pathlib import Path
 
@@ -709,3 +710,80 @@ def test_scm_unknown_key_warning_still_works(api_key_env: None, global_config_di
     assert cfg.scm.branch_template == "test/{story_slug}"
     assert cfg.scm.default_branch == "main"
     assert cfg.scm.auto_merge is False
+
+
+# ---------------------------------------------------------------------------
+# Story 12.1 — merge_wait_timeout field and footgun warning
+# ---------------------------------------------------------------------------
+
+
+def test_scm_merge_wait_timeout_default_zero(api_key_env: None, global_config_dir: Path, clean_env: None) -> None:
+    """ScmConfig.merge_wait_timeout defaults to 0 (fire-and-forget)."""
+    cfg = load_config()
+    assert cfg.scm.merge_wait_timeout == 0
+
+
+def test_scm_merge_wait_timeout_round_trips(
+    api_key_env: None, global_config_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clean_env: None
+) -> None:
+    """ScmConfig loads explicit merge_wait_timeout value from YAML correctly."""
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    (project_root / ".arcwright-ai").mkdir()
+    _write_yaml(
+        project_root / ".arcwright-ai" / "config.yaml",
+        "scm:\n  merge_wait_timeout: 1200\n",
+    )
+    monkeypatch.setenv("ARCWRIGHT_API_CLAUDE_API_KEY", "test-api-key")
+    cfg = load_config(project_root=project_root)
+    assert cfg.scm.merge_wait_timeout == 1200
+
+
+def test_scm_footgun_warning_auto_merge_no_timeout(
+    api_key_env: None,
+    global_config_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    clean_env: None,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Footgun warning is logged when auto_merge=True and merge_wait_timeout=0."""
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    (project_root / ".arcwright-ai").mkdir()
+    _write_yaml(
+        project_root / ".arcwright-ai" / "config.yaml",
+        "scm:\n  auto_merge: true\n",
+    )
+    monkeypatch.setenv("ARCWRIGHT_API_CLAUDE_API_KEY", "test-api-key")
+    with caplog.at_level(logging.WARNING, logger="arcwright_ai.core.config"):
+        cfg = load_config(project_root=project_root)
+    assert cfg.scm.auto_merge is True
+    assert cfg.scm.merge_wait_timeout == 0
+    warning_events = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("config.scm.merge_wait_no_ci_wait" in event for event in warning_events)
+
+
+def test_scm_no_footgun_warning_when_timeout_set(
+    api_key_env: None,
+    global_config_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    clean_env: None,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """No footgun warning when auto_merge=True and merge_wait_timeout is non-zero."""
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    (project_root / ".arcwright-ai").mkdir()
+    _write_yaml(
+        project_root / ".arcwright-ai" / "config.yaml",
+        "scm:\n  auto_merge: true\n  merge_wait_timeout: 1200\n",
+    )
+    monkeypatch.setenv("ARCWRIGHT_API_CLAUDE_API_KEY", "test-api-key")
+    with caplog.at_level(logging.WARNING, logger="arcwright_ai.core.config"):
+        cfg = load_config(project_root=project_root)
+    assert cfg.scm.auto_merge is True
+    assert cfg.scm.merge_wait_timeout == 1200
+    warning_events = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+    assert not any("config.scm.merge_wait_no_ci_wait" in event for event in warning_events)

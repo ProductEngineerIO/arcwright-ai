@@ -1194,3 +1194,27 @@ async def test_get_pull_request_merge_sha_returns_none_on_invalid_url(
     )
 
     assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Story 12.1 — MergeOutcome StrEnum
+# ---------------------------------------------------------------------------
+
+
+def test_merge_outcome_enum_values() -> None:
+    """MergeOutcome StrEnum has the expected string values."""
+    from arcwright_ai.scm.pr import MergeOutcome
+
+    assert set(MergeOutcome) == {"merged", "skipped", "ci_failed", "timeout", "error"}
+    assert MergeOutcome.MERGED == "merged"
+    assert MergeOutcome.SKIPPED == "skipped"
+    assert MergeOutcome.CI_FAILED == "ci_failed"
+    assert MergeOutcome.TIMEOUT == "timeout"
+    assert MergeOutcome.ERROR == "error"
+
+
+def test_merge_outcome_exported_from_scm_package() -> None:
+    """MergeOutcome is accessible via the scm package __init__."""
+    from arcwright_ai.scm import MergeOutcome
+
+    assert MergeOutcome.MERGED == "merged"

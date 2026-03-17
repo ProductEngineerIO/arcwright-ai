@@ -7,6 +7,7 @@ import json
 import logging
 import re
 import shutil
+from enum import StrEnum
 from typing import TYPE_CHECKING, NamedTuple
 
 from arcwright_ai.core.constants import (
@@ -23,9 +24,26 @@ from arcwright_ai.scm.git import git
 if TYPE_CHECKING:
     from pathlib import Path
 
-__all__: list[str] = ["generate_pr_body", "get_pull_request_merge_sha", "merge_pull_request", "open_pull_request"]
+__all__: list[str] = [
+    "MergeOutcome",
+    "generate_pr_body",
+    "get_pull_request_merge_sha",
+    "merge_pull_request",
+    "open_pull_request",
+]
 
 logger = logging.getLogger(__name__)
+
+
+class MergeOutcome(StrEnum):
+    """Structured outcome of a pull-request merge attempt."""
+
+    MERGED = "merged"
+    SKIPPED = "skipped"
+    CI_FAILED = "ci_failed"
+    TIMEOUT = "timeout"
+    ERROR = "error"
+
 
 _GITHUB_REMOTE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^https://github\.com/(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?$"),

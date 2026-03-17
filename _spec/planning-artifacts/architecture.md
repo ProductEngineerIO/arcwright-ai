@@ -9,6 +9,10 @@ amendments:
     description: 'Decision 9: Role-Based Model Registry — dual-model support for code generation vs. review with extensible role pattern'
   - date: '2026-03-15'
     description: 'Build & Distribution: Updated to hatch-vcs dynamic versioning from git tags (Epic 10, Story 10.1)'
+  - date: '2026-03-16'
+    description: 'Decision 10: CI-Aware Merge Wait — two-phase auto-merge with CI blocking for epic chain integrity (Epic 12)'
+  - date: '2026-03-16'
+    description: 'Decision 11: Agent SCM Guardrails — system prompt prohibition of agent-initiated git ops, commit-node resilience for agent-created commits (Epic 10, Story 10.4)'
 inputDocuments:
   - '_spec/planning-artifacts/prd.md'
   - '_spec/planning-artifacts/product-brief-arcwright-ai-2026-02-26.md'
@@ -70,6 +74,8 @@ The task lifecycle `queued → preflight → running → validating → success/
 
 **2. Orchestrator-Agent Contract Boundary**
 The orchestrator is responsible for: context assembly, prompt construction, invocation, and result interpretation. The agent (Claude Code SDK) is a **pure execution black box** — it receives a prompt, it returns output. The agent sandbox (subsystem #4) sits between them, gating file operations. Any behavior crossing this boundary is a design smell. This contract must be explicit in the architecture to prevent scope creep into persistent agent state.
+
+> **Amendment (2026-03-16, Decision 11):** The contract boundary now includes an explicit SCM guardrail — a system prompt injected into every agent invocation that prohibits git-mutating commands. The agent may only create, modify, or delete files; all SCM operations are reserved to the pipeline. The `commit_node` also gained resilience to detect agent-created commits as a defense-in-depth measure. See Decision 11 for full details.
 
 **3. Observe Mode Instrumentability (Design Now, Ship Later)**
 The PRD defers observe mode to Growth, but explicitly states: "the execution pipeline must be architecturally instrumentable in MVP." This means every subsystem must expose hooks for observation — the architecture cannot treat this as a Growth-phase afterthought. The pipeline must support a "dry run" mode from day one even though the `--observe` CLI flag ships later.
@@ -1357,7 +1363,7 @@ Project structure directly implements the package dependency DAG. 8 packages map
 - [x] 5 first-class architectural constraints established
 
 **✅ Architectural Decisions**
-- [x] 9 critical decisions documented with rationale and trade-offs (D1-D8 original, D9 post-MVP amendment)
+- [x] 11 critical decisions documented with rationale and trade-offs (D1-D8 original, D9-D11 post-initial amendments)
 - [x] Technology stack fully specified with versions
 - [x] Integration patterns defined (file-based state, CLI boundaries, SDK contract)
 - [x] All inter-decision bindings explicitly documented
@@ -1400,4 +1406,87 @@ Project structure directly implements the package dependency DAG. 8 packages map
 - Architecture Mermaid diagram
 - `.arcwright-ai/` init schema enumeration (first implementation story)
 - Dependency version pinning strategy
+
+---
+
+## Post-Initial Amendments
+
+_Decisions added after the initial architecture was approved and implementation began. Each traces to an epic, story, or tech spec that surfaced the architectural need._
+
+### Decision 10: CI-Aware Merge Wait for Epic Chain Integrity
+
+**Amendment date:** 2026-03-16 | **Source:** Epic 12, Tech Spec `_spec/implementation-artifacts/ci-aware-merge-wait.md`
+
+**Problem:** When `auto_merge: true` is configured and an epic dispatches sequential stories, the fire-and-forget `gh pr merge --squash` completes immediately (no branch protection) or fails silently (CI required). Story N+1's `fetch_and_sync()` doesn't see Story N's code because the PR hasn't been CI-verified and merged yet. Stories build on stale base refs — breaking the deterministic shell's chain integrity guarantee.
+
+**Choice:** Two-phase auto-merge with CI blocking.
+
+1. **Phase 1 — Queue auto-merge:** `gh pr merge <number> --squash --delete-branch --auto` queues the PR to merge once all required status checks pass.
+2. **Phase 2 — Block on CI:** `gh pr checks <number> --watch --fail-fast` blocks until CI completes. Exit 0 → proceed. Exit 1 → `CI_FAILED`. `asyncio.TimeoutError` → `TIMEOUT` (with `SIGTERM` graceful shutdown and a final merge-state check to handle the race window).
+3. **Phase 3 — Confirm merge:** `gh pr view --json state` verifies the PR actually merged (retry up to 3× with 5s sleep for merge propagation delay).
+
+**New type — `MergeOutcome` (StrEnum in `scm/pr.py`):**
+
+| Value | Meaning | Epic continues? |
+|-------|---------|------------------|
+| `MERGED` | CI passed, PR merged, chain intact | Yes |
+| `SKIPPED` | `auto_merge` off or `merge_wait_timeout: 0` | Yes |
+| `CI_FAILED` | CI checks failed | **No — epic halts** |
+| `TIMEOUT` | CI didn't complete within timeout | **No — epic halts** |
+| `ERROR` | `gh` CLI failure, repo misconfigured | Yes (best-effort) |
+
+**Configuration:**
+
+```yaml
+scm:
+  auto_merge: true
+  merge_wait_timeout: 1200  # seconds; 0 = fire-and-forget (backward compatible default)
+```
+
+**Footgun warning:** `auto_merge: true` + `merge_wait_timeout: 0` enables auto-merge but does NOT wait for CI. A structured log warning is emitted at config load time.
+
+**Halt mechanism:** The `commit_node` sets `state.merge_outcome` (string). The dispatch loop in `cli/dispatch.py` inspects this field after each SUCCESS story — if `ci_failed` or `timeout`, the epic halts with an actionable message including the `--resume` command. The story itself remains SUCCESS (the code was valid; only the merge failed). The PR stays open with auto-merge queued — when the developer pushes a fix and CI re-runs, GitHub auto-merges automatically.
+
+**Inter-decision bindings:**
+- **D10↔D2 (Retry & Halt):** Merge failure is a new halt path, but it operates at the dispatch-loop level, not the graph node level. The story completes SUCCESS; the epic halts. `--resume` picks up at the next story once the PR merges.
+- **D10↔D7 (Git Operations):** The `gh` CLI calls use `asyncio.create_subprocess_exec` directly (not the `git()` wrapper) because they invoke `gh`, not `git`. This is consistent with existing PR creation patterns.
+- **D10↔D8 (Logging):** Structured log events include `merge_outcome`, `wait_duration`, and `ci_exit_code` fields.
+- **D10↔D9 (Model Registry):** No interaction — merge wait operates after validation, independent of model selection.
+
+**Backward compatibility:** `merge_wait_timeout: 0` (default) preserves exact pre-amendment behavior. Existing users see no change.
+
+---
+
+### Decision 11: Agent SCM Guardrails & Commit-Node Resilience
+
+**Amendment date:** 2026-03-16 | **Source:** Epic 10, Story 10.4 (bug fix from run `20260316-220432-ad5442`)
+
+**Problem:** The agent (Claude Code SDK) executed `git commit` inside its worktree during dispatch, leaving the working tree clean. The pipeline's `commit_node` found no uncommitted changes, raised `BranchError("no_changes")`, and silently skipped the entire push → PR → auto-merge chain. The story reported "success" with no PR created — a direct violation of NFR1 (zero silent failures).
+
+**Root cause (two-part defect):**
+1. No SCM guardrails in agent prompt — `ClaudeCodeOptions` set `permission_mode="bypassPermissions"` with no `system_prompt`, giving the agent unrestricted shell access. The sandbox (`can_use_tool`) only enforced file-path boundaries, not command restrictions.
+2. `commit_story()` had no fallback for agent-created commits — it only checked `git status --porcelain` for uncommitted changes. If the agent already committed, the function raised `BranchError` instead of detecting the existing commit.
+
+**Choice:** Defense-in-depth — prevention + detection.
+
+**Layer 1 — Prevention (system prompt guardrail):**
+A module-level constant `_SCM_GUARDRAIL_PROMPT` is injected as `system_prompt` into every `ClaudeCodeOptions` constructor call. It explicitly prohibits: `git commit`, `git push`, `git checkout`, `git branch`, `git merge`, `git rebase`, `git reset`, `git stash`, `git tag`, and any SCM-mutating shell command. States: "All version control operations are managed by the Arcwright AI pipeline. You must only create, modify, or delete files."
+
+**Layer 2 — Detection (commit resilience):**
+`commit_story()` gains a `base_ref: str | None` parameter. When `git status --porcelain` returns empty (clean worktree):
+- If `base_ref` is provided, compare `HEAD` against it via `git rev-parse`
+- If `HEAD != base_ref` → agent created commits. Return the HEAD hash, emit structured log `"scm.commit.agent_created"`, and proceed through the normal push/PR/merge chain
+- If `HEAD == base_ref` or `base_ref is None` → truly empty, raise `BranchError` as before
+
+The `commit_node` resolves `base_ref` via `git merge-base HEAD <default-branch>` before calling `commit_story()`, wrapped in try/except for graceful fallback.
+
+**Mixed scenario (agent committed some + left uncommitted changes):** The existing `git add . && git commit` path handles this naturally — stages everything on top of agent commits.
+
+**Constraint update:**
+This decision **strengthens Constraint #2 (Orchestrator-Agent Contract Boundary)** — the contract now includes an explicit behavioral prohibition, not just a structural separation. The agent sandbox enforces file-path boundaries (where), and the system prompt enforces operational boundaries (what).
+
+**Inter-decision bindings:**
+- **D11↔D7 (Git Operations):** Detection uses `git rev-parse` and `git merge-base` through the standard `git()` wrapper. No force operations introduced.
+- **D11↔D6 (Error Handling):** `BranchError` behavior preserved for truly empty worktrees. Agent-detected commits route through the existing success path.
+- **D11↔D8 (Logging):** New structured event `"scm.commit.agent_created"` at INFO level with `story_slug`, `commit_hash`, `base_ref`, `worktree_path`.
 - Per-role budget ceilings (future refinement — current design aggregates across roles)
