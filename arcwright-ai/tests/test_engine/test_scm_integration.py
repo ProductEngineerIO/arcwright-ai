@@ -157,7 +157,7 @@ async def test_full_story_lifecycle_with_scm(
     # Step 2: agent_dispatch — write a real file into the worktree
     agent_output_text = "# SCM Integration\n\nImplemented story 6.6"
 
-    async def _mock_invoke(prompt: str, *, model: str, cwd: Path, sandbox: object) -> InvocationResult:
+    async def _mock_invoke(prompt: str, *, model: str, cwd: Path, sandbox: object, api_key: str) -> InvocationResult:
         # Simulate agent writing a file in the worktree
         assert cwd == state_after_preflight.worktree_path, "agent must run in worktree"
         output_file = cwd / "output.md"

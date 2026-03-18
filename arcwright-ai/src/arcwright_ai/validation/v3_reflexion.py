@@ -295,6 +295,7 @@ async def run_v3_reflexion(
     model: str,
     cwd: Path,
     sandbox: PathValidator,
+    api_key: str,
     attempt_number: int = 1,
 ) -> V3ReflexionResult:
     """Run V3 reflexion validation: LLM self-evaluation of agent output against ACs.
@@ -310,6 +311,7 @@ async def run_v3_reflexion(
         model: Claude model identifier (e.g., ``"claude-sonnet-4-20250514"``).
         cwd: Working directory for the reflexion agent; also the sandbox boundary.
         sandbox: Path validator enforcing sandbox rules during reflexion.
+        api_key: Anthropic API key passed as ``ANTHROPIC_API_KEY`` to the SDK subprocess.
         attempt_number: Which retry attempt this represents (1-based). Defaults to 1.
 
     Returns:
@@ -366,7 +368,7 @@ async def run_v3_reflexion(
 
     # Invoke the reflexion agent via the SDK
     try:
-        result = await invoke_agent(prompt, model=model, cwd=cwd, sandbox=sandbox)
+        result = await invoke_agent(prompt, model=model, cwd=cwd, sandbox=sandbox, api_key=api_key)
     except AgentError as exc:
         raise ValidationError(
             f"Reflexion SDK invocation failed for story {story_path.name}: {exc}",

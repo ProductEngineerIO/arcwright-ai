@@ -501,6 +501,7 @@ async def invoke_agent(
     model: str,
     cwd: Path,
     sandbox: PathValidator,
+    api_key: str,
     max_turns: int | None = None,
 ) -> InvocationResult:
     """Invoke Claude Code SDK to execute a story implementation.
@@ -518,6 +519,8 @@ async def invoke_agent(
             worktree path). Also serves as the sandbox boundary.
         sandbox: Path validator function (``PathValidator`` protocol) for
             sandbox enforcement via dependency injection.
+        api_key: Anthropic API key passed as ``ANTHROPIC_API_KEY`` to the
+            SDK subprocess. Must be the value from ``config.api.claude_api_key``.
         max_turns: Optional maximum number of conversational turns.
 
     Returns:
@@ -547,6 +550,7 @@ async def invoke_agent(
         max_turns=max_turns,
         system_prompt=_SCM_GUARDRAIL_PROMPT,
         can_use_tool=_make_tool_validator(sandbox, cwd, _tool_validation_stats),
+        env={"ANTHROPIC_API_KEY": api_key.strip()},
     )
 
     output_parts: list[str] = []

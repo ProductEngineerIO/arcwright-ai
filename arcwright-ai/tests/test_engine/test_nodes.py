@@ -1868,7 +1868,7 @@ async def test_agent_dispatch_uses_worktree_cwd(
 
     captured_cwd: list[Path] = []
 
-    async def _mock_invoke(prompt: str, *, model: str, cwd: Path, sandbox: object) -> object:
+    async def _mock_invoke(prompt: str, *, model: str, cwd: Path, sandbox: object, api_key: str) -> object:
         captured_cwd.append(cwd)
         from decimal import Decimal
 
@@ -1917,7 +1917,7 @@ async def test_agent_dispatch_falls_back_to_project_root(
 
     captured_cwd: list[Path] = []
 
-    async def _mock_invoke(prompt: str, *, model: str, cwd: Path, sandbox: object) -> object:
+    async def _mock_invoke(prompt: str, *, model: str, cwd: Path, sandbox: object, api_key: str) -> object:
         captured_cwd.append(cwd)
         from decimal import Decimal
 
