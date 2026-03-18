@@ -88,6 +88,7 @@ async def _invoke(
     import claude_code_sdk
 
     monkeypatch.setattr(claude_code_sdk, "query", mock.query)
+    kwargs.setdefault("api_key", "sk-test-not-real")
     return await invoke_agent(
         prompt="Implement the story.",
         model="claude-test",
@@ -221,6 +222,7 @@ async def test_invoke_agent_rate_limit_exhausted_raises(
             model="claude-test",
             cwd=project_root,
             sandbox=validate_path,
+            api_key="sk-test-not-real",
         )
 
 
@@ -339,6 +341,7 @@ async def test_invoke_agent_stateless(
         model="claude-test",
         cwd=project_root,
         sandbox=validate_path,
+        api_key="sk-test-not-real",
     )
 
     monkeypatch.setattr(claude_code_sdk, "query", mock_b.query)
@@ -347,6 +350,7 @@ async def test_invoke_agent_stateless(
         model="claude-test",
         cwd=project_root,
         sandbox=validate_path,
+        api_key="sk-test-not-real",
     )
 
     assert result_a.output_text == "Result A"
@@ -435,6 +439,7 @@ async def test_invoke_agent_skips_none_messages_from_patched_parser(
         model="claude-test",
         cwd=project_root,
         sandbox=validate_path,
+        api_key="sk-test-not-real",
     )
 
     assert result.output_text == "Hello"
@@ -488,6 +493,7 @@ async def test_invoke_agent_rate_limit_event_then_exit_code_1_retries(
         model="claude-test",
         cwd=project_root,
         sandbox=validate_path,
+        api_key="sk-test-not-real",
     )
 
     assert attempt_count == 2, "Expected exactly one retry"
@@ -564,6 +570,7 @@ async def test_invoke_agent_sets_system_prompt_on_options(
         model="claude-test",
         cwd=project_root,
         sandbox=validate_path,
+        api_key="sk-test-not-real",
     )
 
     assert len(captured) >= 1
@@ -596,6 +603,7 @@ async def test_invoke_agent_system_prompt_prohibits_scm_commands(
         model="claude-test",
         cwd=project_root,
         sandbox=validate_path,
+        api_key="sk-test-not-real",
     )
 
     system_prompt = captured[0].system_prompt
