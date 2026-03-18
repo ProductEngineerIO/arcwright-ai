@@ -6,7 +6,7 @@ inputDocuments:
 date: 2026-03-02
 author: Ed
 epicCount: 12
-storyCount: 48
+storyCount: 50
 totalPoints: 228
 frCoverage: '36/36'
 nfrCoverage: '20/20'
@@ -1316,7 +1316,7 @@ So that fetch → worktree → commit → push → PR → merge works as an unbr
 
 ## Epic 10: Ad-Hoc Improvements & Housekeeping
 
-**Added:** 2026-03-15 | **Stories:** 4 (ad-hoc — stories added as needed) | **Points:** 17+
+**Added:** 2026-03-15 | **Stories:** 6 (ad-hoc — stories added as needed) | **Points:** 23+
 
 **Purpose:** Collects small, cross-cutting improvements that don't warrant their own epic. These are housekeeping tasks, build infrastructure changes, and quality-of-life improvements identified during or after the main implementation sprints.
 
@@ -1429,6 +1429,95 @@ So that successful validation runs are not silently left unpushed due to the age
 - `src/arcwright_ai/scm/branch.py` — `commit_story()` resilience for agent-created commits
 - `src/arcwright_ai/engine/nodes.py` — Pass base ref to `commit_story()`
 - `tests/` — New tests for all commit scenarios
+
+---
+
+### Story 10.5: Retry Attempts Should Rebuild Fresh Context
+
+**Priority**: HIGH | **Points**: 3
+**Requirements**: FR9, FR16, FR18, NFR1, NFR11
+**Dependencies**: Story 3.4 (validate node and retry loop)
+
+**Description:**
+As a maintainer of Arcwright AI,
+I want each retry attempt to run with a fresh execution context,
+So that retries do not inherit stale context bundles or worktree state from prior failed attempts.
+
+**Bug:** Retry currently routes from `validate` back to `budget_check` and then to `agent_dispatch` without re-running `preflight`, which means the retry reuses the existing `context_bundle` and worktree state. If artifacts or files changed between attempts, retry behavior can diverge from current source-of-truth context.
+
+**Acceptance Criteria:**
+
+**Given** validation returns a retry outcome **When** the next attempt starts **Then** context for the retry is rebuilt from disk before agent invocation (either by routing through `preflight` or by an equivalent explicit context refresh step)
+**And** the retry prompt includes current context plus prior validation feedback, not stale context from a previous attempt
+**Given** a retry follows a failed attempt **When** the retry executes file changes **Then** it uses an isolated fresh working state that is deterministic and does not depend on residual uncommitted files from prior attempts
+**And** tests cover retry context refresh behavior, including a regression case proving stale context is not reused
+
+**Files touched (expected):**
+- `src/arcwright_ai/engine/graph.py` - retry edge/routing behavior
+- `src/arcwright_ai/engine/nodes.py` - retry transition and context refresh behavior
+- `src/arcwright_ai/engine/state.py` - any state additions needed for retry context reset
+- `tests/test_engine/` - retry-context regression tests
+
+---
+
+### Story 10.6: Auto-Merge Success Marked Error on Branch Cleanup Failure
+
+**Priority**: HIGH | **Points**: 3
+**Requirements**: FR39, FR4, NFR1, NFR2, NFR20
+**Dependencies**: Story 9.3 (auto-merge), Story 12.4 (halt on merge failure)
+
+**Description:**
+As a maintainer running unattended dispatch,
+I want merge status and cleanup status tracked separately,
+So that successful PR merges are not reported as merge failures when local branch cleanup fails.
+
+**Bug:** In auto-merge flow, a successful remote merge can be followed by local cleanup failure (for example, deleting a branch still checked out in a worktree). The run currently reports an error merge outcome, which can incorrectly signal merge failure and influence dispatch halt behavior.
+
+**Acceptance Criteria:**
+
+**Given** PR merge succeeds remotely **When** local branch/worktree cleanup fails **Then** merge outcome remains success and cleanup failure is recorded as warning/non-blocking
+**Given** merge is successful **When** dispatch evaluates continuation **Then** it does not halt because of cleanup-only failure
+**And** structured logs and run summary clearly separate merge result from cleanup result
+**And** tests cover merge-success+cleanup-failure, merge-failure, and fully-success paths
+
+**Files touched (expected):**
+- `src/arcwright_ai/scm/pr.py` - merge result semantics
+- `src/arcwright_ai/scm/worktree.py` - cleanup result semantics
+- `src/arcwright_ai/engine/nodes.py` - commit/merge outcome propagation
+- `src/arcwright_ai/output/summary.py` - unambiguous reporting
+- `tests/test_scm/` and `tests/test_engine/` - regression coverage
+
+---
+
+### Story 10.7: Validate Node Overwrites Provenance — Decision Provenance Missing from PRs
+
+**Priority**: HIGH | **Points**: 5
+**Requirements**: FR12, FR13, FR14, FR15, FR35, NFR17
+**Dependencies**: Story 4.4 (provenance integration), Story 6.4 (PR body generator)
+
+**Description:**
+As a code reviewer using Arcwright AI,
+I want pull requests to contain the Decision Provenance section with all agent decisions recorded during story execution,
+So that I can review the reasoning behind implementation choices, not just the code diff.
+
+**Bug:** `validate_node` in `engine/nodes.py` unconditionally overwrites `validation.md` using `_serialize_validation_checkpoint()`, which writes an entirely different format (`# Validation Result` / `## V6 Invariant Checks` / `## V3 Reflexion Results`) that lacks the `## Agent Decisions` section. This destroys the provenance entries previously written by `agent_dispatch_node` via `append_entry()`. When `commit_node` later calls `generate_pr_body()`, `_extract_decisions()` finds no `## Agent Decisions` header and returns an empty list, rendering "No agent decisions recorded" in every PR.
+
+On retries, the problem compounds: `agent_dispatch_node` calls `append_entry()` on the already-overwritten file (wrong format), so decisions are appended as orphaned `### Decision:` blocks not under a `## Agent Decisions` heading — still invisible to the parser.
+
+**Acceptance Criteria:**
+
+**Given** `agent_dispatch_node` writes provenance entries to `validation.md` **When** `validate_node` writes validation results **Then** the existing `## Agent Decisions` section and all `### Decision:` subsections are preserved intact
+**Given** `validate_node` completes **When** `commit_node` calls `generate_pr_body()` **Then** `_extract_decisions()` returns all agent decisions recorded during dispatch and validation
+**Given** a story completes with one or more agent decisions **When** the PR is created via `open_pull_request()` **Then** the PR body contains a populated `### Decision Provenance` section with each decision's title, timestamp, alternatives, rationale, and references
+**Given** a retry cycle occurs (validate → retry → dispatch → validate) **When** the final PR is generated **Then** decisions from all attempts are present in the provenance, not just the last attempt
+**And** `ruff check`, `mypy --strict`, and `pytest` all pass with zero regressions
+**And** integration-level test coverage verifies the full pipeline: dispatch writes decisions → validate preserves them → PR body includes them
+
+**Files touched (expected):**
+- `src/arcwright_ai/engine/nodes.py` — Fix `validate_node` to not overwrite provenance; write validation checkpoint to a separate file or merge results into the existing provenance structure
+- `src/arcwright_ai/output/provenance.py` — Potentially add a merge/update function for validation results
+- `tests/test_engine/` — Integration test covering dispatch→validate→PR pipeline with provenance preservation
+- `tests/test_scm/test_pr.py` — Test with realistic validation.md content (post-validate format)
 
 ---
 

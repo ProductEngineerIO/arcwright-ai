@@ -1626,3 +1626,203 @@ async def test_merge_pr_auto_merge_not_allowed_stderr(
     assert fail_records, "Expected log with auto_merge_not_allowed reason"
     data = getattr(fail_records[0], "data", {})
     assert "Settings" in data.get("hint", "") and "Allow auto-merge" in data.get("hint", "")
+
+
+# ---------------------------------------------------------------------------
+# Story 10.7 — PR body includes decisions from post-fix provenance format (AC: #2, #3)
+# ---------------------------------------------------------------------------
+
+_PROVENANCE_POST_FIX = (
+    f"# Provenance: {_SLUG}\n\n"
+    "## Agent Decisions\n\n"
+    "### Decision: Agent invoked for story 6-4-pr-body-generator (attempt 1)\n\n"
+    "- **Timestamp**: 2026-03-01T00:00:00Z\n"
+    "- **Alternatives**: claude-sonnet-4-5\n"
+    "- **Rationale**: Dispatch decision for attempt 1\n"
+    "- **References**: AC1\n\n"
+    "### Decision: Validation attempt 1: pass\n\n"
+    "- **Timestamp**: 2026-03-01T00:01:00Z\n"
+    "- **Alternatives**: claude-sonnet-4-5\n"
+    "- **Rationale**: All checks passed (V6: 3 checks)\nValidation row: | 1 | pass | All checks passed |\n"
+    "- **References**: \n\n"
+    "## Validation History\n\n"
+    "| Attempt | Result | Feedback |\n"
+    "|---------|--------|----------|\n"
+    "| 1 | pass | All checks passed |\n\n"
+    "## Context Provided\n\n"
+    "- AC1\n"
+)
+
+
+@pytest.mark.asyncio
+async def test_generate_pr_body_includes_decisions_from_post_fix_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """generate_pr_body returns populated Decision Provenance section from post-fix provenance.
+
+    AC #2 and #3: after validate_node preserves ## Agent Decisions,
+    _extract_decisions() finds them and _render_pr_body() includes them.
+    """
+    monkeypatch.setattr(
+        "arcwright_ai.scm.pr.read_text_async",
+        _make_mock_read(_PROVENANCE_POST_FIX, _STORY_CONTENT),
+    )
+
+    body = await generate_pr_body(_RUN_ID, _SLUG, project_root=tmp_path)
+
+    assert "### Decision Provenance" in body
+    assert "Agent invoked for story 6-4-pr-body-generator" in body
+    assert "Validation attempt 1: pass" in body
+    assert "No agent decisions recorded" not in body
+
+
+# ---------------------------------------------------------------------------
+# Story 10.6 — split merge/cleanup outcome tests (AC: #1, #2, #3, #5)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_merge_immediate_merge_succeeds_cleanup_fails_returns_merged(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    """merge_pull_request (immediate) returns MERGED when PR merged but local branch cleanup failed."""
+    monkeypatch.setattr("arcwright_ai.scm.pr.shutil.which", lambda _: "/usr/local/bin/gh")
+
+    # gh pr merge exits non-zero because local branch is checked out in a worktree
+    merge_proc = _make_mock_proc(
+        returncode=1,
+        stderr=b"error: Cannot delete branch 'arcwright-ai/my-story' checked out at '/path/to/worktree'",
+    )
+    # gh pr view confirms PR was actually merged
+    view_proc = _make_mock_proc(stdout=b"MERGED")
+
+    call_count = 0
+
+    async def _mock_exec(*args: str, **kwargs: object) -> MagicMock:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return merge_proc
+        return view_proc
+
+    with (
+        patch("arcwright_ai.scm.pr.asyncio.create_subprocess_exec", _mock_exec),
+        caplog.at_level(logging.WARNING, logger="arcwright_ai.scm.pr"),
+    ):
+        result = await merge_pull_request(_PR_URL, project_root=tmp_path)
+
+    assert result is MergeOutcome.MERGED
+    cleanup_records = [r for r in caplog.records if r.message == "scm.pr.post_merge_cleanup.failed"]
+    assert cleanup_records, "Expected scm.pr.post_merge_cleanup.failed warning event"
+    data = getattr(cleanup_records[0], "data", {})
+    assert data.get("pr_number") == "42"
+    assert "pr_merged_but_local_cleanup_failed" in data.get("note", "")
+
+
+@pytest.mark.asyncio
+async def test_merge_immediate_real_failure_returns_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """merge_pull_request (immediate) returns ERROR when PR was not actually merged."""
+    monkeypatch.setattr("arcwright_ai.scm.pr.shutil.which", lambda _: "/usr/local/bin/gh")
+
+    merge_proc = _make_mock_proc(returncode=1, stderr=b"error: merge conflict")
+    # gh pr view shows PR is still OPEN (not merged)
+    view_proc = _make_mock_proc(stdout=b"OPEN")
+
+    call_count = 0
+
+    async def _mock_exec(*args: str, **kwargs: object) -> MagicMock:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return merge_proc
+        return view_proc
+
+    with patch("arcwright_ai.scm.pr.asyncio.create_subprocess_exec", _mock_exec):
+        result = await merge_pull_request(_PR_URL, project_root=tmp_path)
+
+    assert result is MergeOutcome.ERROR
+
+
+@pytest.mark.asyncio
+async def test_merge_immediate_success_and_cleanup_success_returns_merged(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """merge_pull_request (immediate) returns MERGED on clean success (no cleanup failure)."""
+    monkeypatch.setattr("arcwright_ai.scm.pr.shutil.which", lambda _: "/usr/local/bin/gh")
+
+    proc = _make_mock_proc(returncode=0, stdout=b"abc1234 Squashed and merged pull request #42")
+
+    with patch("arcwright_ai.scm.pr.asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
+        result = await merge_pull_request(_PR_URL, project_root=tmp_path)
+
+    assert result is MergeOutcome.MERGED
+
+
+@pytest.mark.asyncio
+async def test_merge_auto_queue_cleanup_failure_continues_to_ci_wait(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    """Auto-merge path: branch-checkout cleanup error in step A is non-blocking; CI-wait continues."""
+    monkeypatch.setattr("arcwright_ai.scm.pr.shutil.which", lambda _: "/usr/local/bin/gh")
+
+    # Step A: gh pr merge --auto exits non-zero due to local branch checkout error
+    queue_proc = _make_mock_proc(
+        returncode=1,
+        stderr=b"error: Cannot delete branch 'arcwright-ai/my-story' checked out at '/wt'",
+    )
+    # Step B: gh pr checks passes
+    checks_proc = _make_mock_proc(returncode=0)
+    # Step C: gh pr view confirms MERGED
+    view_proc = _make_mock_proc(stdout=b"MERGED")
+
+    call_count = 0
+
+    async def _mock_exec(*args: str, **kwargs: object) -> MagicMock:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return queue_proc
+        if call_count == 2:
+            return checks_proc
+        return view_proc
+
+    with (
+        patch("arcwright_ai.scm.pr.asyncio.create_subprocess_exec", _mock_exec),
+        caplog.at_level(logging.WARNING, logger="arcwright_ai.scm.pr"),
+    ):
+        result = await merge_pull_request(_PR_URL, project_root=tmp_path, wait_timeout=300)
+
+    assert result is MergeOutcome.MERGED
+    cleanup_records = [r for r in caplog.records if r.message == "scm.pr.post_merge_cleanup.failed"]
+    assert cleanup_records, "Expected scm.pr.post_merge_cleanup.failed warning for auto-merge path"
+    data = getattr(cleanup_records[0], "data", {})
+    assert "auto_merge_queued_but_local_cleanup_failed" in data.get("note", "")
+
+
+@pytest.mark.asyncio
+async def test_merge_auto_queue_real_failure_returns_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Auto-merge path: non-cleanup step-A failure still returns ERROR."""
+    monkeypatch.setattr("arcwright_ai.scm.pr.shutil.which", lambda _: "/usr/local/bin/gh")
+
+    # Step A fails with an unrelated error (e.g. network issue)
+    queue_proc = _make_mock_proc(returncode=1, stderr=b"error: could not resolve host github.com")
+
+    async def _mock_exec(*args: str, **kwargs: object) -> MagicMock:
+        return queue_proc
+
+    with patch("arcwright_ai.scm.pr.asyncio.create_subprocess_exec", _mock_exec):
+        result = await merge_pull_request(_PR_URL, project_root=tmp_path, wait_timeout=300)
+
+    assert result is MergeOutcome.ERROR

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
@@ -41,13 +42,13 @@ async def _find_latest_run_for_epic(
 
     Args:
         project_root: Absolute path to the project root.
-        epic_spec: Epic identifier string (e.g., "5" or "epic-5").
+        epic_spec: Epic identifier string (e.g., "5", "epic-5", or "EPIC-5").
 
     Returns:
         Tuple of ``(run_id, RunStatus)`` for the most recent matching run,
         or ``None`` if no matching run is found.
     """
-    epic_num = epic_spec[5:] if epic_spec.startswith("epic-") else epic_spec
+    epic_num = _extract_epic_number(epic_spec)
     prefix = f"{epic_num}-"
     runs = await list_runs(project_root)
     for run_summary in runs:
@@ -62,6 +63,29 @@ async def _find_latest_run_for_epic(
         if any(slug.startswith(prefix) for slug in run_status.stories):
             return run_summary.run_id, run_status
     return None
+
+
+def _extract_epic_number(epic_spec: str) -> str:
+    """Parse an epic selector into its numeric component.
+
+    Accepts plain numeric IDs (``"5"``) and prefixed forms such as
+    ``"epic-5"``, ``"EPIC-5"``, and ``"epic_5"``.
+
+    Args:
+        epic_spec: Raw epic selector from CLI input.
+
+    Returns:
+        Epic number string.
+    """
+    normalized = epic_spec.strip()
+    if normalized.isdigit():
+        return normalized
+
+    prefixed_match = re.fullmatch(r"(?i)epic[-_]?(\d+)", normalized)
+    if prefixed_match:
+        return prefixed_match.group(1)
+
+    return normalized
 
 
 def _reconstruct_budget_from_dict(
