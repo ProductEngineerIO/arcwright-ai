@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import logging
 import re
-from decimal import Decimal
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 import typer

@@ -92,6 +92,7 @@ dependencies = [
 lint = ["ruff check src/ tests/", "ruff format --check src/ tests/", "mypy --strict src/"]
 fix = ["ruff check --fix src/ tests/", "ruff format src/ tests/"]
 test = ["pytest {args}"]
+hooks = ["pre-commit install", "pre-commit install --hook-type pre-push"]
 check = ["lint", "test"]
 
 [tool.hatch.version]
