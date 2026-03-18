@@ -272,6 +272,7 @@ async def test_run_v3_reflexion_all_pass(
         model="claude-test",
         cwd=tmp_path,
         sandbox=mock_sandbox,  # type: ignore[arg-type]
+        api_key="sk-test-not-real",
     )
 
     assert result.validation_result.passed is True
@@ -303,6 +304,7 @@ async def test_run_v3_reflexion_single_ac_fail(
         model="claude-test",
         cwd=tmp_path,
         sandbox=mock_sandbox,  # type: ignore[arg-type]
+        api_key="sk-test-not-real",
     )
 
     assert result.validation_result.passed is False
@@ -334,6 +336,7 @@ async def test_run_v3_reflexion_multiple_ac_fail(
         model="claude-test",
         cwd=tmp_path,
         sandbox=mock_sandbox,  # type: ignore[arg-type]
+        api_key="sk-test-not-real",
     )
 
     assert result.validation_result.passed is False
@@ -364,6 +367,7 @@ async def test_run_v3_reflexion_malformed_response(
         model="claude-test",
         cwd=tmp_path,
         sandbox=mock_sandbox,  # type: ignore[arg-type]
+        api_key="sk-test-not-real",
     )
 
     assert result.validation_result.passed is False
@@ -395,6 +399,7 @@ async def test_run_v3_reflexion_sdk_error(
             model="claude-test",
             cwd=tmp_path,
             sandbox=mock_sandbox,  # type: ignore[arg-type]
+            api_key="sk-test-not-real",
         )
 
     assert "Simulated SDK crash" in str(exc_info.value)
@@ -424,6 +429,7 @@ async def test_run_v3_reflexion_tracks_tokens_and_cost(
         model="claude-test",
         cwd=tmp_path,
         sandbox=mock_sandbox,  # type: ignore[arg-type]
+        api_key="sk-test-not-real",
     )
 
     # tokens_input=300, tokens_output=150 → tokens_used=450
@@ -452,6 +458,7 @@ async def test_run_v3_reflexion_no_acceptance_criteria(
         model="claude-test",
         cwd=tmp_path,
         sandbox=mock_sandbox,  # type: ignore[arg-type]
+        api_key="sk-test-not-real",
     )
 
     assert result.validation_result.passed is True
@@ -670,6 +677,7 @@ async def test_run_v3_reflexion_emits_structured_log_events(
             model="claude-test",
             cwd=tmp_path,
             sandbox=mock_sandbox,  # type: ignore[arg-type]
+            api_key="sk-test-not-real",
         )
 
     messages = [r.message for r in caplog.records]

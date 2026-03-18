@@ -97,6 +97,7 @@ def mock_v3_pass(monkeypatch: pytest.MonkeyPatch) -> V3ReflexionResult:
         model: str,
         cwd: Path,
         sandbox: object,
+        api_key: str,
         attempt_number: int = 1,
     ) -> V3ReflexionResult:
         return v3_result
@@ -136,6 +137,7 @@ def mock_v3_fail(monkeypatch: pytest.MonkeyPatch) -> V3ReflexionResult:
         model: str,
         cwd: Path,
         sandbox: object,
+        api_key: str,
         attempt_number: int = 1,
     ) -> V3ReflexionResult:
         return v3_result
@@ -173,6 +175,7 @@ async def test_run_validation_pipeline_v6_fail_short_circuits_v3(
         model=_MODEL,
         cwd=_CWD,
         sandbox=_SANDBOX,  # type: ignore[arg-type]
+        api_key="sk-test-not-real",
     )
 
     assert result.passed is False
@@ -200,6 +203,7 @@ async def test_run_validation_pipeline_v6_pass_v3_pass(
         model=_MODEL,
         cwd=_CWD,
         sandbox=_SANDBOX,  # type: ignore[arg-type]
+        api_key="sk-test-not-real",
     )
 
     assert result.passed is True
@@ -228,6 +232,7 @@ async def test_run_validation_pipeline_v6_pass_v3_fail(
         model=_MODEL,
         cwd=_CWD,
         sandbox=_SANDBOX,  # type: ignore[arg-type]
+        api_key="sk-test-not-real",
     )
 
     assert result.passed is False
@@ -258,6 +263,7 @@ async def test_run_validation_pipeline_result_aggregation(
         model=_MODEL,
         cwd=_CWD,
         sandbox=_SANDBOX,  # type: ignore[arg-type]
+        api_key="sk-test-not-real",
     )
 
     assert result.v6_result is mock_v6_pass
@@ -365,6 +371,7 @@ async def test_run_validation_pipeline_emits_structured_log_events(
             model=_MODEL,
             cwd=_CWD,
             sandbox=_SANDBOX,  # type: ignore[arg-type]
+            api_key="sk-test-not-real",
         )
 
     log_messages_v6_short = [r.message for r in caplog.records]
@@ -405,6 +412,7 @@ async def test_run_validation_pipeline_emits_structured_log_events(
         model: str,
         cwd: Path,
         sandbox: object,
+        api_key: str,
         attempt_number: int = 1,
     ) -> V3ReflexionResult:
         return mock_v3_pass
@@ -420,6 +428,7 @@ async def test_run_validation_pipeline_emits_structured_log_events(
             model=_MODEL,
             cwd=_CWD,
             sandbox=_SANDBOX,  # type: ignore[arg-type]
+            api_key="sk-test-not-real",
         )
 
     log_messages_full = [r.message for r in caplog.records]
@@ -475,6 +484,7 @@ async def test_run_validation_pipeline_v3_validation_error_propagates(
             model=_MODEL,
             cwd=_CWD,
             sandbox=_SANDBOX,  # type: ignore[arg-type]
+            api_key="sk-test-not-real",
         )
 
 
@@ -507,6 +517,7 @@ async def test_run_validation_pipeline_feedback_is_none_on_v3_pass(
         model=_MODEL,
         cwd=_CWD,
         sandbox=_SANDBOX,  # type: ignore[arg-type]
+        api_key="sk-test-not-real",
     )
 
     assert result.passed is True
@@ -536,6 +547,7 @@ async def test_run_validation_pipeline_cost_is_zero_on_v6_short_circuit(
         model=_MODEL,
         cwd=_CWD,
         sandbox=_SANDBOX,  # type: ignore[arg-type]
+        api_key="sk-test-not-real",
     )
 
     assert result.tokens_used == 0

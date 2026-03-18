@@ -88,6 +88,7 @@ async def run_validation_pipeline(
     model: str,
     cwd: Path,
     sandbox: PathValidator,
+    api_key: str,
     attempt_number: int = 1,
 ) -> PipelineResult:
     """Run the full validation pipeline (V6 → V3) for a story's agent output.
@@ -104,6 +105,7 @@ async def run_validation_pipeline(
         model: Claude model version string for V3 reflexion (e.g. "claude-opus-4-5").
         cwd: Working directory for the V3 reflexion SDK invocation.
         sandbox: Path validation protocol instance used by V3 reflexion.
+        api_key: Anthropic API key passed as ``ANTHROPIC_API_KEY`` to the SDK subprocess.
         attempt_number: Current attempt/retry number (1-based, default 1).
 
     Returns:
@@ -168,6 +170,7 @@ async def run_validation_pipeline(
         model=model,
         cwd=cwd,
         sandbox=sandbox,
+        api_key=api_key,
         attempt_number=attempt_number,
     )
 
