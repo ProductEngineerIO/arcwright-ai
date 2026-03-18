@@ -18,7 +18,7 @@ from arcwright_ai.agent.invoker import (
     invoke_agent,
 )
 from arcwright_ai.agent.sandbox import validate_path
-from arcwright_ai.core.exceptions import AgentError, SandboxViolation
+from arcwright_ai.core.exceptions import AgentError
 from tests.fixtures.mock_sdk import MockSDKClient
 
 if TYPE_CHECKING:
