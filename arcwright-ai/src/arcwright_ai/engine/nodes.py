@@ -1516,6 +1516,7 @@ async def commit_node(state: StoryState) -> StoryState:
                     pr_url,
                     strategy=merge_strategy,
                     project_root=project_root,
+                    wait_timeout=state.config.scm.merge_wait_timeout,
                 )
             except Exception as exc:
                 logger.warning(
@@ -1541,7 +1542,7 @@ async def commit_node(state: StoryState) -> StoryState:
                     alternatives=["manual merge", "skip merge"],
                     rationale=(
                         f"merge_attempted_at={merge_attempted_at}; "
-                        f"status={'success' if merge_outcome is MergeOutcome.MERGED else 'failed'}; "
+                        f"status={merge_outcome.value}; "
                         f"strategy={merge_strategy}; "
                         f"pr_url={pr_url}; "
                         f"merge_sha={merge_sha}"
@@ -1555,6 +1556,16 @@ async def commit_node(state: StoryState) -> StoryState:
                     "provenance.write_error",
                     extra={"data": {"story": story_slug, "error": str(prov_exc)}},
                 )
+
+            state.merge_outcome = merge_outcome.value
+
+        elif commit_hash is not None and state.config.scm.auto_merge:
+            # auto_merge=True but PR creation failed — no merge attempted
+            state.merge_outcome = MergeOutcome.ERROR.value
+
+        elif commit_hash is not None:
+            # auto_merge=False — merge intentionally skipped
+            state.merge_outcome = MergeOutcome.SKIPPED.value
 
         # Store PR URL in state (AC: #9)
         if pr_url is not None:

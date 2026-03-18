@@ -136,5 +136,5 @@ development_status:
   epic-12: in-progress
   12-1-mergeoutcome-enum-config-field-and-state-plumbing: done
   12-2-rewrite-merge-pull-request-with-ci-wait: done
-  12-3-commit-node-mergeoutcome-integration: ready-for-dev
+  12-3-commit-node-mergeoutcome-integration: done
   12-4-dispatch-loop-halt-on-merge-failure: ready-for-dev
