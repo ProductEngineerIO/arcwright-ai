@@ -36,6 +36,7 @@ from arcwright_ai.output.summary import write_halt_report, write_success_summary
 from arcwright_ai.scm.branch import commit_story, delete_remote_branch, fetch_and_sync, push_branch
 from arcwright_ai.scm.git import git
 from arcwright_ai.scm.pr import (
+    MergeOutcome,
     _detect_default_branch,
     generate_pr_body,
     get_pull_request_merge_sha,
@@ -1508,10 +1509,10 @@ async def commit_node(state: StoryState) -> StoryState:
         if pr_url is not None and state.config.scm.auto_merge:
             merge_attempted_at = datetime.now(tz=UTC).isoformat()
             merge_strategy = "squash"
-            merge_succeeded = False
+            merge_outcome = MergeOutcome.ERROR
             merge_sha = "not_merged"
             try:
-                merge_succeeded = await merge_pull_request(
+                merge_outcome = await merge_pull_request(
                     pr_url,
                     strategy=merge_strategy,
                     project_root=project_root,
@@ -1522,7 +1523,7 @@ async def commit_node(state: StoryState) -> StoryState:
                     extra={"data": {"story": story_slug, "error": str(exc)}},
                 )
 
-            if merge_succeeded:
+            if merge_outcome is MergeOutcome.MERGED:
                 try:
                     merge_sha = await get_pull_request_merge_sha(pr_url, project_root=project_root) or "unknown"
                 except Exception as exc:
@@ -1540,7 +1541,7 @@ async def commit_node(state: StoryState) -> StoryState:
                     alternatives=["manual merge", "skip merge"],
                     rationale=(
                         f"merge_attempted_at={merge_attempted_at}; "
-                        f"status={'success' if merge_succeeded else 'failed'}; "
+                        f"status={'success' if merge_outcome is MergeOutcome.MERGED else 'failed'}; "
                         f"strategy={merge_strategy}; "
                         f"pr_url={pr_url}; "
                         f"merge_sha={merge_sha}"
