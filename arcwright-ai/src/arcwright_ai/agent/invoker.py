@@ -7,7 +7,7 @@ import logging
 import os
 import random
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
@@ -165,6 +165,9 @@ class InvocationResult:
         session_id: SDK session identifier for debugging.
         num_turns: Number of conversational turns in the session.
         is_error: Whether the SDK reported an error condition.
+        denied_write_paths: Paths denied by sandbox ``can_use_tool`` checks.
+        outside_boundary_denied_paths: Denied paths specifically rejected for
+            crossing the sandbox boundary.
     """
 
     output_text: str
@@ -175,6 +178,16 @@ class InvocationResult:
     session_id: str
     num_turns: int
     is_error: bool
+    denied_write_paths: tuple[str, ...] = ()
+    outside_boundary_denied_paths: tuple[str, ...] = ()
+
+
+@dataclass
+class _ToolValidationStats:
+    """Mutable telemetry captured by the ``can_use_tool`` sandbox callback."""
+
+    denied_write_paths: list[str] = field(default_factory=list)
+    outside_boundary_denied_paths: list[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -281,6 +294,7 @@ def _validate_tool_use(block: Any, sandbox: PathValidator, cwd: Path) -> None:
 def _make_tool_validator(
     sandbox: PathValidator,
     cwd: Path,
+    stats: _ToolValidationStats,
 ) -> Callable[[str, dict[str, Any], Any], Awaitable[PermissionResultAllow | PermissionResultDeny]]:
     """Create a ``can_use_tool`` callback that enforces sandbox rules at the SDK level.
 
@@ -331,6 +345,9 @@ def _make_tool_validator(
                 try:
                     sandbox(file_path, cwd, tool_name)
                 except SandboxViolation as exc:
+                    stats.denied_write_paths.append(file_path_str)
+                    if "outside the project boundary" in str(exc).lower():
+                        stats.outside_boundary_denied_paths.append(file_path_str)
                     logger.info(
                         "agent.sandbox.deny",
                         extra={
@@ -521,13 +538,15 @@ async def invoke_agent(
     # unhandled background-task warnings during async generator cleanup.
     _suppress_bg_cancel_scope_errors()
 
+    _tool_validation_stats = _ToolValidationStats()
+
     options = ClaudeCodeOptions(
         model=model,
         cwd=str(cwd),
         permission_mode="bypassPermissions",
         max_turns=max_turns,
         system_prompt=_SCM_GUARDRAIL_PROMPT,
-        can_use_tool=_make_tool_validator(sandbox, cwd),
+        can_use_tool=_make_tool_validator(sandbox, cwd, _tool_validation_stats),
     )
 
     output_parts: list[str] = []
@@ -583,4 +602,6 @@ async def invoke_agent(
         session_id=result_message.session_id,
         num_turns=result_message.num_turns,
         is_error=result_message.is_error,
+        denied_write_paths=tuple(_tool_validation_stats.denied_write_paths),
+        outside_boundary_denied_paths=tuple(_tool_validation_stats.outside_boundary_denied_paths),
     )

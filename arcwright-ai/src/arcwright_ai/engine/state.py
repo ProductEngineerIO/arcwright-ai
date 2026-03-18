@@ -41,6 +41,8 @@ class StoryState(BaseModel):
         context_bundle: Assembled context from preflight (None until preflight runs).
         agent_output: Raw agent response text (None until agent runs).
         validation_result: Last validation pipeline result (None until validation runs).
+        sandbox_feedback: Guidance derived from sandbox-denied write attempts
+            in prior agent dispatches. Injected into the next retry prompt.
         merge_outcome: Structured merge result from commit_node. Read by dispatch
             loop to decide epic continuation. ``None`` until commit_node runs.
         retry_history: Accumulated validation results across retry attempts.
@@ -64,6 +66,7 @@ class StoryState(BaseModel):
     context_bundle: ContextBundle | None = None
     agent_output: str | None = None
     validation_result: PipelineResult | None = None
+    sandbox_feedback: str | None = None
     retry_history: list[PipelineResult] = Field(default_factory=list)
     retry_count: int = 0
     budget: BudgetState = Field(default_factory=BudgetState)

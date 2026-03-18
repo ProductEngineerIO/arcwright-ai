@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from arcwright_ai.agent.prompt import build_prompt
 from arcwright_ai.core.types import ContextBundle
 from arcwright_ai.validation.v3_reflexion import ReflexionFeedback
@@ -129,3 +131,27 @@ def test_build_prompt_with_passed_feedback_has_no_feedback_section() -> None:
     )
     prompt = build_prompt(bundle, feedback=feedback)
     assert "Previous Validation Feedback" not in prompt
+
+
+def test_build_prompt_includes_file_operation_constraints_when_cwd_provided() -> None:
+    """Providing working_directory appends explicit relative-path constraints."""
+    bundle = _make_bundle(story_content="Story text.")
+    prompt = build_prompt(bundle, working_directory=Path("/repo/worktrees/story-1"))
+
+    assert "## File Operation Constraints" in prompt
+    assert "Current working directory: /repo/worktrees/story-1" in prompt
+    assert "Use relative file paths rooted at the current working directory." in prompt
+    assert "Do not use absolute paths from validator output or prior logs." in prompt
+
+
+def test_build_prompt_includes_prior_sandbox_denial_section() -> None:
+    """sandbox_feedback adds a dedicated retry guidance section."""
+    bundle = _make_bundle(story_content="Story text.")
+    prompt = build_prompt(
+        bundle,
+        sandbox_feedback="Write to '/abs/path/file.ts' was denied.",
+    )
+
+    assert "## Prior Sandbox Denial" in prompt
+    assert "Write to '/abs/path/file.ts' was denied." in prompt
+    assert "Correct this before making other changes." in prompt
