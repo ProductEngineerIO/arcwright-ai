@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from dotenv import load_dotenv
 from langgraph.graph import END, START, StateGraph
 
 if TYPE_CHECKING:
@@ -44,6 +45,11 @@ def build_story_graph() -> CompiledStateGraph[StoryState, Any, Any, Any]:
         A compiled LangGraph ``CompiledStateGraph`` ready for invocation via
         ``await graph.ainvoke(initial_state)``.
     """
+    # Ensure .env variables (e.g. LANGCHAIN_API_KEY) are available even when
+    # the graph is loaded outside the CLI (e.g. LangGraph server, library use).
+    # Existing env vars are never overwritten ("first wins").
+    load_dotenv()
+
     graph: StateGraph[StoryState, Any, Any, Any] = StateGraph(StoryState)
 
     graph.add_node("preflight", preflight_node)

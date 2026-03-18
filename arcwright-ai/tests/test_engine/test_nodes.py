@@ -48,6 +48,7 @@ from arcwright_ai.engine.nodes import (
 )
 from arcwright_ai.engine.state import StoryState
 from arcwright_ai.scm.git import GitResult
+from arcwright_ai.scm.pr import MergeOutcome
 from arcwright_ai.validation.pipeline import PipelineOutcome, PipelineResult
 from arcwright_ai.validation.v3_reflexion import (
     ACResult,
@@ -101,10 +102,10 @@ def _mock_output_functions(monkeypatch: pytest.MonkeyPatch) -> None:
         "arcwright_ai.engine.nodes._detect_default_branch",
         AsyncMock(return_value="main"),
     )
-    # Story 9.3: merge_pull_request mock — defaults False (auto_merge=False in RunConfig)
+    # Story 9.3: merge_pull_request mock — defaults ERROR (auto_merge=False in RunConfig)
     monkeypatch.setattr(
         "arcwright_ai.engine.nodes.merge_pull_request",
-        AsyncMock(return_value=False),
+        AsyncMock(return_value=MergeOutcome.ERROR),
     )
     monkeypatch.setattr(
         "arcwright_ai.engine.nodes.get_pull_request_merge_sha",
@@ -3044,7 +3045,7 @@ async def test_commit_node_calls_merge_when_auto_merge_enabled(
     monkeypatch.setattr("arcwright_ai.engine.nodes.push_branch", AsyncMock(return_value=True))
     monkeypatch.setattr("arcwright_ai.engine.nodes.generate_pr_body", AsyncMock(return_value="body"))
     monkeypatch.setattr("arcwright_ai.engine.nodes.open_pull_request", AsyncMock(return_value=expected_url))
-    mock_merge = AsyncMock(return_value=True)
+    mock_merge = AsyncMock(return_value=MergeOutcome.MERGED)
     monkeypatch.setattr("arcwright_ai.engine.nodes.merge_pull_request", mock_merge)
 
     await commit_node(state)
@@ -3074,7 +3075,7 @@ async def test_commit_node_skips_merge_when_auto_merge_disabled(
     monkeypatch.setattr("arcwright_ai.engine.nodes.push_branch", AsyncMock(return_value=True))
     monkeypatch.setattr("arcwright_ai.engine.nodes.generate_pr_body", AsyncMock(return_value="body"))
     monkeypatch.setattr("arcwright_ai.engine.nodes.open_pull_request", AsyncMock(return_value=expected_url))
-    mock_merge = AsyncMock(return_value=True)
+    mock_merge = AsyncMock(return_value=MergeOutcome.MERGED)
     monkeypatch.setattr("arcwright_ai.engine.nodes.merge_pull_request", mock_merge)
 
     await commit_node(state)
@@ -3100,7 +3101,7 @@ async def test_commit_node_skips_merge_when_pr_url_none(
     monkeypatch.setattr("arcwright_ai.engine.nodes.push_branch", AsyncMock(return_value=True))
     monkeypatch.setattr("arcwright_ai.engine.nodes.generate_pr_body", AsyncMock(return_value="body"))
     monkeypatch.setattr("arcwright_ai.engine.nodes.open_pull_request", AsyncMock(return_value=None))
-    mock_merge = AsyncMock(return_value=True)
+    mock_merge = AsyncMock(return_value=MergeOutcome.MERGED)
     monkeypatch.setattr("arcwright_ai.engine.nodes.merge_pull_request", mock_merge)
 
     await commit_node(state)
@@ -3126,7 +3127,7 @@ async def test_commit_node_records_merge_provenance(
     monkeypatch.setattr("arcwright_ai.engine.nodes.push_branch", AsyncMock(return_value=True))
     monkeypatch.setattr("arcwright_ai.engine.nodes.generate_pr_body", AsyncMock(return_value="body"))
     monkeypatch.setattr("arcwright_ai.engine.nodes.open_pull_request", AsyncMock(return_value=expected_url))
-    monkeypatch.setattr("arcwright_ai.engine.nodes.merge_pull_request", AsyncMock(return_value=True))
+    monkeypatch.setattr("arcwright_ai.engine.nodes.merge_pull_request", AsyncMock(return_value=MergeOutcome.MERGED))
     monkeypatch.setattr("arcwright_ai.engine.nodes.get_pull_request_merge_sha", AsyncMock(return_value="abc1234"))
 
     mock_append = AsyncMock()
@@ -3155,7 +3156,7 @@ async def test_commit_node_status_success_on_merge_failure(
     make_story_state: StoryState,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """commit_node status remains SUCCESS when merge_pull_request returns False (non-fatal)."""
+    """commit_node status remains SUCCESS when merge_pull_request returns ERROR (non-fatal)."""
     worktree_path = Path("/project/.arcwright-ai/worktrees/2-1-state-models")
     state = make_story_state.model_copy(
         update={
@@ -3169,7 +3170,7 @@ async def test_commit_node_status_success_on_merge_failure(
     monkeypatch.setattr("arcwright_ai.engine.nodes.generate_pr_body", AsyncMock(return_value="body"))
     monkeypatch.setattr("arcwright_ai.engine.nodes.open_pull_request", AsyncMock(return_value=expected_url))
     # merge fails
-    monkeypatch.setattr("arcwright_ai.engine.nodes.merge_pull_request", AsyncMock(return_value=False))
+    monkeypatch.setattr("arcwright_ai.engine.nodes.merge_pull_request", AsyncMock(return_value=MergeOutcome.ERROR))
 
     result = await commit_node(state)
 

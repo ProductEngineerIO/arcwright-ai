@@ -762,13 +762,15 @@ async def merge_pull_request(
     strategy: str = "squash",
     *,
     project_root: Path,
-) -> bool:
-    """Merge a GitHub pull request after creation (best-effort, Story 9.3).
+    wait_timeout: int = 0,
+) -> MergeOutcome:
+    """Merge a GitHub pull request after creation.
 
-    Extracts the PR number from ``pr_url``, maps ``strategy`` to the
-    corresponding ``gh pr merge`` flag, and runs ``gh pr merge <number>
-    <strategy_flag> --delete-branch``.  All errors are caught internally;
-    the function never raises to its caller.
+    When *wait_timeout* is ``0`` (default) the function performs an immediate
+    merge identical to the original Story 9.3 behaviour.  When *wait_timeout*
+    is positive the function queues auto-merge via ``--auto``, waits for CI
+    checks to complete (up to *wait_timeout* seconds), and verifies the PR
+    actually merged before returning.
 
     Args:
         pr_url: PR URL as returned by :func:`open_pull_request`, e.g.
@@ -776,33 +778,60 @@ async def merge_pull_request(
         strategy: Merge strategy — ``"squash"`` (default), ``"merge"``, or
             ``"rebase"``.
         project_root: Absolute path to the repository root.
+        wait_timeout: Maximum seconds to wait for CI checks.  ``0`` means
+            fire-and-forget (immediate merge, no CI wait).
 
     Returns:
-        ``True`` on a successful merge (``gh`` exits 0), ``False`` on any
-        failure (``gh`` missing, invalid URL, non-zero exit, subprocess
-        exception).
+        A :class:`MergeOutcome` indicating the result of the merge attempt.
     """
-    # Guard: gh CLI must be available (AC: #9)
+    # Guard: gh CLI must be available
     if shutil.which("gh") is None:
         logger.warning(
             "scm.pr.merge.skipped",
-            extra={"data": {"pr_url": pr_url, "reason": "gh_not_found"}},
+            extra={"data": {"pr_url": pr_url, "reason": "gh_not_found", "merge_outcome": MergeOutcome.ERROR.value}},
         )
-        return False
+        return MergeOutcome.ERROR
 
-    # Extract PR number from URL (AC: #10)
+    # Extract PR number from URL
     pr_number = _extract_pr_number(pr_url)
     if pr_number is None:
         logger.warning(
             "scm.pr.merge.skipped",
-            extra={"data": {"pr_url": pr_url, "reason": "invalid_pr_url"}},
+            extra={"data": {"pr_url": pr_url, "reason": "invalid_pr_url", "merge_outcome": MergeOutcome.ERROR.value}},
         )
-        return False
+        return MergeOutcome.ERROR
 
-    # Map strategy to gh flag (AC: #8)
+    # Map strategy to gh flag
     strategy_flag = _MERGE_STRATEGY_FLAGS.get(strategy, "--squash")
 
-    # Run gh pr merge (AC: #1, #5)
+    if wait_timeout > 0:
+        return await _merge_with_ci_wait(
+            pr_number=pr_number,
+            pr_url=pr_url,
+            strategy_flag=strategy_flag,
+            project_root=project_root,
+            wait_timeout=wait_timeout,
+        )
+
+    # Fire-and-forget path (wait_timeout == 0, original behaviour)
+    return await _merge_immediate(
+        pr_number=pr_number,
+        pr_url=pr_url,
+        strategy=strategy,
+        strategy_flag=strategy_flag,
+        project_root=project_root,
+    )
+
+
+async def _merge_immediate(
+    *,
+    pr_number: str,
+    pr_url: str,
+    strategy: str,
+    strategy_flag: str,
+    project_root: Path,
+) -> MergeOutcome:
+    """Fire-and-forget merge (wait_timeout == 0)."""
     try:
         proc = await asyncio.create_subprocess_exec(
             "gh",
@@ -828,12 +857,12 @@ async def merge_pull_request(
                         "pr_number": pr_number,
                         "stderr": stderr,
                         "returncode": proc.returncode,
+                        "merge_outcome": MergeOutcome.ERROR.value,
                     }
                 },
             )
-            return False
+            return MergeOutcome.ERROR
 
-        # Parse merge commit SHA from stdout if present (AC: #7)
         sha_match = re.search(r"[0-9a-f]{7,40}", stdout)
         merge_sha = sha_match.group(0) if sha_match else "unknown"
 
@@ -845,10 +874,11 @@ async def merge_pull_request(
                     "pr_number": pr_number,
                     "strategy": strategy,
                     "merge_sha": merge_sha,
+                    "merge_outcome": MergeOutcome.MERGED.value,
                 }
             },
         )
-        return True
+        return MergeOutcome.MERGED
 
     except Exception as exc:
         logger.warning(
@@ -859,10 +889,271 @@ async def merge_pull_request(
                     "pr_number": pr_number,
                     "reason": "subprocess_error",
                     "error": str(exc),
+                    "merge_outcome": MergeOutcome.ERROR.value,
                 }
             },
         )
-        return False
+        return MergeOutcome.ERROR
+
+
+async def _merge_with_ci_wait(
+    *,
+    pr_number: str,
+    pr_url: str,
+    strategy_flag: str,
+    project_root: Path,
+    wait_timeout: int,
+) -> MergeOutcome:
+    """Queue auto-merge, wait for CI, and verify the PR actually merged."""
+    try:
+        # Step A: Queue auto-merge with --auto flag
+        outcome = await _step_a_queue_auto_merge(
+            pr_number=pr_number,
+            pr_url=pr_url,
+            strategy_flag=strategy_flag,
+            project_root=project_root,
+        )
+        if outcome is not None:
+            return outcome
+
+        # Step B: Wait for CI checks
+        outcome = await _step_b_wait_for_ci(
+            pr_number=pr_number,
+            pr_url=pr_url,
+            project_root=project_root,
+            wait_timeout=wait_timeout,
+        )
+        if outcome is not None:
+            return outcome
+
+        # Step C: Verify merge completed
+        return await _step_c_verify_merge(
+            pr_number=pr_number,
+            pr_url=pr_url,
+            project_root=project_root,
+            wait_timeout=wait_timeout,
+        )
+
+    except Exception as exc:
+        logger.warning(
+            "scm.pr.merge.failed",
+            extra={
+                "data": {
+                    "pr_url": pr_url,
+                    "pr_number": pr_number,
+                    "reason": "subprocess_error",
+                    "error": str(exc),
+                    "merge_outcome": MergeOutcome.ERROR.value,
+                    "wait_timeout": wait_timeout,
+                }
+            },
+        )
+        return MergeOutcome.ERROR
+
+
+async def _step_a_queue_auto_merge(
+    *,
+    pr_number: str,
+    pr_url: str,
+    strategy_flag: str,
+    project_root: Path,
+) -> MergeOutcome | None:
+    """Run ``gh pr merge --auto``.  Returns ``MergeOutcome.ERROR`` on failure, ``None`` on success."""
+    proc = await asyncio.create_subprocess_exec(
+        "gh",
+        "pr",
+        "merge",
+        pr_number,
+        strategy_flag,
+        "--delete-branch",
+        "--auto",
+        cwd=str(project_root),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _stdout_bytes, stderr_bytes = await proc.communicate()
+    stderr = stderr_bytes.decode("utf-8", errors="replace").strip()
+
+    if "auto-merge is not allowed" in stderr:
+        logger.warning(
+            "scm.pr.merge.failed",
+            extra={
+                "data": {
+                    "pr_url": pr_url,
+                    "pr_number": pr_number,
+                    "reason": "auto_merge_not_allowed",
+                    "merge_outcome": MergeOutcome.ERROR.value,
+                    "hint": "Auto-merge is not enabled for this repository. "
+                    "Enable it in Settings → General → Allow auto-merge.",
+                }
+            },
+        )
+        return MergeOutcome.ERROR
+
+    if proc.returncode != 0:
+        logger.warning(
+            "scm.pr.merge.failed",
+            extra={
+                "data": {
+                    "pr_url": pr_url,
+                    "pr_number": pr_number,
+                    "stderr": stderr,
+                    "returncode": proc.returncode,
+                    "merge_outcome": MergeOutcome.ERROR.value,
+                }
+            },
+        )
+        return MergeOutcome.ERROR
+
+    logger.info(
+        "scm.merge.auto_queued",
+        extra={"data": {"pr_url": pr_url, "pr_number": pr_number}},
+    )
+    return None  # success — continue to Step B
+
+
+async def _step_b_wait_for_ci(
+    *,
+    pr_number: str,
+    pr_url: str,
+    project_root: Path,
+    wait_timeout: int,
+) -> MergeOutcome | None:
+    """Run ``gh pr checks --watch --fail-fast`` with timeout.
+
+    Returns ``None`` when CI passes (caller should verify merge), or a
+    terminal ``MergeOutcome`` on CI failure / timeout.
+    """
+    proc = await asyncio.create_subprocess_exec(
+        "gh",
+        "pr",
+        "checks",
+        pr_number,
+        "--watch",
+        "--fail-fast",
+        cwd=str(project_root),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        _stdout_bytes, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=wait_timeout)
+    except TimeoutError:
+        # Graceful subprocess termination
+        proc.terminate()
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=5)
+        except TimeoutError:
+            proc.kill()
+            await proc.wait()
+
+        # Race-window check: PR may have merged moments before timeout
+        merged = await _check_pr_state(pr_number, project_root)
+        if merged:
+            logger.info(
+                "scm.merge.outcome",
+                extra={
+                    "data": {
+                        "pr_url": pr_url,
+                        "pr_number": pr_number,
+                        "merge_outcome": MergeOutcome.MERGED.value,
+                        "wait_timeout": wait_timeout,
+                        "note": "merged_during_timeout_window",
+                    }
+                },
+            )
+            return MergeOutcome.MERGED
+
+        logger.warning(
+            "scm.merge.outcome",
+            extra={
+                "data": {
+                    "pr_url": pr_url,
+                    "pr_number": pr_number,
+                    "merge_outcome": MergeOutcome.TIMEOUT.value,
+                    "wait_timeout": wait_timeout,
+                }
+            },
+        )
+        return MergeOutcome.TIMEOUT
+
+    if proc.returncode != 0:
+        stderr = stderr_bytes.decode("utf-8", errors="replace").strip()
+        outcome = MergeOutcome.CI_FAILED if proc.returncode == 1 else MergeOutcome.ERROR
+        logger.warning(
+            "scm.merge.outcome",
+            extra={
+                "data": {
+                    "pr_url": pr_url,
+                    "pr_number": pr_number,
+                    "merge_outcome": outcome.value,
+                    "wait_timeout": wait_timeout,
+                    "ci_exit_code": proc.returncode,
+                    "stderr": stderr,
+                }
+            },
+        )
+        return outcome
+
+    return None  # CI passed — continue to Step C
+
+
+async def _step_c_verify_merge(
+    *,
+    pr_number: str,
+    pr_url: str,
+    project_root: Path,
+    wait_timeout: int,
+) -> MergeOutcome:
+    """Verify the PR actually merged (retry up to 3 times with 5s sleep)."""
+    for attempt in range(3):
+        if await _check_pr_state(pr_number, project_root):
+            logger.info(
+                "scm.merge.outcome",
+                extra={
+                    "data": {
+                        "pr_url": pr_url,
+                        "pr_number": pr_number,
+                        "merge_outcome": MergeOutcome.MERGED.value,
+                        "wait_timeout": wait_timeout,
+                        "verify_attempt": attempt + 1,
+                    }
+                },
+            )
+            return MergeOutcome.MERGED
+        await asyncio.sleep(5)
+
+    logger.warning(
+        "scm.merge.outcome",
+        extra={
+            "data": {
+                "pr_url": pr_url,
+                "pr_number": pr_number,
+                "merge_outcome": MergeOutcome.ERROR.value,
+                "wait_timeout": wait_timeout,
+                "reason": "not_merged_after_retries",
+            }
+        },
+    )
+    return MergeOutcome.ERROR
+
+
+async def _check_pr_state(pr_number: str, project_root: Path) -> bool:
+    """Return ``True`` if the PR state is ``MERGED``."""
+    proc = await asyncio.create_subprocess_exec(
+        "gh",
+        "pr",
+        "view",
+        pr_number,
+        "--json",
+        "state",
+        "--jq",
+        ".state",
+        cwd=str(project_root),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout_bytes, _ = await proc.communicate()
+    return stdout_bytes.decode("utf-8", errors="replace").strip() == "MERGED"
 
 
 def _extract_pr_number(pr_url: str) -> str | None:

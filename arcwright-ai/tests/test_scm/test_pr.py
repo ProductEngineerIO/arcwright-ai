@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -11,6 +11,7 @@ import pytest
 from arcwright_ai.core.constants import STORY_COPY_FILENAME, VALIDATION_FILENAME
 from arcwright_ai.core.exceptions import ScmError
 from arcwright_ai.scm.pr import (
+    MergeOutcome,
     _detect_default_branch,
     generate_pr_body,
     get_pull_request_merge_sha,
@@ -19,6 +20,7 @@ from arcwright_ai.scm.pr import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable
     from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -930,7 +932,7 @@ async def test_merge_pull_request_returns_true_on_success(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """merge_pull_request returns True when gh exits with returncode 0."""
+    """merge_pull_request returns MergeOutcome.MERGED when gh exits with returncode 0."""
     monkeypatch.setattr("arcwright_ai.scm.pr.shutil.which", lambda _: "/usr/local/bin/gh")
 
     mock_proc = MagicMock()
@@ -943,7 +945,7 @@ async def test_merge_pull_request_returns_true_on_success(
             project_root=tmp_path,
         )
 
-    assert result is True
+    assert result is MergeOutcome.MERGED
 
 
 @pytest.mark.asyncio
@@ -951,7 +953,7 @@ async def test_merge_pull_request_returns_false_on_failure(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """merge_pull_request returns False on non-zero returncode without raising."""
+    """merge_pull_request returns MergeOutcome.ERROR on non-zero returncode without raising."""
     monkeypatch.setattr("arcwright_ai.scm.pr.shutil.which", lambda _: "/usr/local/bin/gh")
 
     mock_proc = MagicMock()
@@ -964,7 +966,7 @@ async def test_merge_pull_request_returns_false_on_failure(
             project_root=tmp_path,
         )
 
-    assert result is False
+    assert result is MergeOutcome.ERROR
 
 
 @pytest.mark.asyncio
@@ -998,7 +1000,7 @@ async def test_merge_pull_request_returns_false_gh_not_found(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """merge_pull_request returns False immediately when gh CLI is not on PATH."""
+    """merge_pull_request returns MergeOutcome.ERROR immediately when gh CLI is not on PATH."""
     monkeypatch.setattr("arcwright_ai.scm.pr.shutil.which", lambda _: None)
 
     result = await merge_pull_request(
@@ -1006,7 +1008,7 @@ async def test_merge_pull_request_returns_false_gh_not_found(
         project_root=tmp_path,
     )
 
-    assert result is False
+    assert result is MergeOutcome.ERROR
 
 
 @pytest.mark.asyncio
@@ -1128,7 +1130,7 @@ async def test_merge_pull_request_returns_false_on_invalid_url(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """merge_pull_request returns False when PR URL has no /pull/<number>."""
+    """merge_pull_request returns MergeOutcome.ERROR when PR URL has no /pull/<number>."""
     monkeypatch.setattr("arcwright_ai.scm.pr.shutil.which", lambda _: "/usr/local/bin/gh")
 
     result = await merge_pull_request(
@@ -1136,7 +1138,7 @@ async def test_merge_pull_request_returns_false_on_invalid_url(
         project_root=tmp_path,
     )
 
-    assert result is False
+    assert result is MergeOutcome.ERROR
 
 
 @pytest.mark.asyncio
@@ -1144,7 +1146,7 @@ async def test_merge_pull_request_returns_false_on_subprocess_exception(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """merge_pull_request returns False when subprocess raises an exception."""
+    """merge_pull_request returns MergeOutcome.ERROR when subprocess raises an exception."""
     monkeypatch.setattr("arcwright_ai.scm.pr.shutil.which", lambda _: "/usr/local/bin/gh")
 
     async def _raise(*args: object, **kwargs: object) -> None:
@@ -1156,7 +1158,7 @@ async def test_merge_pull_request_returns_false_on_subprocess_exception(
             project_root=tmp_path,
         )
 
-    assert result is False
+    assert result is MergeOutcome.ERROR
 
 
 @pytest.mark.asyncio
@@ -1218,3 +1220,409 @@ def test_merge_outcome_exported_from_scm_package() -> None:
     from arcwright_ai.scm import MergeOutcome
 
     assert MergeOutcome.MERGED == "merged"
+
+
+# ---------------------------------------------------------------------------
+# Story 12.2 — CI-wait merge_pull_request unit tests
+# ---------------------------------------------------------------------------
+
+_PR_URL = "https://github.com/owner/repo/pull/42"
+
+
+def _make_mock_proc(
+    returncode: int = 0,
+    stdout: bytes = b"",
+    stderr: bytes = b"",
+) -> MagicMock:
+    """Create a mock subprocess with configurable returncode/stdout/stderr."""
+    proc = MagicMock()
+    proc.returncode = returncode
+    proc.communicate = AsyncMock(return_value=(stdout, stderr))
+    proc.wait = AsyncMock(return_value=returncode)
+    proc.terminate = MagicMock()
+    proc.kill = MagicMock()
+    return proc
+
+
+@pytest.mark.asyncio
+async def test_merge_pr_auto_flag_when_wait_timeout_positive(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """When wait_timeout > 0, gh pr merge is called with --auto flag."""
+    monkeypatch.setattr("arcwright_ai.scm.pr.shutil.which", lambda _: "/usr/local/bin/gh")
+
+    captured_args: list[tuple[str, ...]] = []
+    merge_proc = _make_mock_proc(stdout=b"Auto-merge enabled")
+    checks_proc = _make_mock_proc()
+    view_proc = _make_mock_proc(stdout=b"MERGED")
+
+    call_count = 0
+
+    async def _mock_exec(*args: str, **kwargs: object) -> MagicMock:
+        nonlocal call_count
+        captured_args.append(args)
+        call_count += 1
+        if call_count == 1:
+            return merge_proc
+        if call_count == 2:
+            return checks_proc
+        return view_proc
+
+    with patch("arcwright_ai.scm.pr.asyncio.create_subprocess_exec", _mock_exec):
+        await merge_pull_request(_PR_URL, project_root=tmp_path, wait_timeout=300)
+
+    # First call should be gh pr merge with --auto
+    assert "--auto" in captured_args[0]
+    assert "merge" in captured_args[0]
+
+
+@pytest.mark.asyncio
+async def test_merge_pr_checks_watch_called_after_auto(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """After gh pr merge --auto, gh pr checks --watch --fail-fast is called."""
+    monkeypatch.setattr("arcwright_ai.scm.pr.shutil.which", lambda _: "/usr/local/bin/gh")
+
+    captured_args: list[tuple[str, ...]] = []
+    merge_proc = _make_mock_proc(stdout=b"Auto-merge enabled")
+    checks_proc = _make_mock_proc()
+    view_proc = _make_mock_proc(stdout=b"MERGED")
+
+    call_count = 0
+
+    async def _mock_exec(*args: str, **kwargs: object) -> MagicMock:
+        nonlocal call_count
+        captured_args.append(args)
+        call_count += 1
+        if call_count == 1:
+            return merge_proc
+        if call_count == 2:
+            return checks_proc
+        return view_proc
+
+    with patch("arcwright_ai.scm.pr.asyncio.create_subprocess_exec", _mock_exec):
+        await merge_pull_request(_PR_URL, project_root=tmp_path, wait_timeout=300)
+
+    # First call: gh pr merge --auto
+    assert captured_args[0][1] == "pr"
+    assert captured_args[0][2] == "merge"
+    assert "--auto" in captured_args[0]
+
+    # Second call: gh pr checks --watch --fail-fast
+    assert captured_args[1][1] == "pr"
+    assert captured_args[1][2] == "checks"
+    assert "--watch" in captured_args[1]
+    assert "--fail-fast" in captured_args[1]
+
+
+@pytest.mark.asyncio
+async def test_merge_pr_returns_merged_on_ci_pass(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """CI passes → verify merge → MergeOutcome.MERGED."""
+    monkeypatch.setattr("arcwright_ai.scm.pr.shutil.which", lambda _: "/usr/local/bin/gh")
+
+    merge_proc = _make_mock_proc(stdout=b"Auto-merge enabled")
+    checks_proc = _make_mock_proc()  # exit 0 = CI passed
+    view_proc = _make_mock_proc(stdout=b"MERGED")
+
+    call_count = 0
+
+    async def _mock_exec(*args: str, **kwargs: object) -> MagicMock:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return merge_proc
+        if call_count == 2:
+            return checks_proc
+        return view_proc
+
+    with patch("arcwright_ai.scm.pr.asyncio.create_subprocess_exec", _mock_exec):
+        result = await merge_pull_request(_PR_URL, project_root=tmp_path, wait_timeout=300)
+
+    assert result is MergeOutcome.MERGED
+
+
+@pytest.mark.asyncio
+async def test_merge_pr_returns_ci_failed_on_check_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """CI fails (exit 1) → MergeOutcome.CI_FAILED."""
+    monkeypatch.setattr("arcwright_ai.scm.pr.shutil.which", lambda _: "/usr/local/bin/gh")
+
+    merge_proc = _make_mock_proc(stdout=b"Auto-merge enabled")
+    checks_proc = _make_mock_proc(returncode=1)
+
+    call_count = 0
+
+    async def _mock_exec(*args: str, **kwargs: object) -> MagicMock:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return merge_proc
+        return checks_proc
+
+    with patch("arcwright_ai.scm.pr.asyncio.create_subprocess_exec", _mock_exec):
+        result = await merge_pull_request(_PR_URL, project_root=tmp_path, wait_timeout=300)
+
+    assert result is MergeOutcome.CI_FAILED
+
+
+@pytest.mark.asyncio
+async def test_merge_pr_returns_error_on_non_ci_check_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Non-CI gh checks failures (exit != 1) return MergeOutcome.ERROR."""
+    monkeypatch.setattr("arcwright_ai.scm.pr.shutil.which", lambda _: "/usr/local/bin/gh")
+
+    merge_proc = _make_mock_proc(stdout=b"Auto-merge enabled")
+    checks_proc = _make_mock_proc(returncode=2, stderr=b"network/auth failure")
+
+    call_count = 0
+
+    async def _mock_exec(*args: str, **kwargs: object) -> MagicMock:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return merge_proc
+        return checks_proc
+
+    with patch("arcwright_ai.scm.pr.asyncio.create_subprocess_exec", _mock_exec):
+        result = await merge_pull_request(_PR_URL, project_root=tmp_path, wait_timeout=300)
+
+    assert result is MergeOutcome.ERROR
+
+
+@pytest.mark.asyncio
+async def test_merge_pr_returns_timeout_on_asyncio_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """TimeoutError during gh pr checks → subprocess terminated → MergeOutcome.TIMEOUT."""
+    monkeypatch.setattr("arcwright_ai.scm.pr.shutil.which", lambda _: "/usr/local/bin/gh")
+
+    merge_proc = _make_mock_proc(stdout=b"Auto-merge enabled")
+    checks_proc = MagicMock()
+    checks_proc.returncode = None
+    checks_proc.communicate = AsyncMock(side_effect=TimeoutError)
+    checks_proc.wait = AsyncMock(return_value=0)
+    checks_proc.terminate = MagicMock()
+    checks_proc.kill = MagicMock()
+    # PR view shows OPEN (not merged)
+    view_proc = _make_mock_proc(stdout=b"OPEN")
+
+    call_count = 0
+
+    async def _mock_exec(*args: str, **kwargs: object) -> MagicMock:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return merge_proc
+        if call_count == 2:
+            return checks_proc
+        return view_proc
+
+    wait_for_calls: list[float] = []
+
+    async def _selective_wait_for(coro: Awaitable[Any], *, timeout: float) -> Any:  # type: ignore[override]
+        wait_for_calls.append(timeout)
+        if len(wait_for_calls) == 1:
+            close = getattr(coro, "close", None)
+            if callable(close):
+                close()
+            raise TimeoutError
+        return await coro
+
+    with (
+        patch("arcwright_ai.scm.pr.asyncio.create_subprocess_exec", _mock_exec),
+        patch("arcwright_ai.scm.pr.asyncio.wait_for", _selective_wait_for),
+    ):
+        result = await merge_pull_request(_PR_URL, project_root=tmp_path, wait_timeout=2)
+
+    assert result is MergeOutcome.TIMEOUT
+    checks_proc.terminate.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_merge_pr_no_wait_when_timeout_zero(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """wait_timeout=0 → no --auto flag, no gh pr checks call, immediate merge."""
+    monkeypatch.setattr("arcwright_ai.scm.pr.shutil.which", lambda _: "/usr/local/bin/gh")
+
+    captured_args: list[tuple[str, ...]] = []
+    mock_proc = _make_mock_proc(stdout=b"Squashed and merged")
+
+    async def _mock_exec(*args: str, **kwargs: object) -> MagicMock:
+        captured_args.append(args)
+        return mock_proc
+
+    with patch("arcwright_ai.scm.pr.asyncio.create_subprocess_exec", _mock_exec):
+        result = await merge_pull_request(_PR_URL, project_root=tmp_path, wait_timeout=0)
+
+    assert result is MergeOutcome.MERGED
+    # Only one subprocess call — the immediate merge
+    assert len(captured_args) == 1
+    assert "--auto" not in captured_args[0]
+    # No checks call
+    assert all("checks" not in str(args) for args in captured_args)
+
+
+@pytest.mark.asyncio
+async def test_merge_pr_returns_skipped_never(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """merge_pull_request() never returns MergeOutcome.SKIPPED (only commit_node sets that)."""
+    monkeypatch.setattr("arcwright_ai.scm.pr.shutil.which", lambda _: "/usr/local/bin/gh")
+
+    # Success path
+    mock_proc = _make_mock_proc(stdout=b"Merged")
+    with patch("arcwright_ai.scm.pr.asyncio.create_subprocess_exec", AsyncMock(return_value=mock_proc)):
+        result = await merge_pull_request(_PR_URL, project_root=tmp_path)
+    assert result is not MergeOutcome.SKIPPED
+
+    # Failure path
+    mock_proc_fail = _make_mock_proc(returncode=1, stderr=b"error")
+    with patch("arcwright_ai.scm.pr.asyncio.create_subprocess_exec", AsyncMock(return_value=mock_proc_fail)):
+        result = await merge_pull_request(_PR_URL, project_root=tmp_path)
+    assert result is not MergeOutcome.SKIPPED
+
+
+@pytest.mark.asyncio
+async def test_merge_pr_timeout_verify_actually_merged(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Timeout fires but PR was already merged → MergeOutcome.MERGED (not TIMEOUT)."""
+    monkeypatch.setattr("arcwright_ai.scm.pr.shutil.which", lambda _: "/usr/local/bin/gh")
+
+    merge_proc = _make_mock_proc(stdout=b"Auto-merge enabled")
+    checks_proc = MagicMock()
+    checks_proc.returncode = None
+    checks_proc.communicate = AsyncMock(side_effect=TimeoutError)
+    checks_proc.wait = AsyncMock(return_value=0)
+    checks_proc.terminate = MagicMock()
+    checks_proc.kill = MagicMock()
+    # PR view shows MERGED (race window)
+    view_proc = _make_mock_proc(stdout=b"MERGED")
+
+    call_count = 0
+
+    async def _mock_exec(*args: str, **kwargs: object) -> MagicMock:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return merge_proc
+        if call_count == 2:
+            return checks_proc
+        return view_proc
+
+    wait_for_calls: list[float] = []
+
+    async def _selective_wait_for(coro: Awaitable[Any], *, timeout: float) -> Any:  # type: ignore[override]
+        wait_for_calls.append(timeout)
+        if len(wait_for_calls) == 1:
+            close = getattr(coro, "close", None)
+            if callable(close):
+                close()
+            raise TimeoutError
+        return await coro
+
+    with (
+        patch("arcwright_ai.scm.pr.asyncio.create_subprocess_exec", _mock_exec),
+        patch("arcwright_ai.scm.pr.asyncio.wait_for", _selective_wait_for),
+    ):
+        result = await merge_pull_request(_PR_URL, project_root=tmp_path, wait_timeout=2)
+
+    assert result is MergeOutcome.MERGED
+
+
+@pytest.mark.asyncio
+async def test_merge_pr_timeout_subprocess_sigterm(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """On timeout, proc.terminate() is called; proc.kill() is NOT called if wait completes."""
+    monkeypatch.setattr("arcwright_ai.scm.pr.shutil.which", lambda _: "/usr/local/bin/gh")
+
+    merge_proc = _make_mock_proc(stdout=b"Auto-merge enabled")
+    checks_proc = MagicMock()
+    checks_proc.returncode = None
+    checks_proc.communicate = AsyncMock(side_effect=TimeoutError)
+    # proc.wait completes within grace period (no SIGKILL needed)
+    checks_proc.wait = AsyncMock(return_value=0)
+    checks_proc.terminate = MagicMock()
+    checks_proc.kill = MagicMock()
+    view_proc = _make_mock_proc(stdout=b"OPEN")
+
+    call_count = 0
+
+    async def _mock_exec(*args: str, **kwargs: object) -> MagicMock:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return merge_proc
+        if call_count == 2:
+            return checks_proc
+        return view_proc
+
+    wait_for_calls: list[float] = []
+
+    async def _selective_wait_for(coro: Awaitable[Any], *, timeout: float) -> Any:  # type: ignore[override]
+        wait_for_calls.append(timeout)
+        if len(wait_for_calls) == 1:
+            # First call: proc.communicate — raise TimeoutError
+            close = getattr(coro, "close", None)
+            if callable(close):
+                close()
+            raise TimeoutError
+        # Second call: proc.wait (5s grace period) — let it succeed
+        return await coro
+
+    with (
+        patch("arcwright_ai.scm.pr.asyncio.create_subprocess_exec", _mock_exec),
+        patch("arcwright_ai.scm.pr.asyncio.wait_for", _selective_wait_for),
+    ):
+        result = await merge_pull_request(_PR_URL, project_root=tmp_path, wait_timeout=2)
+
+    checks_proc.terminate.assert_called_once()
+    checks_proc.kill.assert_not_called()
+    assert result is MergeOutcome.TIMEOUT
+
+
+@pytest.mark.asyncio
+async def test_merge_pr_auto_merge_not_allowed_stderr(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    """Stderr 'auto-merge is not allowed' → MergeOutcome.ERROR with actionable log."""
+    monkeypatch.setattr("arcwright_ai.scm.pr.shutil.which", lambda _: "/usr/local/bin/gh")
+
+    merge_proc = _make_mock_proc(
+        returncode=1,
+        stderr=b"auto-merge is not allowed for this repository",
+    )
+
+    async def _mock_exec(*args: str, **kwargs: object) -> MagicMock:
+        return merge_proc
+
+    with (
+        patch("arcwright_ai.scm.pr.asyncio.create_subprocess_exec", _mock_exec),
+        caplog.at_level(logging.WARNING, logger="arcwright_ai.scm.pr"),
+    ):
+        result = await merge_pull_request(_PR_URL, project_root=tmp_path, wait_timeout=300)
+
+    assert result is MergeOutcome.ERROR
+    # Verify log mentions how to enable auto-merge
+    fail_records = [r for r in caplog.records if "auto_merge_not_allowed" in str(getattr(r, "data", {}))]
+    assert fail_records, "Expected log with auto_merge_not_allowed reason"
+    data = getattr(fail_records[0], "data", {})
+    assert "Settings" in data.get("hint", "") and "Allow auto-merge" in data.get("hint", "")
