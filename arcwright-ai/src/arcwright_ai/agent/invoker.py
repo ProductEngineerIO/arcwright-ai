@@ -207,16 +207,15 @@ def _validate_tool_use(block: Any, sandbox: PathValidator, cwd: Path) -> None:
     """Validate a ToolUseBlock file path through the sandbox (defense-in-depth).
 
     Called for every ToolUseBlock in the SDK stream after the primary
-    ``can_use_tool`` callback. Raises ``SandboxViolation`` to abort the
-    invocation if a file-writing tool targets a path outside the boundary.
+    ``can_use_tool`` callback.  Because ``can_use_tool`` already denies
+    impermissible writes at the SDK level (the tool is never executed), this
+    function only **logs** sandbox violations rather than raising — the agent
+    will receive the deny message and can retry with a corrected path.
 
     Args:
         block: A ``ToolUseBlock`` from the SDK message stream.
         sandbox: The injected path validator function.
         cwd: The working directory (sandbox boundary).
-
-    Raises:
-        SandboxViolation: If the tool targets a path outside the sandbox boundary.
     """
     from pathlib import Path as _Path
 
@@ -244,17 +243,22 @@ def _validate_tool_use(block: Any, sandbox: PathValidator, cwd: Path) -> None:
             try:
                 sandbox(file_path, cwd, block.name)
             except SandboxViolation:
-                logger.info(
-                    "agent.sandbox.deny",
+                # can_use_tool already denied this write at the SDK level;
+                # the ToolUseBlock in the stream is informational only.
+                # Log for observability but do NOT re-raise — the agent
+                # receives the PermissionResultDeny message and can retry.
+                logger.warning(
+                    "agent.sandbox.deny_post",
                     extra={
                         "data": {
                             "tool": block.name,
                             "path": str(file_path),
                             "cwd": str(cwd),
+                            "note": "already denied by can_use_tool",
                         }
                     },
                 )
-                raise
+                return
 
             if file_path.is_absolute() and file_path.resolve().is_relative_to(temp_dir):
                 return
@@ -338,7 +342,12 @@ def _make_tool_validator(
                             }
                         },
                     )
-                    return PermissionResultDeny(message=str(exc))
+                    return PermissionResultDeny(
+                        message=(
+                            f"{exc}  Use relative paths from the current working "
+                            f"directory ({cwd}), not absolute paths."
+                        )
+                    )
 
                 if file_path.is_absolute() and file_path.resolve().is_relative_to(temp_dir):
                     return PermissionResultAllow()
