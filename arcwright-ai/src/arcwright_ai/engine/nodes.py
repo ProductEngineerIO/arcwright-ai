@@ -458,7 +458,14 @@ async def agent_dispatch_node(state: StoryState) -> StoryState:
 
     gen_spec = state.config.models.get(ModelRole.GENERATE)
     feedback = state.validation_result.feedback if state.validation_result is not None else None
-    prompt = build_prompt(state.context_bundle, feedback=feedback)
+    # Use worktree_path as cwd if available; fall back to project_root for backward compat (AC: #2, #5, #6)
+    agent_cwd = state.worktree_path if state.worktree_path is not None else state.project_root
+    prompt = build_prompt(
+        state.context_bundle,
+        feedback=feedback,
+        working_directory=agent_cwd,
+        sandbox_feedback=state.sandbox_feedback,
+    )
     logger.info(
         "agent.dispatch",
         extra={
@@ -473,8 +480,6 @@ async def agent_dispatch_node(state: StoryState) -> StoryState:
         },
     )
 
-    # Use worktree_path as cwd if available; fall back to project_root for backward compat (AC: #2, #5, #6)
-    agent_cwd = state.worktree_path if state.worktree_path is not None else state.project_root
     logger.info(
         "agent.dispatch",
         extra={
@@ -751,11 +756,21 @@ async def agent_dispatch_node(state: StoryState) -> StoryState:
         )
 
     # Transition: RUNNING → VALIDATING
+    next_sandbox_feedback: str | None = None
+    if result.outside_boundary_denied_paths:
+        denied_path = result.outside_boundary_denied_paths[0]
+        next_sandbox_feedback = (
+            f"Previous attempt was blocked by sandbox while writing '{denied_path}'. "
+            "Convert all absolute paths to project-relative paths rooted at the current working directory "
+            "(for example '/.../src/app/file.ts' -> 'src/app/file.ts')."
+        )
+
     updated = state.model_copy(
         update={
             "agent_output": result.output_text,
             "budget": new_budget,
             "status": TaskState.VALIDATING,
+            "sandbox_feedback": next_sandbox_feedback,
         }
     )
 

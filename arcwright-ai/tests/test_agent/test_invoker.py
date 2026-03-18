@@ -13,8 +13,10 @@ from claude_code_sdk._errors import ClaudeSDKError
 
 from arcwright_ai.agent.invoker import (
     InvocationResult,
+    _make_tool_validator,
     _patch_sdk_parser,
     _suppress_bg_cancel_scope_errors,
+    _ToolValidationStats,
     invoke_agent,
 )
 from arcwright_ai.agent.sandbox import validate_path
@@ -115,6 +117,8 @@ async def test_invoke_agent_success_returns_result(
     assert result.session_id == "mock-session-001"
     assert result.num_turns == 1
     assert result.is_error is False
+    assert result.denied_write_paths == ()
+    assert result.outside_boundary_denied_paths == ()
 
 
 def test_invocation_result_is_frozen_dataclass() -> None:
@@ -282,6 +286,18 @@ async def test_invoke_agent_tool_use_within_project(
     result = await _invoke(mock, project_root, monkeypatch)
     assert result.output_text == "File written."
     assert result.is_error is False
+
+
+async def test_make_tool_validator_tracks_outside_boundary_denials(project_root: Path) -> None:
+    """can_use_tool records denied write paths and classifies outside-boundary denials."""
+    stats = _ToolValidationStats()
+    validator = _make_tool_validator(validate_path, project_root, stats)
+
+    decision = await validator("Write", {"file_path": "/etc/passwd"}, None)
+
+    assert decision.__class__.__name__ == "PermissionResultDeny"
+    assert stats.denied_write_paths == ["/etc/passwd"]
+    assert stats.outside_boundary_denied_paths == ["/etc/passwd"]
 
 
 # ---------------------------------------------------------------------------
