@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -11,7 +12,13 @@ if TYPE_CHECKING:
 __all__: list[str] = ["build_prompt"]
 
 
-def build_prompt(bundle: ContextBundle, *, feedback: ReflexionFeedback | None = None) -> str:
+def build_prompt(
+    bundle: ContextBundle,
+    *,
+    feedback: ReflexionFeedback | None = None,
+    working_directory: Path | None = None,
+    sandbox_feedback: str | None = None,
+) -> str:
     """Assemble an SDK prompt string from a ContextBundle.
 
     Formats the bundle's story content, resolved requirements, architecture
@@ -26,6 +33,10 @@ def build_prompt(bundle: ContextBundle, *, feedback: ReflexionFeedback | None = 
         feedback: Optional reflexion feedback from a previous validation
             attempt. Appended to the prompt only when feedback is not None
             and feedback.passed is False.
+        working_directory: Optional agent working directory used to anchor
+            file edits.
+        sandbox_feedback: Optional feedback describing a sandbox-denied write
+            from a prior attempt.
 
     Returns:
         A formatted prompt string ready for ``claude_code_sdk.query()``.
@@ -40,6 +51,33 @@ def build_prompt(bundle: ContextBundle, *, feedback: ReflexionFeedback | None = 
 
     if bundle.answerer_rules:
         parts.append(f"## Project Conventions\n\n{bundle.answerer_rules}")
+
+    if working_directory is not None:
+        parts.append(
+            "\n".join(
+                [
+                    "## File Operation Constraints",
+                    "",
+                    f"- Current working directory: {working_directory}",
+                    "- Use relative file paths rooted at the current working directory.",
+                    "- Do not use absolute paths from validator output or prior logs.",
+                    "- If a validator references an absolute path like '/.../src/app/file.ts', rewrite it as 'src/app/file.ts'.",
+                ]
+            )
+        )
+
+    if sandbox_feedback:
+        parts.append(
+            "\n".join(
+                [
+                    "## Prior Sandbox Denial",
+                    "",
+                    sandbox_feedback,
+                    "",
+                    "Correct this before making other changes.",
+                ]
+            )
+        )
 
     if feedback is not None and not feedback.passed:
         feedback_lines: list[str] = [

@@ -2453,7 +2453,17 @@ async def test_agent_dispatch_node_sdk_error_estimates_tokens_from_prompt(
 
     # Compute the expected prompt length the same way agent_dispatch_node does
     assert dispatch_ready_state.context_bundle is not None
-    prompt = build_prompt(dispatch_ready_state.context_bundle, feedback=None)
+    agent_cwd = (
+        dispatch_ready_state.worktree_path
+        if dispatch_ready_state.worktree_path is not None
+        else dispatch_ready_state.project_root
+    )
+    prompt = build_prompt(
+        dispatch_ready_state.context_bundle,
+        feedback=None,
+        working_directory=agent_cwd,
+        sandbox_feedback=dispatch_ready_state.sandbox_feedback,
+    )
     expected_estimated_input = len(prompt) // 4
 
     result = await agent_dispatch_node(dispatch_ready_state)
