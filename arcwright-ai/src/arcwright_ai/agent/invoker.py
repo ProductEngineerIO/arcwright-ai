@@ -344,8 +344,7 @@ def _make_tool_validator(
                     )
                     return PermissionResultDeny(
                         message=(
-                            f"{exc}  Use relative paths from the current working "
-                            f"directory ({cwd}), not absolute paths."
+                            f"{exc}  Use relative paths from the current working directory ({cwd}), not absolute paths."
                         )
                     )
 
