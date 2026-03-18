@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -256,11 +257,11 @@ def _find_story_file(story_spec: str, artifacts_dir: Path) -> tuple[Path, StoryI
 def _find_epic_stories(epic_spec: str, artifacts_dir: Path) -> list[tuple[Path, StoryId, EpicId]]:
     """Find all story files for an epic, sorted by story number.
 
-    Parses epic_spec in formats "2" or "epic-2" to extract the epic number,
+    Parses epic_spec in formats "2", "epic-2", or "EPIC-2" to extract the epic number,
     then globs for all matching story files (excluding retrospectives).
 
     Args:
-        epic_spec: Epic identifier string (e.g., "2" or "epic-2").
+        epic_spec: Epic identifier string (e.g., "2", "epic-2", or "EPIC-2").
         artifacts_dir: Directory containing implementation artifact files.
 
     Returns:
@@ -268,9 +269,9 @@ def _find_epic_stories(epic_spec: str, artifacts_dir: Path) -> list[tuple[Path, 
         story number.
 
     Raises:
-        ProjectError: If no story files are found for the epic.
+        ProjectError: If epic_spec is invalid or no story files are found for the epic.
     """
-    epic_num = epic_spec[5:] if epic_spec.startswith("epic-") else epic_spec
+    epic_num = _extract_epic_number(epic_spec)
 
     matches = [p for p in artifacts_dir.glob(f"{epic_num}-*-*.md") if "retrospective" not in p.stem]
 
@@ -288,6 +289,32 @@ def _find_epic_stories(epic_spec: str, artifacts_dir: Path) -> list[tuple[Path, 
 
     epic_id = EpicId(f"epic-{epic_num}")
     return [(p, StoryId(p.stem), epic_id) for p in matches]
+
+
+def _extract_epic_number(epic_spec: str) -> str:
+    """Parse an epic selector into its numeric component.
+
+    Accepts plain numeric IDs (``"4"``) and prefixed forms such as
+    ``"epic-4"``, ``"EPIC-4"``, and ``"epic_4"``.
+
+    Args:
+        epic_spec: Raw epic selector from CLI input.
+
+    Returns:
+        Epic number as a string (e.g., ``"4"``).
+
+    Raises:
+        ProjectError: If the selector format is unsupported.
+    """
+    normalized = epic_spec.strip()
+    if normalized.isdigit():
+        return normalized
+
+    prefixed_match = re.fullmatch(r"(?i)epic[-_]?(\d+)", normalized)
+    if prefixed_match:
+        return prefixed_match.group(1)
+
+    raise ProjectError(f"Invalid epic spec: {epic_spec!r}. Expected format: '4', 'epic-4', or 'EPIC-4'.")
 
 
 def _discover_project_root() -> Path:
@@ -502,7 +529,7 @@ async def _dispatch_epic_async(epic_spec: str, *, skip_confirm: bool = False, re
     non-SUCCESS terminal status the loop halts and the run is marked HALTED.
 
     Args:
-        epic_spec: Epic identifier string (e.g., "2" or "epic-2").
+        epic_spec: Epic identifier string (e.g., "2", "epic-2", or "EPIC-2").
         skip_confirm: When ``True`` the pre-dispatch confirmation prompt is
             skipped entirely (equivalent to the ``--yes`` CLI flag).
         resume: When ``True`` the controller finds the most recent halted run
@@ -543,7 +570,7 @@ async def _dispatch_epic_async(epic_spec: str, *, skip_confirm: bool = False, re
     if resume:
         prior_run = await _find_latest_run_for_epic(project_root, epic_spec)
         if prior_run is None:
-            epic_num = epic_spec[5:] if epic_spec.startswith("epic-") else epic_spec
+            epic_num = _extract_epic_number(epic_spec)
             typer.echo(
                 f"No previous run found for epic {epic_spec}. "
                 f"Use `arcwright-ai dispatch --epic {epic_num}` without --resume.",
@@ -887,7 +914,7 @@ async def _dispatch_epic_async(epic_spec: str, *, skip_confirm: bool = False, re
 
 def dispatch_command(
     story: Annotated[str | None, typer.Option("--story", help="Story identifier (e.g., 2.7 or 2-7)")] = None,
-    epic: Annotated[str | None, typer.Option("--epic", help="Epic identifier (e.g., 2 or epic-2)")] = None,
+    epic: Annotated[str | None, typer.Option("--epic", help="Epic identifier (e.g., 2, epic-2, or EPIC-2)")] = None,
     yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip pre-dispatch confirmation")] = False,
     resume: Annotated[
         bool, typer.Option("--resume", help="Resume a halted epic dispatch from the failure point")
@@ -897,7 +924,7 @@ def dispatch_command(
 
     Args:
         story: Story identifier (e.g., 2.7 or 2-7).
-        epic: Epic identifier (e.g., 2 or epic-2).
+        epic: Epic identifier (e.g., 2, epic-2, or EPIC-2).
         yes: When set, skip the pre-dispatch confirmation prompt for epic
             dispatch.
         resume: When set, resume a halted epic dispatch from the failure point.

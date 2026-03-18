@@ -96,9 +96,15 @@ Unlike black-box autonomous agents, every decision is logged, every output is va
 
 Granular, user-controlled scope selection:
 
+Epic selectors accept all of the following equivalent forms: `3`, `epic-3`, and `EPIC-3`.
+
 ```bash
 # Dispatch an entire epic
 python -m arcwright_ai dispatch --epic 3
+
+# Equivalent epic selector formats
+python -m arcwright_ai dispatch --epic epic-3
+python -m arcwright_ai dispatch --epic EPIC-3
 
 # Dispatch a single story
 python -m arcwright_ai dispatch --story 3.1
@@ -267,8 +273,8 @@ python3 -m venv .venv && source .venv/bin/activate && pip install -r requirement
 | Command | Description |
 |---------|-------------|
 | `arcwright-ai init` | Scaffold `.arcwright-ai/`, generate default config, detect BMAD artifacts |
-| `arcwright-ai dispatch --epic EPIC-N` | Dispatch full epic for sequential autonomous execution |
-| `arcwright-ai dispatch --epic EPIC-N --resume` | Resume a halted epic from the failure point |
+| `arcwright-ai dispatch --epic EPIC-N` | Dispatch full epic for sequential autonomous execution (also accepts `N` and `epic-N`) |
+| `arcwright-ai dispatch --epic EPIC-N --resume` | Resume a halted epic from the failure point (also accepts `N` and `epic-N`) |
 | `arcwright-ai dispatch --story STORY-N.N` | Dispatch a single story |
 | `arcwright-ai validate-setup` | Validate config, API key, project structure |
 | `arcwright-ai status [--run RUN-ID]` | Show current/last run status with cost summary |
