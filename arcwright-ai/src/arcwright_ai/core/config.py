@@ -734,11 +734,13 @@ def load_config(project_root: Path | None = None) -> RunConfig:
     merged: dict[str, Any] = {}
 
     # Tier 0: load .env file (project root, then cwd) so env vars are
-    # available for the override layer below.  Existing env vars are NOT
-    # overwritten ("first wins").
+    # available for the override layer below.  The .env file is authoritative
+    # — its values override any ambient shell environment variables so that
+    # keys like LANGSMITH_API_KEY and ARCWRIGHT_API_CLAUDE_API_KEY come
+    # exclusively from the .env file when the CLI is executed.
     if project_root is not None:
-        load_dotenv(project_root / ".env")
-    load_dotenv()  # cwd fallback — no-op if already loaded above
+        load_dotenv(project_root / ".env", override=True)
+    load_dotenv(override=True)  # cwd fallback — no-op if already loaded above
 
     # Tier 1: global config (~/.arcwright-ai/config.yaml)
     global_cfg = Path.home() / GLOBAL_CONFIG_DIR / CONFIG_FILENAME
