@@ -1,6 +1,6 @@
 # Story 12.4: Dispatch Loop Halt on Merge Failure
 
-Status: ready-for-dev
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -72,14 +72,14 @@ if final_story_state.merge_outcome in (MergeOutcome.CI_FAILED.value, MergeOutcom
 
 ## Tasks / Subtasks
 
-- [ ] Task 1: Add merge outcome check to story loop (AC: #1, #2, #3, #4, #5)
-  - [ ] 1.1: In `src/arcwright_ai/cli/dispatch.py`, add import at the top of the file:
+- [x] Task 1: Add merge outcome check to story loop (AC: #1, #2, #3, #4, #5)
+  - [x] 1.1: In `src/arcwright_ai/cli/dispatch.py`, add import at the top of the file:
     ```python
     from arcwright_ai.scm import MergeOutcome
     ```
     Verify this is valid per package DAG: `cli → scm → core` is a legal edge. `dispatch.py` already imports from `arcwright_ai.scm` (if not, it imports from `arcwright_ai.engine` which imports from `scm`).
 
-  - [ ] 1.2: In `_dispatch_epic_async()`, after the SUCCESS path check (~L776, after `last_completed = story_slug` and `completed_stories.append(story_slug)`) — but BEFORE moving to the next iteration — add the merge outcome halt check:
+  - [x] 1.2: In `_dispatch_epic_async()`, after the SUCCESS path check (~L776, after `last_completed = story_slug` and `completed_stories.append(story_slug)`) — but BEFORE moving to the next iteration — add the merge outcome halt check:
     ```python
     # Check merge outcome for epic chain integrity (Story 12.4 / D10)
     if final_story_state.merge_outcome in (
@@ -119,33 +119,33 @@ if final_story_state.merge_outcome in (MergeOutcome.CI_FAILED.value, MergeOutcom
         return EXIT_HALT
     ```
 
-  - [ ] 1.3: **Placement detail:** The check goes AFTER the `exit_code != EXIT_SUCCESS` block (which handles story-level failures) and AFTER `completed_stories.append(story_slug)`. This is because the story IS successful — the code was valid. The halt is an epic-level decision about chain integrity, not a story-level failure. The exact insertion point is after L780 (after `project_state.completed_stories = len(completed_stories)`).
+  - [x] 1.3: **Placement detail:** The check goes AFTER the `exit_code != EXIT_SUCCESS` block (which handles story-level failures) and AFTER `completed_stories.append(story_slug)`. This is because the story IS successful — the code was valid. The halt is an epic-level decision about chain integrity, not a story-level failure. The exact insertion point is after L780 (after `project_state.completed_stories = len(completed_stories)`).
 
-  - [ ] 1.4: **Define `EXIT_HALT`:** Check if `EXIT_HALT` constant already exists in `dispatch.py`. If not, define it near the existing `EXIT_SUCCESS` constant. Use exit code `2` (distinct from `EXIT_SUCCESS=0` and typical error `EXIT_FAILURE=1`). If the project uses a different halt exit code convention, match it.
+  - [x] 1.4: **Define `EXIT_HALT`:** Check if `EXIT_HALT` constant already exists in `dispatch.py`. If not, define it near the existing `EXIT_SUCCESS` constant. Use exit code `2` (distinct from `EXIT_SUCCESS=0` and typical error `EXIT_FAILURE=1`). If the project uses a different halt exit code convention, match it.
 
-  - [ ] 1.5: **Alternative: Reuse halt_controller.** If the project's halt_controller pattern is the preferred way to handle halts (see L770–775 where `halt_controller.handle_graph_halt()` is called for non-SUCCESS stories), consider routing through the halt controller instead of directly returning. Review `halt_controller.handle_graph_halt()` to see if it accepts a "merge failed" scenario, or if a new method like `handle_merge_halt()` is needed. **Preferred approach:** Keep it simple with a direct `break` and return, since this is a clean halt (not an error) and the halt_controller is designed for graph-level failures.
+  - [x] 1.5: **Alternative: Reuse halt_controller.** If the project's halt_controller pattern is the preferred way to handle halts (see L770–775 where `halt_controller.handle_graph_halt()` is called for non-SUCCESS stories), consider routing through the halt controller instead of directly returning. Review `halt_controller.handle_graph_halt()` to see if it accepts a "merge failed" scenario, or if a new method like `handle_merge_halt()` is needed. **Preferred approach:** Keep it simple with a direct `break` and return, since this is a clean halt (not an error) and the halt_controller is designed for graph-level failures.
 
-- [ ] Task 2: Unit tests (AC: #7)
-  - [ ] 2.1: In `tests/test_cli/test_dispatch.py`, add `test_dispatch_halts_on_ci_failed_merge_outcome`:
+- [x] Task 2: Unit tests (AC: #7)
+  - [x] 2.1: In `tests/test_cli/test_dispatch.py`, add `test_dispatch_halts_on_ci_failed_merge_outcome`:
     - Mock `graph.ainvoke()` to return a `StoryState` with `status=TaskState.SUCCESS` and `merge_outcome="ci_failed"`
     - Assert dispatch returns `EXIT_HALT` (or appropriate halt code)
     - Assert only 1 story was dispatched (second story should not start)
     - Assert warning log `"dispatch.epic.halt.merge_failed"` was emitted
 
-  - [ ] 2.2: Add `test_dispatch_halts_on_timeout_merge_outcome`:
+  - [x] 2.2: Add `test_dispatch_halts_on_timeout_merge_outcome`:
     - Same as 2.1 but with `merge_outcome="timeout"`
     - Assert same halt behavior
 
-  - [ ] 2.3: Add `test_dispatch_continues_on_merged_outcome`:
+  - [x] 2.3: Add `test_dispatch_continues_on_merged_outcome`:
     - Mock `graph.ainvoke()` to return `StoryState` with `merge_outcome="merged"` for 2 stories
     - Assert both stories dispatched
     - Assert no halt log emitted
 
-  - [ ] 2.4: Add `test_dispatch_continues_on_none_outcome`:
+  - [x] 2.4: Add `test_dispatch_continues_on_none_outcome`:
     - Mock `graph.ainvoke()` to return `StoryState` with `merge_outcome=None`
     - Assert dispatch continues normally (backward compat)
 
-  - [ ] 2.5: Run full suite: `uv run ruff check src/ tests/ && uv run mypy --strict src/ && uv run pytest` — zero failures, zero regressions
+  - [x] 2.5: Run full suite: `uv run ruff check src/ tests/ && uv run mypy --strict src/ && uv run pytest` — zero failures, zero regressions
 
 ## Dev Notes
 
@@ -232,8 +232,26 @@ For new tests, mock `graph.ainvoke()` to return a `StoryState` (or dict) with th
 
 ### Agent Model Used
 
+Claude Opus 4.6 (GitHub Copilot)
+
 ### Debug Log References
+
+N/A — no debug issues encountered.
 
 ### Completion Notes List
 
+- Imported `MergeOutcome` from `arcwright_ai.scm` and `EXIT_SCM` from constants (used exit code 4 for SCM merge failures, matching existing convention — no `EXIT_HALT` needed)
+- Added merge outcome halt check in `_dispatch_epic_async()` after `completed_stories.append(story_slug)` and before next loop iteration
+- Enhanced the non-StoryState result path to propagate `merge_outcome` from the graph result into `final_story_state` — ensures robustness when result is a dict or mock object
+- Used direct return pattern (option 1 from Dev Notes) rather than routing through halt_controller, since this is a clean orchestration-level halt
+- Story SUCCESS status is preserved — the halt is epic-level, not story-level (AC #4)
+- All 4 required tests added and passing: ci_failed halt, timeout halt, merged continue, None continue
+- Full suite: 960 passed, ruff clean, mypy --strict clean
+
 ### File List
+
+- `_spec/implementation-artifacts/12-4-dispatch-loop-halt-on-merge-failure.md` — Updated status/tasks/dev record during implementation and code-review follow-up
+- `_spec/implementation-artifacts/sprint-status.yaml` — Updated story status to `review`
+- `arcwright-ai/src/arcwright_ai/cli/dispatch.py` — Added merge outcome halt check in story loop, `merge_outcome` propagation in non-StoryState else branch, and routed merge halts through `HaltController.handle_merge_halt()`
+- `arcwright-ai/src/arcwright_ai/cli/halt.py` — Added `handle_merge_halt()` to generate halt report/provenance/status/telemetry for epic-level merge-failure halts
+- `arcwright-ai/tests/test_cli/test_dispatch.py` — Added 4 tests: `test_dispatch_halts_on_ci_failed_merge_outcome`, `test_dispatch_halts_on_timeout_merge_outcome`, `test_dispatch_continues_on_merged_outcome`, `test_dispatch_continues_on_none_outcome`

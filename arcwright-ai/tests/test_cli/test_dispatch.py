@@ -1119,3 +1119,91 @@ def test_normal_dispatch_halt_controller_gets_none_previous_run_id(
         f"Non-resume dispatch: HaltController.previous_run_id should be None, "
         f"got {captured_controller_kwargs.get('previous_run_id')!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Story 12.4 — Dispatch loop halt on merge failure
+# ---------------------------------------------------------------------------
+
+
+def test_dispatch_halts_on_ci_failed_merge_outcome(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Epic halts when story merge_outcome is 'ci_failed' (AC #1)."""
+    story1 = _make_story_result("success")
+    story1.merge_outcome = "ci_failed"
+    story2 = _make_story_result("success")
+
+    _make_epic_project(tmp_path, epic_num="5", story_count=2)
+    call_log = _patch_epic_deps(monkeypatch, tmp_path, [story1, story2])
+
+    result = runner.invoke(app, ["dispatch", "--epic", "5", "--yes"])
+
+    assert result.exit_code == 4, f"ci_failed merge should halt with EXIT_SCM (4), got {result.exit_code}"
+    assert len(call_log["invoke_calls"]) == 1, "Second story should not be dispatched"
+    assert "Epic halted" in result.output
+    assert "ci_failed" in result.output
+    # Run status should be updated to HALTED
+    halted_calls = [c for c in call_log["update_run_calls"] if "halted" in str(c.get("status")).lower()]
+    assert halted_calls, "Run status should be updated to HALTED"
+
+
+def test_dispatch_halts_on_timeout_merge_outcome(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Epic halts when story merge_outcome is 'timeout' (AC #2)."""
+    story1 = _make_story_result("success")
+    story1.merge_outcome = "timeout"
+    story2 = _make_story_result("success")
+
+    _make_epic_project(tmp_path, epic_num="5", story_count=2)
+    call_log = _patch_epic_deps(monkeypatch, tmp_path, [story1, story2])
+
+    result = runner.invoke(app, ["dispatch", "--epic", "5", "--yes"])
+
+    assert result.exit_code == 4, f"timeout merge should halt with EXIT_SCM (4), got {result.exit_code}"
+    assert len(call_log["invoke_calls"]) == 1, "Second story should not be dispatched"
+    assert "Epic halted" in result.output
+    assert "timeout" in result.output
+
+
+def test_dispatch_continues_on_merged_outcome(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Epic continues when merge_outcome is 'merged' or 'skipped' (AC #3)."""
+    story1 = _make_story_result("success")
+    story1.merge_outcome = "merged"
+    story2 = _make_story_result("success")
+    story2.merge_outcome = "skipped"
+
+    _make_epic_project(tmp_path, epic_num="5", story_count=2)
+    call_log = _patch_epic_deps(monkeypatch, tmp_path, [story1, story2])
+
+    result = runner.invoke(app, ["dispatch", "--epic", "5", "--yes"])
+
+    assert result.exit_code == 0, f"Unexpected exit {result.exit_code}:\n{result.output}"
+    assert len(call_log["invoke_calls"]) == 2, "Both stories should be dispatched"
+    assert "Epic halted" not in result.output
+
+
+def test_dispatch_continues_on_none_outcome(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Epic continues when merge_outcome is None — backward compat (AC #5)."""
+    story1 = _make_story_result("success")
+    story1.merge_outcome = None
+    story2 = _make_story_result("success")
+    story2.merge_outcome = None
+
+    _make_epic_project(tmp_path, epic_num="5", story_count=2)
+    call_log = _patch_epic_deps(monkeypatch, tmp_path, [story1, story2])
+
+    result = runner.invoke(app, ["dispatch", "--epic", "5", "--yes"])
+
+    assert result.exit_code == 0, f"Unexpected exit {result.exit_code}:\n{result.output}"
+    assert len(call_log["invoke_calls"]) == 2, "Both stories should be dispatched"
+    assert "Epic halted" not in result.output
