@@ -1,6 +1,6 @@
 # Story 12.3: commit_node MergeOutcome Integration
 
-Status: ready-for-dev
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -67,8 +67,8 @@ So that merge results flow correctly into provenance records and are available f
 
 ## Tasks / Subtasks
 
-- [ ] Task 1: Import `MergeOutcome` in `nodes.py` (AC: #2)
-  - [ ] 1.1: In `src/arcwright_ai/engine/nodes.py`, update the import from `arcwright_ai.scm.pr` (~L42–44) to include `MergeOutcome`:
+- [x] Task 1: Import `MergeOutcome` in `nodes.py` (AC: #2)
+  - [x] 1.1: In `src/arcwright_ai/engine/nodes.py`, update the import from `arcwright_ai.scm.pr` (~L42–44) to include `MergeOutcome`:
     ```python
     from arcwright_ai.scm.pr import (
         MergeOutcome,
@@ -79,10 +79,10 @@ So that merge results flow correctly into provenance records and are available f
         open_pull_request,
     )
     ```
-  - [ ] 1.2: Verify import is valid per package DAG: `engine → scm` is a valid edge. `nodes.py` already imports from `scm.pr` so this adds no new dependency.
+  - [x] 1.2: Verify import is valid per package DAG: `engine → scm` is a valid edge. `nodes.py` already imports from `scm.pr` so this adds no new dependency.
 
-- [ ] Task 2: Update auto-merge block with `wait_timeout` and `MergeOutcome` (AC: #1, #2, #3, #4, #5)
-  - [ ] 2.1: In `commit_node()` auto-merge block (~L1508), pass `wait_timeout` to `merge_pull_request()`:
+- [x] Task 2: Update auto-merge block with `wait_timeout` and `MergeOutcome` (AC: #1, #2, #3, #4, #5)
+  - [x] 2.1: In `commit_node()` auto-merge block (~L1508), pass `wait_timeout` to `merge_pull_request()`:
     ```python
     merge_outcome = await merge_pull_request(
         pr_url,
@@ -93,7 +93,7 @@ So that merge results flow correctly into provenance records and are available f
     ```
     Change local variable name from `merge_succeeded` to `merge_outcome` (type becomes `MergeOutcome`, not `bool`).
 
-  - [ ] 2.2: Replace the `if merge_succeeded:` conditional (~L1532) with a `MergeOutcome` check:
+  - [x] 2.2: Replace the `if merge_succeeded:` conditional (~L1532) with a `MergeOutcome` check:
     ```python
     if merge_outcome == MergeOutcome.MERGED:
         try:
@@ -104,7 +104,7 @@ So that merge results flow correctly into provenance records and are available f
         merge_sha = "not_merged"
     ```
 
-  - [ ] 2.3: Update provenance `rationale` string (~L1548) to use `merge_outcome.value` instead of the old ternary:
+  - [x] 2.3: Update provenance `rationale` string (~L1548) to use `merge_outcome.value` instead of the old ternary:
     ```python
     rationale=(
         f"merge_attempted_at={merge_attempted_at}; "
@@ -115,56 +115,56 @@ So that merge results flow correctly into provenance records and are available f
     ),
     ```
 
-  - [ ] 2.4: Set `state.merge_outcome` after the auto-merge block completes. Place this INSIDE the `if pr_url is not None and state.config.scm.auto_merge:` block:
+  - [x] 2.4: Set `state.merge_outcome` after the auto-merge block completes. Place this INSIDE the `if pr_url is not None and state.config.scm.auto_merge:` block:
     ```python
     state.merge_outcome = merge_outcome.value
     ```
     This must be set regardless of which `MergeOutcome` value was returned.
 
-- [ ] Task 3: Handle auto_merge=False and PR creation failure (AC: #3)
-  - [ ] 3.1: When `state.config.scm.auto_merge` is `False` (the `else` branch of the auto-merge conditional), set:
+- [x] Task 3: Handle auto_merge=False and PR creation failure (AC: #3)
+  - [x] 3.1: When `state.config.scm.auto_merge` is `False` (the `else` branch of the auto-merge conditional), set:
     ```python
     state.merge_outcome = MergeOutcome.SKIPPED.value
     ```
     Import `MergeOutcome` is already available from Task 1.
 
-  - [ ] 3.2: When `pr_url is None` and `auto_merge` is True (PR creation failed), set:
+  - [x] 3.2: When `pr_url is None` and `auto_merge` is True (PR creation failed), set:
     ```python
     state.merge_outcome = MergeOutcome.ERROR.value
     ```
     This handles the case where `open_pull_request()` returned `None`.
 
-  - [ ] 3.3: Ensure `state.merge_outcome` is set on ALL code paths through `commit_node()` that reach the auto-merge section. When `commit_hash is None` (no changes committed), `state.merge_outcome` remains `None` (the story had nothing to merge).
+  - [x] 3.3: Ensure `state.merge_outcome` is set on ALL code paths through `commit_node()` that reach the auto-merge section. When `commit_hash is None` (no changes committed), `state.merge_outcome` remains `None` (the story had nothing to merge).
 
-- [ ] Task 4: Update exception handler for merge call (AC: #2)
-  - [ ] 4.1: The existing `try/except` around `merge_pull_request()` (~L1518) catches `Exception`. Update the except block to set `merge_outcome = MergeOutcome.ERROR` (instead of `merge_succeeded = False`).
-  - [ ] 4.2: Ensure `state.merge_outcome = merge_outcome.value` is still set after the except block (the variable must be defined on both the try and except paths).
+- [x] Task 4: Update exception handler for merge call (AC: #2)
+  - [x] 4.1: The existing `try/except` around `merge_pull_request()` (~L1518) catches `Exception`. Update the except block to set `merge_outcome = MergeOutcome.ERROR` (instead of `merge_succeeded = False`).
+  - [x] 4.2: Ensure `state.merge_outcome = merge_outcome.value` is still set after the except block (the variable must be defined on both the try and except paths).
 
-- [ ] Task 5: Unit tests (AC: #6)
-  - [ ] 5.1: In `tests/test_engine/test_nodes.py`, add `test_commit_node_sets_merge_outcome_merged`:
+- [x] Task 5: Unit tests (AC: #6)
+  - [x] 5.1: In `tests/test_engine/test_nodes.py`, add `test_commit_node_sets_merge_outcome_merged`:
     - Mock `merge_pull_request` to return `MergeOutcome.MERGED`
     - Mock `get_pull_request_merge_sha` to return a SHA
     - Set `config.scm.auto_merge=True`
     - Assert `result.merge_outcome == "merged"`
 
-  - [ ] 5.2: Add `test_commit_node_sets_merge_outcome_ci_failed`:
+  - [x] 5.2: Add `test_commit_node_sets_merge_outcome_ci_failed`:
     - Mock `merge_pull_request` to return `MergeOutcome.CI_FAILED`
     - Set `config.scm.auto_merge=True`
     - Assert `result.merge_outcome == "ci_failed"`
     - Assert `get_pull_request_merge_sha` was NOT called
 
-  - [ ] 5.3: Add `test_commit_node_sets_merge_outcome_skipped`:
+  - [x] 5.3: Add `test_commit_node_sets_merge_outcome_skipped`:
     - Set `config.scm.auto_merge=False`
     - Assert `result.merge_outcome == "skipped"`
     - Assert `merge_pull_request` was NOT called
 
-  - [ ] 5.4: Add `test_commit_node_passes_wait_timeout_from_config`:
+  - [x] 5.4: Add `test_commit_node_passes_wait_timeout_from_config`:
     - Set `config.scm.merge_wait_timeout=1200`
     - Set `config.scm.auto_merge=True`
     - Mock `merge_pull_request` → capture `wait_timeout` kwarg
     - Assert `merge_pull_request` was called with `wait_timeout=1200`
 
-  - [ ] 5.5: Run full suite: `uv run ruff check src/ tests/ && uv run mypy --strict src/ && uv run pytest` — zero failures, zero regressions
+  - [x] 5.5: Run full suite: `uv run ruff check src/ tests/ && uv run mypy --strict src/ && uv run pytest` — zero failures, zero regressions
 
 ## Dev Notes
 
@@ -248,8 +248,66 @@ State construction in tests follows `StoryState(story_id=..., epic_id=..., run_i
 
 ### Agent Model Used
 
+Claude Sonnet 4.6
+
 ### Debug Log References
+
+N/A
 
 ### Completion Notes List
 
+- `MergeOutcome` was already imported in `nodes.py` from Story 12.2's prior work — Task 1 was already satisfied.
+- Added `wait_timeout=state.config.scm.merge_wait_timeout` to `merge_pull_request()` call (AC #1, #5).
+- Updated provenance `rationale` to use `merge_outcome.value` replacing the old `'success'/'failed'` ternary (AC #4).
+- Set `state.merge_outcome = merge_outcome.value` inside the auto-merge block (AC #3).
+- Added `elif commit_hash is not None and state.config.scm.auto_merge:` branch → `MergeOutcome.ERROR.value` when PR creation failed (AC #3).
+- Added `elif commit_hash is not None:` branch → `MergeOutcome.SKIPPED.value` when `auto_merge=False` (AC #3).
+- All paths respect AC #3 note: when `commit_hash is None`, `state.merge_outcome` remains `None`.
+- Fixed existing `test_commit_node_records_merge_provenance` to assert `status=merged` (was `status=success`) to match new rationale format.
+- Added 4 new tests: `test_commit_node_sets_merge_outcome_merged`, `test_commit_node_sets_merge_outcome_ci_failed`, `test_commit_node_sets_merge_outcome_skipped`, `test_commit_node_passes_wait_timeout_from_config`.
+- All 956 tests pass; `ruff check` and `mypy --strict src/` clean.
+
 ### File List
+
+- arcwright-ai/src/arcwright_ai/engine/nodes.py
+- arcwright-ai/tests/test_engine/test_nodes.py
+- _spec/implementation-artifacts/12-3-commit-node-mergeoutcome-integration.md
+- _spec/implementation-artifacts/sprint-status.yaml
+
+## Change Log
+
+- 2026-03-17: Implemented Story 12.3 — pass `merge_wait_timeout` to `merge_pull_request()`, replace bool logic with `MergeOutcome` switch, set `state.merge_outcome` on all SCM code paths, add 4 unit tests. (Dev: Claude Sonnet 4.6)
+- 2026-03-17: Senior Developer Review (AI) completed. ACs validated against implementation and focused tests; story approved and moved to done. (Reviewer: Ed)
+
+## Senior Developer Review (AI)
+
+Date: 2026-03-17
+Reviewer: Ed
+Outcome: Approved
+
+### Scope Reviewed
+
+- Story file acceptance criteria and completed tasks
+- Implementation changes in `arcwright-ai/src/arcwright_ai/engine/nodes.py`
+- Test changes in `arcwright-ai/tests/test_engine/test_nodes.py`
+- Git delta cross-check against Dev Agent Record File List
+
+### Findings
+
+- No HIGH issues found.
+- No MEDIUM issues found.
+- No LOW issues found.
+
+### AC Validation Summary
+
+- AC1: Implemented. `commit_node()` passes `wait_timeout=state.config.scm.merge_wait_timeout` to `merge_pull_request()`.
+- AC2: Implemented. Merge handling uses `MergeOutcome`; merge SHA lookup occurs only for `MergeOutcome.MERGED`.
+- AC3: Implemented. `state.merge_outcome` set for merged path, auto-merge disabled path (`skipped`), and PR creation failure path (`error`); remains `None` when no commit exists.
+- AC4: Implemented. Provenance rationale now records `status={merge_outcome.value}` and expected merge SHA semantics.
+- AC5: Implemented by wiring. `merge_wait_timeout` is forwarded directly; behavior at zero remains delegated to `merge_pull_request()`.
+- AC6: Implemented. Story-specific merge outcome and timeout tests are present and passing.
+
+### Verification Run
+
+- Command: `uv run pytest tests/test_engine/test_nodes.py -k "merge_outcome or wait_timeout or records_merge_provenance or status_success_on_merge_failure"`
+- Result: 6 passed, 0 failed
