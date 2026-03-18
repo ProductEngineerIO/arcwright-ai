@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 
     from arcwright_ai.core.types import ProvenanceEntry
 
-__all__: list[str] = ["append_entry", "render_validation_row", "write_entries"]
+__all__: list[str] = ["append_entry", "merge_validation_checkpoint", "render_validation_row", "write_entries"]
 
 # ---------------------------------------------------------------------------
 # Private rendering helpers
@@ -247,4 +247,95 @@ async def append_entry(path: Path, entry: ProvenanceEntry) -> None:
             new_ctx = f"{_CONTEXT_SECTION_HEADER}\n\n{bullets}\n"
         content = content[:ctx_idx] + new_ctx
 
+    await write_text_async(path, content)
+
+
+async def merge_validation_checkpoint(
+    path: Path,
+    attempt: int,
+    outcome: str,
+    feedback: str,
+) -> None:
+    """Merge a validation result row into the ``## Validation History`` section.
+
+    Preserves every existing ``## Agent Decisions`` entry in the file.  If the
+    file does not exist, a fresh provenance file is created in the 3-section
+    format with the validation row as its first history entry.  If the file
+    exists but has no ``## Validation History`` section, the section is
+    injected before ``## Context Provided`` (or appended) so that subsequent
+    :func:`append_entry` calls work correctly.
+
+    This function replaces the previous unconditional overwrite with
+    ``_serialize_validation_checkpoint()``, which destroyed ``## Agent
+    Decisions`` entries written by ``agent_dispatch_node``.
+
+    Args:
+        path: Path to the target provenance file.
+        attempt: 1-based validation attempt number.
+        outcome: Pipeline outcome string (e.g. ``"pass"`` or ``"fail_v6"``).
+        feedback: Human-readable feedback summary for this attempt.
+    """
+    new_row = render_validation_row(attempt, outcome, feedback)
+
+    exists = await asyncio.to_thread(path.exists)
+    if not exists:
+        story_slug = _extract_story_slug(path)
+        content = (
+            f"# Provenance: {story_slug}\n\n"
+            f"{_AGENT_DECISIONS_HEADER}\n\n"
+            f"{_render_validation_history([new_row])}\n\n"
+            f"{_CONTEXT_SECTION_HEADER}\n\n- No context references recorded\n"
+        )
+        await asyncio.to_thread(path.parent.mkdir, parents=True, exist_ok=True)
+        await write_text_async(path, content)
+        return
+
+    content = await read_text_async(path)
+    val_idx = content.find(_VALIDATION_SECTION_HEADER)
+
+    if val_idx == -1:
+        # Ensure legacy/corrupt files are normalized enough for PR extraction:
+        # we must have an Agent Decisions header and a Context section marker.
+        if _AGENT_DECISIONS_HEADER not in content:
+            first_decision_idx = content.find("### Decision:")
+            if first_decision_idx != -1:
+                content = (
+                    content[:first_decision_idx].rstrip("\n")
+                    + "\n\n"
+                    + _AGENT_DECISIONS_HEADER
+                    + "\n\n"
+                    + content[first_decision_idx:].lstrip("\n")
+                )
+            else:
+                content = content.rstrip("\n") + "\n\n" + _AGENT_DECISIONS_HEADER + "\n"
+
+        if _CONTEXT_SECTION_HEADER not in content:
+            content = content.rstrip("\n") + "\n\n" + _CONTEXT_SECTION_HEADER + "\n\n- No context references recorded\n"
+
+        # File exists but lacks the Validation History section (may be in wrong
+        # format from a previous bug).  Inject the section before Context
+        # Provided if present, otherwise append it.  This preserves any Agent
+        # Decisions content already in the file.
+        ctx_idx = content.find(_CONTEXT_SECTION_HEADER)
+        if ctx_idx != -1:
+            content = content[:ctx_idx] + _render_validation_history([new_row]) + "\n\n" + content[ctx_idx:]
+        else:
+            content = content.rstrip("\n") + "\n\n" + _render_validation_history([new_row]) + "\n"
+        await write_text_async(path, content)
+        return
+
+    # File is in provenance format — append the new row to the table.
+    ctx_idx = content.find(_CONTEXT_SECTION_HEADER, val_idx)
+    end_idx = ctx_idx if ctx_idx != -1 else len(content)
+    val_section = content[val_idx:end_idx]
+
+    placeholder = "| — | — | — |"
+    if placeholder in val_section:
+        # Replace placeholder with first real row
+        val_section = val_section.replace(placeholder, new_row, 1)
+    else:
+        # Append after the last table row
+        val_section = val_section.rstrip("\n") + "\n" + new_row + "\n"
+
+    content = content[:val_idx] + val_section + content[end_idx:]
     await write_text_async(path, content)

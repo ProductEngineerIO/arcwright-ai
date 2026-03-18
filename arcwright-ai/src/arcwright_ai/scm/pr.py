@@ -849,6 +849,40 @@ async def _merge_immediate(
         stderr = stderr_bytes.decode("utf-8", errors="replace").strip()
 
         if proc.returncode != 0:
+            # The remote PR merge may have succeeded even though gh exited non-zero.
+            # This happens when --delete-branch cannot delete the local branch because
+            # it is still checked out by a git worktree.  Verify actual PR state before
+            # recording an error (AC: #1, #2).
+            pr_merged = await _check_pr_state(pr_number, project_root)
+            if pr_merged:
+                logger.warning(
+                    "scm.pr.post_merge_cleanup.failed",
+                    extra={
+                        "data": {
+                            "pr_url": pr_url,
+                            "pr_number": pr_number,
+                            "returncode": proc.returncode,
+                            "stderr": stderr,
+                            "note": "pr_merged_but_local_cleanup_failed",
+                        }
+                    },
+                )
+                sha_match = re.search(r"[0-9a-f]{7,40}", stdout)
+                merge_sha = sha_match.group(0) if sha_match else "unknown"
+                logger.info(
+                    "scm.pr.merge",
+                    extra={
+                        "data": {
+                            "pr_url": pr_url,
+                            "pr_number": pr_number,
+                            "strategy": strategy,
+                            "merge_sha": merge_sha,
+                            "merge_outcome": MergeOutcome.MERGED.value,
+                        }
+                    },
+                )
+                return MergeOutcome.MERGED
+
             logger.warning(
                 "scm.pr.merge.failed",
                 extra={
@@ -991,19 +1025,37 @@ async def _step_a_queue_auto_merge(
         return MergeOutcome.ERROR
 
     if proc.returncode != 0:
-        logger.warning(
-            "scm.pr.merge.failed",
-            extra={
-                "data": {
-                    "pr_url": pr_url,
-                    "pr_number": pr_number,
-                    "stderr": stderr,
-                    "returncode": proc.returncode,
-                    "merge_outcome": MergeOutcome.ERROR.value,
-                }
-            },
-        )
-        return MergeOutcome.ERROR
+        # Local branch deletion via --delete-branch may fail when the branch is
+        # still checked out in a worktree, even though GitHub queued auto-merge
+        # successfully.  Treat this as a non-blocking cleanup warning (AC: #1, #2).
+        if _is_branch_cleanup_error(stderr):
+            logger.warning(
+                "scm.pr.post_merge_cleanup.failed",
+                extra={
+                    "data": {
+                        "pr_url": pr_url,
+                        "pr_number": pr_number,
+                        "returncode": proc.returncode,
+                        "stderr": stderr,
+                        "note": "auto_merge_queued_but_local_cleanup_failed",
+                    }
+                },
+            )
+            # Auto-merge was queued on GitHub; continue to CI-wait step.
+        else:
+            logger.warning(
+                "scm.pr.merge.failed",
+                extra={
+                    "data": {
+                        "pr_url": pr_url,
+                        "pr_number": pr_number,
+                        "stderr": stderr,
+                        "returncode": proc.returncode,
+                        "merge_outcome": MergeOutcome.ERROR.value,
+                    }
+                },
+            )
+            return MergeOutcome.ERROR
 
     logger.info(
         "scm.merge.auto_queued",
@@ -1172,6 +1224,23 @@ def _extract_pr_number(pr_url: str) -> str | None:
     if match is None:
         return None
     return match.group(1)
+
+
+def _is_branch_cleanup_error(stderr: str) -> bool:
+    """Return ``True`` when stderr indicates only a local branch deletion failure.
+
+    This occurs when the branch is still checked out by a git worktree and
+    cannot be deleted via ``git branch -D`` until the worktree is removed.
+    The remote PR merge may have already succeeded at this point.
+
+    Args:
+        stderr: Standard error output from the ``gh pr merge`` subprocess.
+
+    Returns:
+        ``True`` when the error pattern matches a local-branch deletion failure.
+    """
+    stderr_lower = stderr.lower()
+    return "checked out at" in stderr_lower or "cannot delete branch" in stderr_lower
 
 
 async def get_pull_request_merge_sha(pr_url: str, *, project_root: Path) -> str | None:

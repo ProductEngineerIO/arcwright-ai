@@ -38,6 +38,7 @@ project: arcwright-ai
 project_key: NOKEY
 tracking_system: file-system
 story_location: _spec/implementation-artifacts
+last_updated: 2026-03-18
 
 development_status:
   # Epic 1: Project Foundation & Configuration (5 stories, 26 pts)
@@ -125,6 +126,9 @@ development_status:
   10-2-pyjwt-crit-header-vulnerability-remediation: done
   10-3-langgraph-major-upgrade-deserialization-vulnerability-remediation: done
   10-4-agent-scm-guardrails-and-commit-node-resilience: done
+  10-5-retry-attempts-should-rebuild-fresh-context: ready-for-dev
+  10-6-auto-merge-success-marked-error-on-branch-cleanup-failure: done
+  10-7-validate-node-overwrites-provenance-decision-provenance-missing-from-prs: done
 
   # Epic 11: BMAD 6.1 Framework Upgrade (3 stories, 13 pts)
   epic-11: done

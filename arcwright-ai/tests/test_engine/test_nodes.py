@@ -47,6 +47,7 @@ from arcwright_ai.engine.nodes import (
     validate_node,
 )
 from arcwright_ai.engine.state import StoryState
+from arcwright_ai.output.provenance import append_entry, write_entries
 from arcwright_ai.scm.git import GitResult
 from arcwright_ai.scm.pr import MergeOutcome
 from arcwright_ai.validation.pipeline import PipelineOutcome, PipelineResult
@@ -531,8 +532,8 @@ async def test_validate_node_writes_validation_checkpoint(
     )
     assert checkpoint_path.exists()
     content = checkpoint_path.read_text(encoding="utf-8")
-    assert "# Validation Result" in content
-    assert "Outcome" in content
+    assert "# Provenance:" in content
+    assert "## Validation History" in content
 
 
 @pytest.mark.asyncio
@@ -739,6 +740,131 @@ async def test_validate_node_falls_back_to_project_root_when_no_worktree(
     await validate_node(validate_ready_state)  # worktree_path is None by default
 
     assert captured_cwd == [validate_ready_state.project_root]
+
+
+@pytest.mark.asyncio
+async def test_validate_node_preserves_agent_decisions_in_provenance(
+    validate_ready_state: StoryState,
+    mock_pipeline_pass: PipelineResult,
+) -> None:
+    """validate_node preserves the existing ## Agent Decisions section written by agent_dispatch_node.
+
+    This is the regression guard for the story 10.7 bug where validate_node
+    unconditionally overwrote validation.md and destroyed Agent Decisions.
+    """
+    # Pre-create provenance file with a dispatch decision (simulating agent_dispatch_node)
+    checkpoint_dir = (
+        validate_ready_state.project_root
+        / DIR_ARCWRIGHT
+        / DIR_RUNS
+        / str(validate_ready_state.run_id)
+        / DIR_STORIES
+        / str(validate_ready_state.story_id)
+    )
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    prov_path = checkpoint_dir / VALIDATION_FILENAME
+
+    from arcwright_ai.core.types import ProvenanceEntry
+
+    dispatch_entry = ProvenanceEntry(
+        decision="Agent invoked for story 3-4-validate-node (attempt 1)",
+        alternatives=[],
+        rationale="Dispatch decision",
+        ac_references=["AC1"],
+        timestamp="2026-01-01T00:00:00Z",
+    )
+    await write_entries(prov_path, [dispatch_entry])
+
+    # Call validate_node — merge_validation_checkpoint must NOT destroy Agent Decisions
+    await validate_node(validate_ready_state)
+
+    content = prov_path.read_text(encoding="utf-8")
+    assert "## Agent Decisions" in content
+    assert "### Decision: Agent invoked for story 3-4-validate-node (attempt 1)" in content
+    assert "## Validation History" in content
+
+
+@pytest.mark.asyncio
+async def test_validate_node_writes_validation_history_row_not_placeholder(
+    validate_ready_state: StoryState,
+    mock_pipeline_pass: PipelineResult,
+) -> None:
+    """validate_node writes a real validation row to ## Validation History (placeholder absent).
+
+    Verifies AC #1 post-fix: the provenance format is maintained and the
+    validation history has an actual row.
+    """
+    await validate_node(validate_ready_state)
+
+    checkpoint_path = (
+        validate_ready_state.project_root
+        / DIR_ARCWRIGHT
+        / DIR_RUNS
+        / str(validate_ready_state.run_id)
+        / DIR_STORIES
+        / str(validate_ready_state.story_id)
+        / VALIDATION_FILENAME
+    )
+    content = checkpoint_path.read_text(encoding="utf-8")
+    assert "# Provenance:" in content
+    assert "## Validation History" in content
+    # Real row present, placeholder absent
+    assert "| — | — | — |" not in content
+    assert "| 1 |" in content
+
+
+@pytest.mark.asyncio
+async def test_validate_node_retry_preserves_decisions_from_all_attempts(
+    validate_ready_state: StoryState,
+    mock_pipeline_pass: PipelineResult,
+) -> None:
+    """Retry cycle: decisions from attempt 1 and 2 are both present after validate_node runs.
+
+    Regression guard for AC #4: validate_node must not destroy decisions from
+    earlier dispatch attempts when running on a retry.
+    """
+    checkpoint_dir = (
+        validate_ready_state.project_root
+        / DIR_ARCWRIGHT
+        / DIR_RUNS
+        / str(validate_ready_state.run_id)
+        / DIR_STORIES
+        / str(validate_ready_state.story_id)
+    )
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    prov_path = checkpoint_dir / VALIDATION_FILENAME
+
+    from arcwright_ai.core.types import ProvenanceEntry
+
+    # Simulate attempt 1: dispatch decision + validate (fail_v3)
+    attempt1_entry = ProvenanceEntry(
+        decision="Agent invoked for story 3-4-validate-node (attempt 1)",
+        alternatives=[],
+        rationale="First dispatch",
+        ac_references=["AC1"],
+        timestamp="2026-01-01T00:00:00Z",
+    )
+    await write_entries(prov_path, [attempt1_entry])
+
+    # Simulate second dispatch before validate_node runs on attempt 2
+    attempt2_entry = ProvenanceEntry(
+        decision="Agent invoked for story 3-4-validate-node (attempt 2)",
+        alternatives=[],
+        rationale="Second dispatch",
+        ac_references=["AC1"],
+        timestamp="2026-01-01T00:01:00Z",
+    )
+    await append_entry(prov_path, attempt2_entry)
+
+    # validate_node on attempt 2 (retry_count=1 means attempt_number=2)
+    state = validate_ready_state.model_copy(update={"retry_count": 1})
+    await validate_node(state)
+
+    content = prov_path.read_text(encoding="utf-8")
+    assert "Agent invoked for story 3-4-validate-node (attempt 1)" in content
+    assert "Agent invoked for story 3-4-validate-node (attempt 2)" in content
+    # Validation attempt 2 row present
+    assert "| 2 |" in content
 
 
 # ---------------------------------------------------------------------------
@@ -1852,7 +1978,7 @@ async def test_commit_node_commits_and_removes_worktree(
     )
     mock_git.assert_any_call("merge-base", "HEAD", "main", cwd=worktree_path)
 
-    mock_remove.assert_called_once_with(str(state.story_id), project_root=state.project_root)
+    mock_remove.assert_called_once_with(str(state.story_id), project_root=state.project_root, delete_branch=False)
 
 
 @pytest.mark.asyncio
@@ -3296,3 +3422,100 @@ async def test_commit_node_passes_wait_timeout_from_config(
 
     mock_merge.assert_called_once()
     assert mock_merge.call_args.kwargs["wait_timeout"] == 1200
+
+
+# ---------------------------------------------------------------------------
+# Story 10.6 — commit_node remove_worktree delete_branch split-outcome tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_commit_node_remove_worktree_delete_branch_true_when_merged(
+    make_story_state: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """commit_node passes delete_branch=True to remove_worktree when merge_outcome=merged."""
+    worktree_path = Path("/project/.arcwright-ai/worktrees/2-1-state-models")
+    state = make_story_state.model_copy(
+        update={
+            "status": TaskState.SUCCESS,
+            "worktree_path": worktree_path,
+            "config": _make_run_config_with_auto_merge(),
+        }
+    )
+    pr_url = "https://github.com/owner/repo/pull/42"
+    monkeypatch.setattr("arcwright_ai.engine.nodes.push_branch", AsyncMock(return_value=True))
+    monkeypatch.setattr("arcwright_ai.engine.nodes.generate_pr_body", AsyncMock(return_value="body"))
+    monkeypatch.setattr("arcwright_ai.engine.nodes.open_pull_request", AsyncMock(return_value=pr_url))
+    monkeypatch.setattr("arcwright_ai.engine.nodes.merge_pull_request", AsyncMock(return_value=MergeOutcome.MERGED))
+    monkeypatch.setattr("arcwright_ai.engine.nodes.get_pull_request_merge_sha", AsyncMock(return_value="sha123"))
+    mock_remove = AsyncMock()
+    monkeypatch.setattr("arcwright_ai.engine.nodes.remove_worktree", mock_remove)
+
+    result = await commit_node(state)
+
+    assert result.merge_outcome == "merged"
+    mock_remove.assert_called_once_with(
+        str(state.story_id),
+        project_root=state.project_root,
+        delete_branch=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_commit_node_remove_worktree_delete_branch_false_when_skipped(
+    make_story_state: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """commit_node passes delete_branch=False to remove_worktree when auto_merge=False (skipped)."""
+    worktree_path = Path("/project/.arcwright-ai/worktrees/2-1-state-models")
+    state = make_story_state.model_copy(
+        update={
+            "status": TaskState.SUCCESS,
+            "worktree_path": worktree_path,
+            # Default config has auto_merge=False → merge_outcome=skipped
+        }
+    )
+    mock_remove = AsyncMock()
+    monkeypatch.setattr("arcwright_ai.engine.nodes.remove_worktree", mock_remove)
+
+    result = await commit_node(state)
+
+    assert result.merge_outcome == "skipped"
+    mock_remove.assert_called_once_with(
+        str(state.story_id),
+        project_root=state.project_root,
+        delete_branch=False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_commit_node_remove_worktree_delete_branch_false_when_merge_error(
+    make_story_state: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """commit_node passes delete_branch=False to remove_worktree when merge fails (error)."""
+    worktree_path = Path("/project/.arcwright-ai/worktrees/2-1-state-models")
+    state = make_story_state.model_copy(
+        update={
+            "status": TaskState.SUCCESS,
+            "worktree_path": worktree_path,
+            "config": _make_run_config_with_auto_merge(),
+        }
+    )
+    pr_url = "https://github.com/owner/repo/pull/42"
+    monkeypatch.setattr("arcwright_ai.engine.nodes.push_branch", AsyncMock(return_value=True))
+    monkeypatch.setattr("arcwright_ai.engine.nodes.generate_pr_body", AsyncMock(return_value="body"))
+    monkeypatch.setattr("arcwright_ai.engine.nodes.open_pull_request", AsyncMock(return_value=pr_url))
+    monkeypatch.setattr("arcwright_ai.engine.nodes.merge_pull_request", AsyncMock(return_value=MergeOutcome.ERROR))
+    mock_remove = AsyncMock()
+    monkeypatch.setattr("arcwright_ai.engine.nodes.remove_worktree", mock_remove)
+
+    result = await commit_node(state)
+
+    assert result.merge_outcome == "error"
+    mock_remove.assert_called_once_with(
+        str(state.story_id),
+        project_root=state.project_root,
+        delete_branch=False,
+    )
