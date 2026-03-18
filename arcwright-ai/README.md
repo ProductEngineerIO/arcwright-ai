@@ -329,6 +329,13 @@ pip install -e ".[dev]"
 
 # All quality gates in one pass
 .venv/bin/ruff check . && .venv/bin/ruff format --check . && .venv/bin/python -m mypy --strict src/ && .venv/bin/python -m pytest -q
+
+# Install local git hooks (recommended)
+.venv/bin/pre-commit install
+.venv/bin/pre-commit install --hook-type pre-push
+
+# Run hooks manually across the repository
+.venv/bin/pre-commit run --all-files
 ```
 
 ### Python version note
