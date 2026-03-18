@@ -467,7 +467,7 @@ def _check_api_key() -> tuple[bool, str]:
     """
     from dotenv import load_dotenv
 
-    load_dotenv()  # cwd .env
+    load_dotenv(override=True)  # cwd .env — authoritative over ambient shell env vars
 
     env_key = os.environ.get(ENV_API_CLAUDE_API_KEY, "").strip()
     if env_key:
