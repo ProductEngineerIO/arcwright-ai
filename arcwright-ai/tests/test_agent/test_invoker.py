@@ -229,15 +229,22 @@ async def test_invoke_agent_sandbox_violation(
     project_root: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Mock yields ToolUseBlock with path outside project → SandboxViolation raised."""
+    """Mock yields ToolUseBlock with path outside project → logged warning, no crash.
+
+    ``can_use_tool`` denies the write at the SDK level; ``_validate_tool_use``
+    logs a warning but does NOT re-raise, allowing the session to continue so
+    the agent can retry with a corrected (relative) path.
+    """
     mock = MockSDKClient(
         output_text="Writing to /etc/passwd.",
         tool_use_calls=[
             {"id": "t1", "name": "Write", "input": {"file_path": "/etc/passwd"}},
         ],
     )
-    with pytest.raises(SandboxViolation):
-        await _invoke(mock, project_root, monkeypatch)
+    result = await _invoke(mock, project_root, monkeypatch)
+    # Session completes — the violation is logged, not raised.
+    assert result.output_text == "Writing to /etc/passwd."
+    assert result.is_error is False
 
 
 async def test_invoke_agent_claude_meta_dir_silent_deny(
