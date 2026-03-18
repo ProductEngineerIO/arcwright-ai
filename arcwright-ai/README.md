@@ -168,6 +168,22 @@ Each node writes artifacts to `.arcwright-ai/runs/<run-id>/stories/<story-slug>/
 | `1`  | Unexpected error (configuration, I/O, etc.) |
 | `2`  | Story escalated (validation failed, could not auto-fix) |
 
+### Dispatching Epics
+
+Epic selectors accept all of the following equivalent forms: `2`, `epic-2`, and `EPIC-2`.
+
+```bash
+# Dispatch an entire epic
+python -m arcwright_ai dispatch --epic 2
+
+# Equivalent epic selector formats
+python -m arcwright_ai dispatch --epic epic-2
+python -m arcwright_ai dispatch --epic EPIC-2
+
+# Resume a halted epic
+python -m arcwright_ai dispatch --epic EPIC-2 --resume
+```
+
 ---
 
 ## Run Artifacts

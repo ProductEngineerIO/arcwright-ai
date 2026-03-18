@@ -5,6 +5,16 @@ All notable changes to arcwright-ai are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 Versions follow [PEP 440](https://peps.python.org/pep-0440/) via [hatch-vcs](https://github.com/ofek/hatch-vcs).
 
+## [Unreleased]
+
+### Fixed
+
+- `dispatch --epic EPIC-N` now resolves correctly (same as `--epic N` and `--epic epic-N`) when discovering story files and resume runs
+
+### Changed
+
+- README docs updated to explicitly document accepted epic selector formats: `N`, `epic-N`, and `EPIC-N`
+
 ## [0.2.7] — 2026-03-16
 
 ### Added

@@ -159,6 +159,18 @@ def test_find_epic_stories_accepts_epic_prefix_format(tmp_path: Path) -> None:
     assert [str(sid) for _, sid, _ in stories_plain] == [str(sid) for _, sid, _ in stories_prefix]
 
 
+def test_find_epic_stories_accepts_uppercase_epic_prefix(tmp_path: Path) -> None:
+    """_find_epic_stories handles 'EPIC-2' the same as '2'."""
+    impl = tmp_path / "_spec" / "implementation-artifacts"
+    impl.mkdir(parents=True)
+    (impl / "2-1-state-models.md").write_text("# Story 2.1\n", encoding="utf-8")
+
+    stories_plain = _find_epic_stories("2", impl)
+    stories_upper = _find_epic_stories("EPIC-2", impl)
+
+    assert [str(sid) for _, sid, _ in stories_plain] == [str(sid) for _, sid, _ in stories_upper]
+
+
 def test_find_epic_stories_raises_on_empty_epic(tmp_path: Path) -> None:
     """_find_epic_stories raises ProjectError when epic has no stories."""
     from arcwright_ai.core.exceptions import ProjectError

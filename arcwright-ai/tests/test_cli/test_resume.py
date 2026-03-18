@@ -251,6 +251,21 @@ async def test_find_latest_run_for_epic_filters_by_epic_number(
     assert run_id_other == "run-epic3", f"Expected run for epic 3, got {run_id_other!r}"
 
 
+async def test_find_latest_run_for_epic_accepts_uppercase_prefix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_find_latest_run_for_epic accepts 'EPIC-5' and matches epic 5 stories."""
+    run_summary_epic5, run_status_epic5 = _build_run_status_halted("run-epic5", "5", 3, 1)
+    _patch_resume_run_manager(monkeypatch, [run_summary_epic5], {"run-epic5": run_status_epic5})
+
+    result = await _find_latest_run_for_epic(tmp_path, "EPIC-5")
+
+    assert result is not None
+    run_id, _ = result
+    assert run_id == "run-epic5"
+
+
 # ---------------------------------------------------------------------------
 # Task 7.4 — Resume: 5-story epic, halt at story 3, resume dispatches stories 3-5
 # ---------------------------------------------------------------------------
