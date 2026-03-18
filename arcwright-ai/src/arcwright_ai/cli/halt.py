@@ -491,6 +491,7 @@ class HaltController:
 
         Args:
             story_state: Terminal story execution state from the graph.
+            budget: Accumulated budget state at halt time.
 
         Returns:
             Human-readable halt reason string.
@@ -504,7 +505,7 @@ class HaltController:
             if HaltController._retry_history_has_sdk_failure(story_state):
                 return "SDK error"
             if not story_state.retry_history:
-                return "agent error"
+                return "SDK error"
             last = story_state.retry_history[-1]
             outcome_str = str(last.outcome) if hasattr(last, "outcome") else ""
             if outcome_str == "fail_v6":
@@ -571,6 +572,7 @@ class HaltController:
 
         Args:
             story_state: Terminal story execution state from the graph.
+            budget: Accumulated budget state at halt time.
 
         Returns:
             Human-readable suggested fix string.

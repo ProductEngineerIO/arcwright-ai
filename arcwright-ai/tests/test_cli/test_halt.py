@@ -832,7 +832,7 @@ class TestHaltReasonStrings:
     def test_graph_state_escalated_no_retry_no_budget_reason(self) -> None:
         state = _make_story_state(status=TaskState.ESCALATED, retry_history=[])
         budget = _make_budget(cost="0.10", max_cost="10.00")
-        assert HaltController._halt_reason_for_graph_state(state, budget) == "agent error"
+        assert HaltController._halt_reason_for_graph_state(state, budget) == "SDK error"
 
     def test_graph_state_sdk_failure_reason(self) -> None:
         failure = MagicMock()
@@ -920,6 +920,46 @@ class TestResumeCommand:
         cmd = c._build_resume_command()
         assert "EPIC-5" in cmd
         assert "--resume" in cmd
+
+
+# ---------------------------------------------------------------------------
+# Additional: _suggested_fix_for_graph_state budget/sdk branching
+# ---------------------------------------------------------------------------
+
+
+class TestSuggestedFixForGraphState:
+    """Verify budget-aware suggested fix routing for graph halts."""
+
+    def test_budget_exceeded_fix_message(self) -> None:
+        state = _make_story_state(status=TaskState.ESCALATED, retry_history=[])
+        budget = _make_budget(cost="2.00", max_cost="1.00")
+
+        fix = HaltController._suggested_fix_for_graph_state(state, budget)
+
+        assert "Budget ceiling was exceeded" in fix
+        assert "limits.cost_per_run" in fix
+
+    def test_no_retry_no_budget_fix_message(self) -> None:
+        state = _make_story_state(status=TaskState.ESCALATED, retry_history=[])
+        budget = _make_budget(cost="0.10", max_cost="10.00")
+
+        fix = HaltController._suggested_fix_for_graph_state(state, budget)
+
+        assert "Agent invocation failed before validation completed" in fix
+        assert "SDK stderr logs" in fix
+
+    def test_sdk_failure_fix_message(self) -> None:
+        failure = MagicMock()
+        failure.check_name = "validation_sdk_error"
+        fail_v6 = _make_fail_v6_result(failure_count=1)
+        fail_v6.v6_result.failures = [failure]
+        state = _make_story_state(status=TaskState.ESCALATED, retry_history=[fail_v6])
+        budget = _make_budget(cost="0.10", max_cost="10.00")
+
+        fix = HaltController._suggested_fix_for_graph_state(state, budget)
+
+        assert "Agent invocation failed before validation completed" in fix
+        assert "model access" in fix
 
 
 # ---------------------------------------------------------------------------
