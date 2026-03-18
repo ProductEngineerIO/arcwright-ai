@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from arcwright_ai.core.types import ContextBundle
     from arcwright_ai.validation.v3_reflexion import ReflexionFeedback
 
@@ -61,7 +62,10 @@ def build_prompt(
                     f"- Current working directory: {working_directory}",
                     "- Use relative file paths rooted at the current working directory.",
                     "- Do not use absolute paths from validator output or prior logs.",
-                    "- If a validator references an absolute path like '/.../src/app/file.ts', rewrite it as 'src/app/file.ts'.",
+                    (
+                        "- If a validator references an absolute path like "
+                        "'/.../src/app/file.ts', rewrite it as 'src/app/file.ts'."
+                    ),
                 ]
             )
         )
