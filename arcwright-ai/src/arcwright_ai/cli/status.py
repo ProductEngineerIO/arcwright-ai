@@ -55,6 +55,7 @@ _FAILED_STATUSES: frozenset[str] = frozenset({"failed", "halted", "escalated"})
 _GITIGNORE_ENTRIES: list[str] = [
     ".arcwright-ai/tmp/",
     ".arcwright-ai/runs/",
+    ".arcwright-ai/worktrees/",
     ".env",
 ]
 
@@ -155,7 +156,7 @@ ARCWRIGHT_API_CLAUDE_API_KEY=""
 # ==========================================================================
 # LANGCHAIN_TRACING_V2="true"
 # LANGCHAIN_API_KEY="lsv2_pt_..."
-# LANGCHAIN_PROJECT="arcwright-ai"
+LANGCHAIN_PROJECT="arcwright-ai"
 """
 
 
