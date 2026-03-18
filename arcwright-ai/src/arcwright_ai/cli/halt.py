@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import re
+from decimal import Decimal
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -243,10 +244,10 @@ class HaltController:
         )
 
         exit_code = self._determine_exit_code_for_graph_state(story_state)
-        halt_reason = self._halt_reason_for_graph_state(story_state)
+        halt_reason = self._halt_reason_for_graph_state(story_state, accumulated_budget)
         validation_history = self._build_validation_history(story_state)
         last_agent_output = story_state.agent_output or ""
-        suggested_fix = self._suggested_fix_for_graph_state(story_state)
+        suggested_fix = self._suggested_fix_for_graph_state(story_state, accumulated_budget)
 
         # AC#2: Write halt report with full diagnostic data (best-effort).
         # finalize_node already wrote a per-story report; we overwrite with
@@ -482,7 +483,7 @@ class HaltController:
         return "internal error"
 
     @staticmethod
-    def _halt_reason_for_graph_state(story_state: StoryState) -> str:
+    def _halt_reason_for_graph_state(story_state: StoryState, budget: BudgetState) -> str:
         """Derive a human-readable halt reason from the terminal graph state.
 
         Mirrors the logic of ``_derive_halt_reason()`` from ``engine/nodes.py``
@@ -498,8 +499,12 @@ class HaltController:
         if status == TaskState.RETRY:
             return "validation exhaustion"
         if status == TaskState.ESCALATED:
-            if not story_state.retry_history:
+            if HaltController._is_budget_exceeded(budget):
                 return "budget exceeded"
+            if HaltController._retry_history_has_sdk_failure(story_state):
+                return "SDK error"
+            if not story_state.retry_history:
+                return "agent error"
             last = story_state.retry_history[-1]
             outcome_str = str(last.outcome) if hasattr(last, "outcome") else ""
             if outcome_str == "fail_v6":
@@ -559,7 +564,7 @@ class HaltController:
         return "Review the error details in the run log and check for configuration issues."
 
     @staticmethod
-    def _suggested_fix_for_graph_state(story_state: StoryState) -> str:
+    def _suggested_fix_for_graph_state(story_state: StoryState, budget: BudgetState) -> str:
         """Derive a suggested fix message from the terminal graph state.
 
         Mirrors the logic of ``_derive_suggested_fix()`` from ``engine/nodes.py``.
@@ -570,10 +575,15 @@ class HaltController:
         Returns:
             Human-readable suggested fix string.
         """
-        if not story_state.retry_history:
+        if HaltController._is_budget_exceeded(budget):
             return (
                 "Budget ceiling was exceeded. Consider increasing `limits.cost_per_run` "
                 "or `limits.tokens_per_story` in pyproject.toml."
+            )
+        if HaltController._retry_history_has_sdk_failure(story_state) or not story_state.retry_history:
+            return (
+                "Agent invocation failed before validation completed. Check API key validity, "
+                "model access (especially review model), network connectivity, and SDK stderr logs."
             )
         last = story_state.retry_history[-1]
         outcome_str = str(last.outcome) if hasattr(last, "outcome") else ""
@@ -697,6 +707,42 @@ class HaltController:
         if epic_part.lower().startswith("epic-"):
             epic_part = epic_part[_EPIC_PREFIX_LEN:]
         return f"arcwright-ai dispatch --epic EPIC-{epic_part} --resume"
+
+    @staticmethod
+    def _is_budget_exceeded(budget: BudgetState) -> bool:
+        """Return True when invocation or cost ceilings are breached.
+
+        Args:
+            budget: Budget state to evaluate.
+
+        Returns:
+            ``True`` when invocation_count >= max_invocations (when max_invocations
+            is enforced) or estimated_cost >= max_cost (when max_cost is enforced).
+        """
+        invocation_breached = budget.max_invocations > 0 and budget.invocation_count >= budget.max_invocations
+        cost_breached = budget.max_cost > Decimal("0") and budget.estimated_cost >= budget.max_cost
+        return invocation_breached or cost_breached
+
+    @staticmethod
+    def _retry_history_has_sdk_failure(story_state: StoryState) -> bool:
+        """Return True when retry history contains an SDK-derived V6 failure.
+
+        Args:
+            story_state: Terminal story state containing retry history.
+
+        Returns:
+            ``True`` if any V6 failure check name contains ``sdk_error``.
+        """
+        for result in story_state.retry_history:
+            v6_result = getattr(result, "v6_result", None)
+            failures = getattr(v6_result, "failures", None)
+            if failures is None:
+                continue
+            for failure in failures:
+                check_name = str(getattr(failure, "check_name", "")).lower()
+                if "sdk_error" in check_name:
+                    return True
+        return False
 
     @staticmethod
     def _build_validation_history(story_state: StoryState) -> list[dict[str, Any]]:

@@ -58,12 +58,17 @@ def _make_budget(
     invocations: int = 0,
     tokens: int = 0,
     cost: str = "0",
+    *,
+    max_invocations: int = 0,
+    max_cost: str = "0",
 ) -> BudgetState:
     """Return a BudgetState with the given values."""
     return BudgetState(
         invocation_count=invocations,
         total_tokens=tokens,
         estimated_cost=Decimal(cost),
+        max_invocations=max_invocations,
+        max_cost=Decimal(max_cost),
     )
 
 
@@ -270,7 +275,7 @@ async def test_handle_graph_halt_budget_exceeded_exit_code(
 ) -> None:
     """ESCALATED state with no retry history (budget check triggered) → exit code 2 (AC#12)."""
     controller = _make_halt_controller(tmp_path)
-    budget = _make_budget(tokens=10000, cost="2.00")
+    budget = _make_budget(tokens=10000, cost="2.00", max_cost="1.00")
 
     # No retry_history → budget-check escalation
     story_state = _make_story_state(
@@ -821,7 +826,22 @@ class TestHaltReasonStrings:
 
     def test_graph_state_budget_exceeded_reason(self) -> None:
         state = _make_story_state(status=TaskState.ESCALATED, retry_history=[])
-        assert HaltController._halt_reason_for_graph_state(state) == "budget exceeded"
+        budget = _make_budget(cost="1.00", max_cost="1.00")
+        assert HaltController._halt_reason_for_graph_state(state, budget) == "budget exceeded"
+
+    def test_graph_state_escalated_no_retry_no_budget_reason(self) -> None:
+        state = _make_story_state(status=TaskState.ESCALATED, retry_history=[])
+        budget = _make_budget(cost="0.10", max_cost="10.00")
+        assert HaltController._halt_reason_for_graph_state(state, budget) == "agent error"
+
+    def test_graph_state_sdk_failure_reason(self) -> None:
+        failure = MagicMock()
+        failure.check_name = "validation_sdk_error"
+        fail_v6 = _make_fail_v6_result(failure_count=1)
+        fail_v6.v6_result.failures = [failure]
+        state = _make_story_state(status=TaskState.ESCALATED, retry_history=[fail_v6])
+        budget = _make_budget(cost="0.10", max_cost="10.00")
+        assert HaltController._halt_reason_for_graph_state(state, budget) == "SDK error"
 
     def test_graph_state_validation_exhaustion_reason(self) -> None:
         state = _make_story_state(
@@ -830,7 +850,8 @@ class TestHaltReasonStrings:
             retry_count=3,
             retry_budget=3,
         )
-        assert HaltController._halt_reason_for_graph_state(state) == "validation exhaustion"
+        budget = _make_budget(cost="0.10", max_cost="10.00")
+        assert HaltController._halt_reason_for_graph_state(state, budget) == "validation exhaustion"
 
     def test_graph_state_v6_failure_reason(self) -> None:
         state = _make_story_state(
@@ -839,7 +860,8 @@ class TestHaltReasonStrings:
             retry_count=1,
             retry_budget=3,
         )
-        assert HaltController._halt_reason_for_graph_state(state) == "validation exhaustion"
+        budget = _make_budget(cost="0.10", max_cost="10.00")
+        assert HaltController._halt_reason_for_graph_state(state, budget) == "validation exhaustion"
 
 
 # ---------------------------------------------------------------------------
