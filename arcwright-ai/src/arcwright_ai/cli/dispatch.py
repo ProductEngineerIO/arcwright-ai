@@ -48,6 +48,7 @@ from arcwright_ai.output.run_manager import (
     update_story_status,
 )
 from arcwright_ai.output.summary import write_success_summary
+from arcwright_ai.scm import MergeOutcome
 
 __all__: list[str] = ["dispatch_command"]
 
@@ -737,9 +738,19 @@ async def _dispatch_epic_async(epic_spec: str, *, skip_confirm: bool = False, re
                         update={"status": final_status or TaskState.ESCALATED, "budget": accumulated_budget}
                     )
                 else:
-                    final_story_state = initial_state.model_copy(
-                        update={"status": final_status or TaskState.ESCALATED, "budget": accumulated_budget}
+                    update_fields: dict[str, Any] = {
+                        "status": final_status or TaskState.ESCALATED,
+                        "budget": accumulated_budget,
+                    }
+                    # Propagate merge_outcome from graph result (Story 12.4 / D10).
+                    _merge_out = (
+                        result.get("merge_outcome")
+                        if isinstance(result, dict)
+                        else getattr(result, "merge_outcome", None)
                     )
+                    if _merge_out is not None:
+                        update_fields["merge_outcome"] = _merge_out
+                    final_story_state = initial_state.model_copy(update=update_fields)
                 project_state.stories[idx] = final_story_state
 
                 exit_code = _exit_code_for_terminal_status(final_status)
@@ -777,6 +788,36 @@ async def _dispatch_epic_async(epic_spec: str, *, skip_confirm: bool = False, re
                 last_completed = story_slug
                 completed_stories.append(story_slug)
                 project_state.completed_stories = len(completed_stories)
+
+                # Check merge outcome for epic chain integrity (Story 12.4 / D10)
+                if final_story_state.merge_outcome in (
+                    MergeOutcome.CI_FAILED.value,
+                    MergeOutcome.TIMEOUT.value,
+                ):
+                    merge_outcome = final_story_state.merge_outcome
+                    logger.warning(
+                        "dispatch.epic.halt.merge_failed",
+                        extra={
+                            "data": {
+                                "story": story_slug,
+                                "merge_outcome": merge_outcome,
+                                "epic": str(epic_id),
+                            }
+                        },
+                    )
+                    typer.echo(
+                        f"\u26a0 Epic halted: Story {story_slug} PR merge failed "
+                        f"(CI {merge_outcome}). "
+                        f"Fix the PR and run `arcwright dispatch --resume` to continue.",
+                        err=True,
+                    )
+                    return await halt_controller.handle_merge_halt(
+                        story_id=story_id,
+                        merge_outcome=merge_outcome,
+                        accumulated_budget=accumulated_budget,
+                        completed_stories=completed_stories,
+                        last_completed=last_completed,
+                    )
 
             except Exception as exc:
                 exit_code = await halt_controller.handle_halt(

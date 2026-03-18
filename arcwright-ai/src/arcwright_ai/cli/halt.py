@@ -297,6 +297,87 @@ class HaltController:
 
         return exit_code
 
+    async def handle_merge_halt(
+        self,
+        *,
+        story_id: StoryId,
+        merge_outcome: str,
+        accumulated_budget: BudgetState,
+        completed_stories: list[str],
+        last_completed: str | None,
+    ) -> int:
+        """Handle epic-level halt caused by CI-aware merge failure.
+
+        This halt path is intentionally distinct from ``handle_halt()`` and
+        ``handle_graph_halt()`` because the triggering story has already
+        completed with SUCCESS and is included in ``completed_stories``.
+
+        Args:
+            story_id: Story whose PR merge outcome triggered the halt.
+            merge_outcome: Terminal merge outcome string (for example,
+                ``"ci_failed"`` or ``"timeout"``).
+            accumulated_budget: Budget state accumulated at halt time.
+            completed_stories: Slugs of stories that completed before halt,
+                including *story_id* for this path.
+            last_completed: Slug of the most recently completed story.
+
+        Returns:
+            ``EXIT_SCM`` to classify the halt as an SCM-level failure.
+        """
+        story_slug = str(story_id)
+
+        # Merge halt is only valid after the story succeeded and was recorded
+        # as completed in the dispatch loop.
+        assert story_slug in completed_stories, (
+            "HaltController.handle_merge_halt() requires a completed story. "
+            f"Missing story in completed_stories: {story_slug!r}"
+        )
+
+        halt_reason = f"SCM merge failed after CI wait ({merge_outcome})"
+        suggested_fix = (
+            "Fix the PR CI failures, ensure the PR merges, then run `arcwright dispatch --resume` to continue the epic."
+        )
+
+        try:
+            await write_halt_report(
+                self.project_root,
+                self.run_id,
+                halted_story=story_slug,
+                halt_reason=halt_reason,
+                validation_history=[],
+                last_agent_output="",
+                suggested_fix=suggested_fix,
+                failing_ac_ids=[],
+                worktree_path=None,
+                previous_run_id=self.previous_run_id,
+            )
+        except Exception as exc:
+            logger.warning(
+                "halt.write_halt_report_error",
+                extra={"data": {"story": story_slug, "error": str(exc)}},
+            )
+
+        await self._flush_provenance(story_slug, halt_reason, accumulated_budget)
+
+        try:
+            await update_run_status(
+                self.project_root,
+                self.run_id,
+                status=RunStatusValue.HALTED,
+                last_completed_story=last_completed,
+                budget=accumulated_budget,
+            )
+        except Exception as exc:
+            logger.warning(
+                "halt.update_run_status_error",
+                extra={"data": {"story": story_slug, "error": str(exc)}},
+            )
+
+        self._emit_halt_summary(story_slug, halt_reason, accumulated_budget, completed_stories)
+        self._emit_halt_jsonl_event(story_slug, halt_reason, accumulated_budget, completed_stories)
+
+        return EXIT_SCM
+
     # ---------------------------------------------------------------------------
     # Static helpers — exit code mapping
     # ---------------------------------------------------------------------------
