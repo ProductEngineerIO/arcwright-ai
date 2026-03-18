@@ -10,6 +10,7 @@ from arcwright_ai.core.types import ProvenanceEntry
 from arcwright_ai.output.provenance import (
     _extract_story_slug,
     append_entry,
+    merge_validation_checkpoint,
     render_validation_row,
     write_entries,
 )
@@ -481,3 +482,249 @@ async def test_write_entries_uses_tmp_path_not_real_directory(tmp_path: Path, si
     # File should exist under tmp_path, not in any project directory
     assert str(tmp_path) in str(path)
     assert path.exists()
+
+
+# ---------------------------------------------------------------------------
+# Tests for merge_validation_checkpoint()
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_merge_validation_checkpoint_creates_provenance_from_scratch(
+    tmp_path: Path,
+) -> None:
+    """merge_validation_checkpoint creates a valid 3-section provenance file when path does not exist.
+
+    Args:
+        tmp_path: Pytest-provided temporary directory.
+    """
+    path = tmp_path / "stories" / "3-1-new" / "validation.md"
+    assert not path.exists()
+
+    await merge_validation_checkpoint(path, attempt=1, outcome="pass", feedback="All checks passed")
+
+    assert path.exists()
+    content = path.read_text(encoding="utf-8")
+    assert "# Provenance: 3-1-new" in content
+    assert "## Agent Decisions" in content
+    assert "## Validation History" in content
+    assert "## Context Provided" in content
+    assert "| 1 | pass | All checks passed |" in content
+
+
+@pytest.mark.asyncio
+async def test_merge_validation_checkpoint_preserves_agent_decisions(
+    tmp_path: Path,
+    simple_entry: ProvenanceEntry,
+) -> None:
+    """merge_validation_checkpoint preserves existing ## Agent Decisions section.
+
+    Args:
+        tmp_path: Pytest-provided temporary directory.
+        simple_entry: ProvenanceEntry fixture with known decision.
+    """
+    path = tmp_path / "stories" / "2-1-dispatch" / "validation.md"
+    await write_entries(path, [simple_entry])
+
+    await merge_validation_checkpoint(path, attempt=1, outcome="pass", feedback="All V6 checks passed")
+
+    content = path.read_text(encoding="utf-8")
+    assert "## Agent Decisions" in content
+    assert "### Decision: Use Pydantic for data models" in content
+    assert "| 1 | pass | All V6 checks passed |" in content
+
+
+@pytest.mark.asyncio
+async def test_merge_validation_checkpoint_replaces_placeholder_row(
+    tmp_path: Path,
+) -> None:
+    """merge_validation_checkpoint replaces the placeholder row with a real row on first call.
+
+    Args:
+        tmp_path: Pytest-provided temporary directory.
+    """
+    path = tmp_path / "stories" / "1-1-test" / "validation.md"
+    # write_entries with no entries creates a file with the placeholder row
+    await write_entries(path, [])
+
+    content_before = path.read_text(encoding="utf-8")
+    assert "| — | — | — |" in content_before
+
+    await merge_validation_checkpoint(path, attempt=1, outcome="fail_v3", feedback="AC 2 unmet")
+
+    content_after = path.read_text(encoding="utf-8")
+    assert "| — | — | — |" not in content_after
+    assert "| 1 | fail_v3 | AC 2 unmet |" in content_after
+
+
+@pytest.mark.asyncio
+async def test_merge_validation_checkpoint_appends_multiple_rows(
+    tmp_path: Path,
+) -> None:
+    """merge_validation_checkpoint appends a second row on a retry call.
+
+    Args:
+        tmp_path: Pytest-provided temporary directory.
+    """
+    path = tmp_path / "stories" / "2-1-retry" / "validation.md"
+    await write_entries(path, [])
+
+    await merge_validation_checkpoint(path, attempt=1, outcome="fail_v3", feedback="AC 1 unmet")
+    await merge_validation_checkpoint(path, attempt=2, outcome="pass", feedback="All checks passed")
+
+    content = path.read_text(encoding="utf-8")
+    assert "| 1 | fail_v3 | AC 1 unmet |" in content
+    assert "| 2 | pass | All checks passed |" in content
+    assert content.find("| 1 | fail_v3") < content.find("| 2 | pass")
+
+
+@pytest.mark.asyncio
+async def test_merge_validation_checkpoint_agent_decisions_before_validation_table(
+    tmp_path: Path,
+    simple_entry: ProvenanceEntry,
+) -> None:
+    """## Agent Decisions section appears before ## Validation History after merge.
+
+    Args:
+        tmp_path: Pytest-provided temporary directory.
+        simple_entry: ProvenanceEntry fixture.
+    """
+    path = tmp_path / "stories" / "4-1-order" / "validation.md"
+    await write_entries(path, [simple_entry])
+    await merge_validation_checkpoint(path, attempt=1, outcome="pass", feedback="Passed")
+
+    content = path.read_text(encoding="utf-8")
+    assert content.find("## Agent Decisions") < content.find("## Validation History")
+
+
+@pytest.mark.asyncio
+async def test_merge_validation_checkpoint_handles_missing_validation_section(
+    tmp_path: Path,
+) -> None:
+    """merge_validation_checkpoint injects Validation History into a file that lacks the section.
+
+    This covers the corruption scenario where the file was written by the old
+    _serialize_validation_checkpoint() format and lacks ## Validation History.
+
+    Args:
+        tmp_path: Pytest-provided temporary directory.
+    """
+    path = tmp_path / "stories" / "corrupt-10-7" / "validation.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # Simulate a file in the old format (no provenance sections)
+    path.write_text("# Validation Result\n\n- **Outcome**: pass\n", encoding="utf-8")
+
+    await merge_validation_checkpoint(path, attempt=1, outcome="pass", feedback="Repaired")
+
+    content = path.read_text(encoding="utf-8")
+    assert "## Agent Decisions" in content
+    assert "## Validation History" in content
+    assert "| 1 | pass | Repaired |" in content
+
+
+@pytest.mark.asyncio
+async def test_merge_validation_checkpoint_legacy_repair_supports_future_decisions(
+    tmp_path: Path,
+) -> None:
+    """Legacy-format repair restores structure so future append_entry calls stay parseable."""
+    path = tmp_path / "stories" / "corrupt-10-7-repair" / "validation.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("# Validation Result\n\n- **Outcome**: pass\n", encoding="utf-8")
+
+    await merge_validation_checkpoint(path, attempt=1, outcome="pass", feedback="Repaired")
+
+    repaired_entry = ProvenanceEntry(
+        decision="Dispatch decision after repair",
+        alternatives=[],
+        rationale="Post-repair append",
+        ac_references=["AC1"],
+        timestamp="2026-01-01T00:00:00Z",
+    )
+    await append_entry(path, repaired_entry)
+
+    content = path.read_text(encoding="utf-8")
+    assert "## Agent Decisions" in content
+    assert "### Decision: Dispatch decision after repair" in content
+    assert content.find("## Agent Decisions") < content.find("## Validation History")
+
+
+@pytest.mark.asyncio
+async def test_merge_validation_checkpoint_dispatch_then_validate_pipeline(
+    tmp_path: Path,
+    simple_entry: ProvenanceEntry,
+) -> None:
+    """Integration: dispatch writes decisions → merge preserves them → PR body can read them.
+
+    Simulates the full AC #2 / AC #3 pipeline:
+    agent_dispatch_node (append_entry) → validate_node (merge_validation_checkpoint)
+    → _extract_decisions finds all decisions.
+
+    Args:
+        tmp_path: Pytest-provided temporary directory.
+        simple_entry: ProvenanceEntry fixture representing a dispatch decision.
+    """
+    path = tmp_path / "stories" / "3-1-pipeline" / "validation.md"
+
+    # Step 1: agent_dispatch_node uses append_entry (creates provenance file with decision)
+    await append_entry(path, simple_entry)
+
+    # Step 2: validate_node uses merge_validation_checkpoint
+    await merge_validation_checkpoint(path, attempt=1, outcome="pass", feedback="All checks passed")
+
+    content = path.read_text(encoding="utf-8")
+
+    # ## Agent Decisions preserved
+    assert "## Agent Decisions" in content
+    assert "### Decision: Use Pydantic for data models" in content
+
+    # ## Validation History has real row
+    assert "## Validation History" in content
+    assert "| 1 | pass | All checks passed |" in content
+    assert "| — | — | — |" not in content
+
+
+@pytest.mark.asyncio
+async def test_merge_validation_checkpoint_retry_cycle_preserves_all_decisions(
+    tmp_path: Path,
+) -> None:
+    """Integration: retry cycle preserves decisions from all attempts in the provenance file.
+
+    Simulates AC #4: attempt 1 dispatch → validate (fail) → attempt 2 dispatch → validate (pass).
+
+    Args:
+        tmp_path: Pytest-provided temporary directory.
+    """
+    path = tmp_path / "stories" / "2-1-retry-cycle" / "validation.md"
+
+    attempt1_decision = ProvenanceEntry(
+        decision="Agent invoked for story 2-1-retry-cycle (attempt 1)",
+        alternatives=[],
+        rationale="First dispatch",
+        ac_references=["AC1"],
+        timestamp="2026-01-01T00:00:00Z",
+    )
+    attempt2_decision = ProvenanceEntry(
+        decision="Agent invoked for story 2-1-retry-cycle (attempt 2)",
+        alternatives=[],
+        rationale="Second dispatch after retry",
+        ac_references=["AC1"],
+        timestamp="2026-01-01T00:01:00Z",
+    )
+
+    # Attempt 1: dispatch then validate (fail)
+    await append_entry(path, attempt1_decision)
+    await merge_validation_checkpoint(path, attempt=1, outcome="fail_v3", feedback="AC 1 unmet")
+
+    # Attempt 2: dispatch then validate (pass)
+    await append_entry(path, attempt2_decision)
+    await merge_validation_checkpoint(path, attempt=2, outcome="pass", feedback="All checks passed")
+
+    content = path.read_text(encoding="utf-8")
+
+    # Both dispatch decisions preserved
+    assert "Agent invoked for story 2-1-retry-cycle (attempt 1)" in content
+    assert "Agent invoked for story 2-1-retry-cycle (attempt 2)" in content
+
+    # Both validation rows present
+    assert "| 1 | fail_v3 | AC 1 unmet |" in content
+    assert "| 2 | pass | All checks passed |" in content

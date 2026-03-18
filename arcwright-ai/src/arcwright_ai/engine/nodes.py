@@ -30,7 +30,7 @@ from arcwright_ai.core.io import write_text_async
 from arcwright_ai.core.lifecycle import TaskState
 from arcwright_ai.core.types import BudgetState, ProvenanceEntry, StoryCost, calculate_invocation_cost
 from arcwright_ai.engine.state import StoryState  # noqa: TC001
-from arcwright_ai.output.provenance import append_entry, render_validation_row
+from arcwright_ai.output.provenance import append_entry, merge_validation_checkpoint, render_validation_row
 from arcwright_ai.output.run_manager import update_run_status, update_story_status
 from arcwright_ai.output.summary import write_halt_report, write_success_summary
 from arcwright_ai.scm.branch import commit_story, delete_remote_branch, fetch_and_sync, push_branch
@@ -1071,22 +1071,16 @@ async def validate_node(state: StoryState) -> StoryState:
     # Accumulate retry history
     new_retry_history = [*state.retry_history, pipeline_result]
 
-    # Write validation checkpoint
+    # Provenance: merge validation checkpoint and record decision (best-effort)
     checkpoint_dir: Path = (
         state.project_root / DIR_ARCWRIGHT / DIR_RUNS / str(state.run_id) / DIR_STORIES / str(state.story_id)
     )
     await asyncio.to_thread(checkpoint_dir.mkdir, parents=True, exist_ok=True)
-    await write_text_async(
-        checkpoint_dir / VALIDATION_FILENAME,
-        _serialize_validation_checkpoint(pipeline_result, state.retry_count + 1),
-    )
-
-    # Provenance: record validation decision (best-effort)
     try:
         attempt_number = state.retry_count + 1
         outcome_str = pipeline_result.outcome.value
 
-        # Build rationale based on outcome
+        # Build feedback summary for the validation history row
         if pipeline_result.outcome == PipelineOutcome.PASS:
             v6_count = len(pipeline_result.v6_result.results)
             v3_info = ""
@@ -1094,19 +1088,27 @@ async def validate_node(state: StoryState) -> StoryState:
                 v3_passed = sum(1 for ac in pipeline_result.v3_result.validation_result.ac_results if ac.passed)
                 v3_total = len(pipeline_result.v3_result.validation_result.ac_results)
                 v3_info = f", V3: {v3_passed}/{v3_total} ACs"
-            rationale = f"All checks passed (V6: {v6_count} checks{v3_info})"
+            feedback_summary = f"All checks passed (V6: {v6_count} checks{v3_info})"
         elif pipeline_result.outcome == PipelineOutcome.FAIL_V6:
-            rationale = f"V6 invariant failures: {len(pipeline_result.v6_result.failures)}"
+            feedback_summary = f"V6 invariant failures: {len(pipeline_result.v6_result.failures)}"
         else:
             unmet = pipeline_result.feedback.unmet_criteria if pipeline_result.feedback else []
-            rationale = f"V3 reflexion failures: ACs {', '.join(unmet)}" if unmet else "V3 validation failed"
+            feedback_summary = f"V3 reflexion failures: ACs {', '.join(unmet)}" if unmet else "V3 validation failed"
+
+        # Merge validation row into provenance file — preserves ## Agent Decisions
+        await merge_validation_checkpoint(
+            checkpoint_dir / VALIDATION_FILENAME,
+            attempt=attempt_number,
+            outcome=outcome_str,
+            feedback=feedback_summary,
+        )
 
         validation_row = render_validation_row(
             attempt_number,
             outcome_str,
-            rationale,
+            feedback_summary,
         )
-        rationale = f"{rationale}\nValidation row: {validation_row}"
+        rationale = f"{feedback_summary}\nValidation row: {validation_row}"
 
         failed_acs = list(pipeline_result.feedback.unmet_criteria) if pipeline_result.feedback else []
 
@@ -1557,7 +1559,7 @@ async def commit_node(state: StoryState) -> StoryState:
                     alternatives=["manual merge", "skip merge"],
                     rationale=(
                         f"merge_attempted_at={merge_attempted_at}; "
-                        f"status={merge_outcome.value}; "
+                        f"merge_status={merge_outcome.value}; "
                         f"strategy={merge_strategy}; "
                         f"pr_url={pr_url}; "
                         f"merge_sha={merge_sha}"
@@ -1586,9 +1588,13 @@ async def commit_node(state: StoryState) -> StoryState:
         if pr_url is not None:
             state = state.model_copy(update={"pr_url": pr_url})
 
-        # Remove worktree after commit (best-effort, non-fatal)
+        # Remove worktree after commit (best-effort, non-fatal).
+        # Pass delete_branch=True when merge succeeded so the local story branch is
+        # always cleaned up — even when gh --delete-branch could not delete it while
+        # the worktree was still checked out (Story 10.6).
+        _branch_merged = state.merge_outcome == MergeOutcome.MERGED.value
         try:
-            await remove_worktree(story_slug, project_root=project_root)
+            await remove_worktree(story_slug, project_root=project_root, delete_branch=_branch_merged)
             logger.info(
                 "scm.worktree.remove",
                 extra={
