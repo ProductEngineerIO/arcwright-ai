@@ -3227,9 +3227,7 @@ async def test_commit_node_sets_merge_outcome_ci_failed(
     monkeypatch.setattr("arcwright_ai.engine.nodes.push_branch", AsyncMock(return_value=True))
     monkeypatch.setattr("arcwright_ai.engine.nodes.generate_pr_body", AsyncMock(return_value="body"))
     monkeypatch.setattr("arcwright_ai.engine.nodes.open_pull_request", AsyncMock(return_value=pr_url))
-    monkeypatch.setattr(
-        "arcwright_ai.engine.nodes.merge_pull_request", AsyncMock(return_value=MergeOutcome.CI_FAILED)
-    )
+    monkeypatch.setattr("arcwright_ai.engine.nodes.merge_pull_request", AsyncMock(return_value=MergeOutcome.CI_FAILED))
     mock_sha = AsyncMock(return_value="sha123")
     monkeypatch.setattr("arcwright_ai.engine.nodes.get_pull_request_merge_sha", mock_sha)
 
@@ -3269,9 +3267,7 @@ async def test_commit_node_passes_wait_timeout_from_config(
 ) -> None:
     """commit_node passes merge_wait_timeout from config to merge_pull_request()."""
     worktree_path = Path("/project/.arcwright-ai/worktrees/2-1-state-models")
-    config = make_run_config().model_copy(
-        update={"scm": ScmConfig(auto_merge=True, merge_wait_timeout=1200)}
-    )
+    config = make_run_config().model_copy(update={"scm": ScmConfig(auto_merge=True, merge_wait_timeout=1200)})
     state = make_story_state.model_copy(
         update={
             "status": TaskState.SUCCESS,
