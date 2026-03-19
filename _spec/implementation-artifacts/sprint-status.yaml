@@ -43,7 +43,7 @@ last_updated: 2026-03-19
 
 development_status:
   # Epic 1: Project Foundation & Configuration (5 stories, 26 pts)
-  epic-1: in-progress
+  epic-1: done
   1-1-project-scaffold-and-package-structure: done
   1-2-core-types-lifecycle-and-exception-hierarchy: done
   1-3-configuration-system-with-two-tier-loading: done
@@ -127,7 +127,7 @@ development_status:
   10-2-pyjwt-crit-header-vulnerability-remediation: done
   10-3-langgraph-major-upgrade-deserialization-vulnerability-remediation: done
   10-4-agent-scm-guardrails-and-commit-node-resilience: done
-  10-5-retry-attempts-should-rebuild-fresh-context: ready-for-dev
+  10-5-retry-attempts-should-rebuild-fresh-context: deferred
   10-6-auto-merge-success-marked-error-on-branch-cleanup-failure: done
   10-7-validate-node-overwrites-provenance-decision-provenance-missing-from-prs: done
   10-8-pre-release-versioning-for-develop-branch: done
@@ -142,7 +142,7 @@ development_status:
   11-3-post-upgrade-verification-and-development-workflow-smoke-test: done
 
   # Epic 12: CI-Aware Merge Wait for Epic Chain Integrity (4 stories, 19 pts)
-  epic-12: in-progress
+  epic-12: done
   12-1-mergeoutcome-enum-config-field-and-state-plumbing: done
   12-2-rewrite-merge-pull-request-with-ci-wait: done
   12-3-commit-node-mergeoutcome-integration: done
