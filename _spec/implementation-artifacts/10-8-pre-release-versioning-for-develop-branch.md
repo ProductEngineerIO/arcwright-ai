@@ -1,6 +1,6 @@
 # Story 10.8: Pre-Release Versioning for Develop Branch — Test vs. Stable Differentiation
 
-Status: review
+Status: in-progress
 
 ## Story
 
@@ -210,9 +210,38 @@ Claude Sonnet 4.6
 - `_spec/implementation-artifacts/10-8-pre-release-versioning-for-develop-branch.md`
 - `_spec/implementation-artifacts/sprint-status.yaml`
 
+## Senior Developer Review (AI)
+
+**Reviewer:** Ed  
+**Date:** 2026-03-18  
+**Outcome:** Changes Requested
+
+### Findings
+
+- High: The workflows separate releases only by tag text, not by the branch the tagged commit belongs to. `publish.yml` accepts any non-pre-release `v*` tag and `publish-test.yml` accepts any pre-release `v*` tag, regardless of whether the tag points to `main`, `develop`, or some other branch. That means a stable tag created from `develop` will still publish to PyPI, and a pre-release tag created from `main` will still publish to TestPyPI, which does not satisfy the story's core requirement to distinguish stable `main` releases from pre-release `develop` releases. Evidence: `.github/workflows/publish.yml` uses only `github.ref_name` substring checks, and `.github/workflows/publish-test.yml` does the inverse; neither workflow checks branch ancestry at all.
+- Medium: The story's File List is not accurate for the implementation commit. The 10-8 commit also modified the repository root `README.md`, but the File List records only `arcwright-ai/README.md`. That makes the artifact's implementation record incomplete and contradicts the claim that the file list was reconciled to actual changes.
+
+### Acceptance Criteria Validation
+
+- AC1: Partial. Stable publishing to PyPI is still present, but it is not constrained to tags from `main`.
+- AC2: Partial. Pre-release publishing to TestPyPI is present, but it is not constrained to tags from `develop`.
+- AC3: Implemented. `publish-test.yml` uses `environment: testpypi` and OIDC trusted publishing.
+- AC4: Implemented only for tag-shape separation. Stable and pre-release tags are separated by suffix guard, but not by branch provenance.
+- AC5: Implemented by packaging semantics; no code change required.
+- AC6: Implemented in documentation.
+- AC7: Plausibly satisfied via hatch-vcs and package metadata, but not directly exercised in this story.
+- AC8: Implemented in `arcwright-ai/README.md`.
+- AC9: Implemented. No source changes were needed.
+- AC10: Claimed by the story record, not re-run during this review.
+
+### Notes
+
+- Required fix direction: add an explicit branch-provenance check for the tagged commit in both workflows, rather than relying only on `github.ref_name` substring checks.
+
 ### Change Log
 
 - Added `if` guard to `build` job in `.github/workflows/publish.yml` to reject pre-release tags (2026-03-18)
 - Created `.github/workflows/publish-test.yml` for TestPyPI pre-release publishing with OIDC trusted publishing (2026-03-18)
 - Added "Versioning & Releases" section to `arcwright-ai/README.md` documenting tagging conventions and install commands (2026-03-18)
 - Aligned AC #4 and Task 1 wording to the implemented job-level guard strategy and reconciled story File List with actual changed files (2026-03-18)
+- Senior developer review completed; outcome changed to changes requested and status returned to in-progress (2026-03-18)
