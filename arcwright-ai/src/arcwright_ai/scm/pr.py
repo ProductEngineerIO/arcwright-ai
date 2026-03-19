@@ -263,7 +263,7 @@ def _parse_field(content: str, field_name: str) -> str:
 
 
 def _extract_decisions(provenance_content: str) -> list[_Decision]:
-    """Parse all ``### Decision: <title>`` subsections from a provenance file.
+    """Parse all ``### Decision: <title>`` subsections from the ``## Agent Decisions`` section.
 
     Handles both plain text and pre-existing ``<details>`` block values
     produced by ``output/provenance.py``.
@@ -272,27 +272,71 @@ def _extract_decisions(provenance_content: str) -> list[_Decision]:
         provenance_content: Raw provenance markdown text.
 
     Returns:
+        Ordered list of :class:`_Decision` named tuples from the
+        ``## Agent Decisions`` section only.
+    """
+    return _parse_decisions_from_section(
+        provenance_content,
+        section_header="## Agent Decisions",
+        end_headers=("## Implementation Decisions", "## Validation History"),
+    )
+
+
+def _extract_implementation_decisions(provenance_content: str) -> list[_Decision]:
+    """Parse ``### Decision: <title>`` subsections from ``## Implementation Decisions``.
+
+    Args:
+        provenance_content: Raw provenance markdown text.
+
+    Returns:
+        Ordered list of :class:`_Decision` named tuples from the
+        ``## Implementation Decisions`` section.  Empty list when the
+        section is absent.
+    """
+    return _parse_decisions_from_section(
+        provenance_content,
+        section_header="## Implementation Decisions",
+        end_headers=("## Validation History", "## Context Provided"),
+    )
+
+
+def _parse_decisions_from_section(
+    provenance_content: str,
+    section_header: str,
+    end_headers: tuple[str, ...],
+) -> list[_Decision]:
+    """Parse ``### Decision:`` subsections from a named provenance section.
+
+    Args:
+        provenance_content: Raw provenance markdown text.
+        section_header: The ``## …`` header that starts the section to parse.
+        end_headers: Tuple of ``## …`` headers that terminate the section.
+
+    Returns:
         Ordered list of :class:`_Decision` named tuples.
     """
     decisions: list[_Decision] = []
 
-    agent_section_start = provenance_content.find("## Agent Decisions")
-    validation_section = provenance_content.find("## Validation History")
-
-    if agent_section_start == -1:
+    section_start = provenance_content.find(section_header)
+    if section_start == -1:
         return decisions
 
-    end = validation_section if validation_section != -1 else len(provenance_content)
-    agent_section = provenance_content[agent_section_start:end]
+    end = len(provenance_content)
+    for header in end_headers:
+        idx = provenance_content.find(header, section_start + len(section_header))
+        if idx != -1 and idx < end:
+            end = idx
+
+    section = provenance_content[section_start:end]
 
     decision_pattern = re.compile(r"^### Decision:\s*(.+)$", re.MULTILINE)
-    matches = list(decision_pattern.finditer(agent_section))
+    matches = list(decision_pattern.finditer(section))
 
     for i, match in enumerate(matches):
         title = match.group(1).strip()
-        section_start = match.end()
-        section_end = matches[i + 1].start() if i + 1 < len(matches) else len(agent_section)
-        section_content = agent_section[section_start:section_end]
+        section_start_inner = match.end()
+        section_end = matches[i + 1].start() if i + 1 < len(matches) else len(section)
+        section_content = section[section_start_inner:section_end]
 
         timestamp = _parse_field(section_content, "Timestamp")
         alternatives_raw = _parse_field(section_content, "Alternatives")
@@ -361,9 +405,57 @@ def _collapse_large_fenced_blocks(markdown: str) -> str:
     return pattern.sub(_repl, markdown)
 
 
-# ---------------------------------------------------------------------------
-# Private renderer (Task 4)
-# ---------------------------------------------------------------------------
+def _render_decision_subsections(decisions: list[_Decision]) -> list[str]:
+    """Render a list of decisions into PR body lines.
+
+    Args:
+        decisions: Parsed decisions to render.
+
+    Returns:
+        Lines suitable for inclusion in the PR body.
+    """
+    parts: list[str] = []
+    for decision in decisions:
+        parts.append(f"#### {decision.title}")
+        parts.append("")
+        parts.append(f"- **Timestamp**: {decision.timestamp}")
+
+        # Alternatives
+        if not decision.alternatives:
+            parts.append("- **Alternatives**: None considered")
+        elif len(decision.alternatives) == 1 and "<details>" in decision.alternatives[0]:
+            parts.append(f"- **Alternatives**: {decision.alternatives[0]}")
+        elif len(decision.alternatives) > _ALTERNATIVES_COLLAPSE_THRESHOLD:
+            alts_inner = ", ".join(decision.alternatives)
+            parts.append(
+                "- **Alternatives**: "
+                "<details><summary>Alternatives (click to expand)</summary>"
+                f"\n\n{alts_inner}\n\n</details>"
+            )
+        else:
+            parts.append(f"- **Alternatives**: {', '.join(decision.alternatives)}")
+
+        # Rationale
+        if decision.rationale and "<details>" in decision.rationale:
+            parts.append(f"- **Rationale**: {decision.rationale}")
+        elif decision.rationale and len(decision.rationale) > _RATIONALE_COLLAPSE_THRESHOLD:
+            parts.append(
+                "- **Rationale**: "
+                "<details><summary>Rationale (click to expand)</summary>"
+                f"\n\n{decision.rationale}\n\n</details>"
+            )
+        else:
+            parts.append(f"- **Rationale**: {decision.rationale}")
+
+        # References
+        if decision.references:
+            refs_str = ", ".join(decision.references)
+            parts.append(f"- **References**: {refs_str}")
+        else:
+            parts.append("- **References**: None")
+
+        parts.append("")
+    return parts
 
 
 def _render_pr_body(
@@ -371,6 +463,7 @@ def _render_pr_body(
     ac_items: list[str] | None,
     validation_table: str,
     decisions: list[_Decision],
+    impl_decisions: list[_Decision] | None = None,
 ) -> str:
     """Assemble the final PR body markdown string.
 
@@ -382,7 +475,10 @@ def _render_pr_body(
         title: Story title/slug from the provenance header.
         ac_items: Acceptance criteria lines, or ``None`` to omit the section.
         validation_table: Pre-parsed validation history table markdown.
-        decisions: List of parsed agent decisions.
+        decisions: List of parsed pipeline-activity decisions (from
+            ``## Agent Decisions`` in the provenance file).
+        impl_decisions: List of LLM-extracted implementation decisions (from
+            ``## Implementation Decisions``), or ``None`` to omit.
 
     Returns:
         GitHub-flavoured markdown PR description string.
@@ -410,56 +506,24 @@ def _render_pr_body(
         parts.append(validation_table)
     parts.append("")
 
-    # Decision Provenance
-    parts.append("### Decision Provenance")
+    # Agent Decisions (LLM-extracted implementation decisions)
+    parts.append("### Agent Decisions")
+    parts.append("")
+    if impl_decisions is None or not impl_decisions:
+        parts.append("Decision extraction unavailable")
+        parts.append("")
+    else:
+        parts.extend(_render_decision_subsections(impl_decisions))
+
+    # Pipeline Activity (renamed from Decision Provenance)
+    parts.append("### Pipeline Activity")
     parts.append("")
 
     if not decisions:
-        parts.append("No agent decisions recorded")
+        parts.append("No pipeline activity recorded")
         parts.append("")
     else:
-        for decision in decisions:
-            parts.append(f"#### {decision.title}")
-            parts.append("")
-            parts.append(f"- **Timestamp**: {decision.timestamp}")
-
-            # Alternatives
-            if not decision.alternatives:
-                parts.append("- **Alternatives**: None considered")
-            elif len(decision.alternatives) == 1 and "<details>" in decision.alternatives[0]:
-                # Already wrapped — pass through as-is
-                parts.append(f"- **Alternatives**: {decision.alternatives[0]}")
-            elif len(decision.alternatives) > _ALTERNATIVES_COLLAPSE_THRESHOLD:
-                alts_inner = ", ".join(decision.alternatives)
-                parts.append(
-                    "- **Alternatives**: "
-                    "<details><summary>Alternatives (click to expand)</summary>"
-                    f"\n\n{alts_inner}\n\n</details>"
-                )
-            else:
-                parts.append(f"- **Alternatives**: {', '.join(decision.alternatives)}")
-
-            # Rationale
-            if decision.rationale and "<details>" in decision.rationale:
-                # Already wrapped — pass through as-is
-                parts.append(f"- **Rationale**: {decision.rationale}")
-            elif decision.rationale and len(decision.rationale) > _RATIONALE_COLLAPSE_THRESHOLD:
-                parts.append(
-                    "- **Rationale**: "
-                    "<details><summary>Rationale (click to expand)</summary>"
-                    f"\n\n{decision.rationale}\n\n</details>"
-                )
-            else:
-                parts.append(f"- **Rationale**: {decision.rationale}")
-
-            # References — preserve cross-references as-is (NFR17, AC: #4)
-            if decision.references:
-                refs_str = ", ".join(decision.references)
-                parts.append(f"- **References**: {refs_str}")
-            else:
-                parts.append("- **References**: None")
-
-            parts.append("")
+        parts.extend(_render_decision_subsections(decisions))
 
     return _collapse_large_fenced_blocks("\n".join(parts))
 
@@ -496,10 +560,12 @@ async def generate_pr_body(run_id: str, story_slug: str, *, project_root: Path) 
     ac_items: list[str] | None = _extract_acceptance_criteria(story_content) if story_content is not None else None
     validation_table = _extract_validation_table(provenance_content)
     decisions = _extract_decisions(provenance_content)
+    impl_decisions = _extract_implementation_decisions(provenance_content)
 
-    body = _render_pr_body(title, ac_items, validation_table, decisions)
+    body = _render_pr_body(title, ac_items, validation_table, decisions, impl_decisions=impl_decisions or None)
 
     decision_count = len(decisions)
+    impl_decision_count = len(impl_decisions)
     ac_count = len(ac_items) if ac_items is not None else 0
 
     logger.info(
@@ -509,6 +575,7 @@ async def generate_pr_body(run_id: str, story_slug: str, *, project_root: Path) 
                 "run_id": run_id,
                 "story_slug": story_slug,
                 "decision_count": decision_count,
+                "impl_decision_count": impl_decision_count,
                 "ac_count": ac_count,
             }
         },

@@ -30,6 +30,7 @@ from arcwright_ai.core.io import write_text_async
 from arcwright_ai.core.lifecycle import TaskState
 from arcwright_ai.core.types import BudgetState, ProvenanceEntry, StoryCost, calculate_invocation_cost
 from arcwright_ai.engine.state import StoryState  # noqa: TC001
+from arcwright_ai.output.decisions import extract_agent_decisions
 from arcwright_ai.output.provenance import append_entry, merge_validation_checkpoint, render_validation_row
 from arcwright_ai.output.run_manager import update_run_status, update_story_status
 from arcwright_ai.output.summary import write_halt_report, write_success_summary
@@ -497,21 +498,27 @@ async def agent_dispatch_node(state: StoryState) -> StoryState:
             model=gen_spec.version,
             cwd=agent_cwd,
             sandbox=validate_path,
-            api_key=state.config.api.claude_api_key,
+            api_key=state.config.api.claude_api_key.get_secret_value(),
         )
     except Exception as exc:
         # SDK crash before any output — escalate cleanly so finalize_node can
         # still run and remove the worktree (prevents worktree leaks).
+        exc_details = getattr(exc, "details", {})
+        captured_stderr = exc_details.get("captured_stderr", "") if isinstance(exc_details, dict) else ""
+        exit_code = exc_details.get("exit_code") if isinstance(exc_details, dict) else None
+        log_data: dict[str, Any] = {
+            "node": "agent_dispatch",
+            "story": str(state.story_id),
+            "attempt": state.retry_count + 1,
+            "error": str(exc),
+        }
+        if captured_stderr:
+            log_data["captured_stderr"] = captured_stderr[:2048]
+        if exit_code is not None:
+            log_data["exit_code"] = exit_code
         logger.error(
             "agent.sdk_error",
-            extra={
-                "data": {
-                    "node": "agent_dispatch",
-                    "story": str(state.story_id),
-                    "attempt": state.retry_count + 1,
-                    "error": str(exc),
-                }
-            },
+            extra={"data": log_data},
         )
         checkpoint_dir: Path = (
             state.project_root / DIR_ARCWRIGHT / DIR_RUNS / str(state.run_id) / DIR_STORIES / str(state.story_id)
@@ -706,6 +713,8 @@ async def agent_dispatch_node(state: StoryState) -> StoryState:
     )
     await asyncio.to_thread(checkpoint_dir_success.mkdir, parents=True, exist_ok=True)
     await write_text_async(checkpoint_dir_success / AGENT_OUTPUT_FILENAME, result.output_text)
+    attempt_output_filename = f"agent-output.attempt-{state.retry_count + 1}.md"
+    await write_text_async(checkpoint_dir_success / attempt_output_filename, result.output_text)
 
     # Provenance: record agent invocation decision (best-effort)
     try:
@@ -972,7 +981,7 @@ async def validate_node(state: StoryState) -> StoryState:
             model=review_spec.version,
             cwd=state.worktree_path or state.project_root,
             sandbox=validate_path,
-            api_key=state.config.api.claude_api_key,
+            api_key=state.config.api.claude_api_key.get_secret_value(),
             attempt_number=state.retry_count + 1,
         )
     except Exception as exc:
@@ -1480,6 +1489,77 @@ async def commit_node(state: StoryState) -> StoryState:
                 )
 
             if push_succeeded:
+                # Extract implementation decisions before PR body generation (best-effort)
+                _extraction_base_ref = resolved_base_ref or "HEAD~1"
+                _checkpoint_dir_extract: Path = (
+                    project_root / DIR_ARCWRIGHT / DIR_RUNS / run_id / DIR_STORIES / story_slug
+                )
+                _provenance_path_extract = _checkpoint_dir_extract / VALIDATION_FILENAME
+                _review_spec_extract = state.config.models.get(ModelRole.REVIEW)
+                try:
+                    _extraction_result = await extract_agent_decisions(
+                        state.worktree_path,
+                        _checkpoint_dir_extract,
+                        _extraction_base_ref,
+                        _provenance_path_extract,
+                        model=_review_spec_extract.version,
+                        api_key=state.config.api.claude_api_key.get_secret_value(),
+                        story_slug=story_slug,
+                        project_root=project_root,
+                    )
+                except Exception as _extract_exc:
+                    logger.warning(
+                        "decisions.extract.error",
+                        extra={"data": {"story": story_slug, "error": str(_extract_exc)}},
+                    )
+                    _extraction_result = None
+
+                # Accumulate extraction cost into budget (review role)
+                if _extraction_result is not None:
+                    _ext_slug = story_slug
+                    _ext_existing = state.budget.per_story.get(_ext_slug, StoryCost())
+                    _ext_cost = _extraction_result.total_cost
+                    _ext_ti = _extraction_result.tokens_input
+                    _ext_to = _extraction_result.tokens_output
+                    _ext_new_story = _ext_existing.model_copy(
+                        update={
+                            "tokens_input": _ext_existing.tokens_input + _ext_ti,
+                            "tokens_output": _ext_existing.tokens_output + _ext_to,
+                            "cost": _ext_existing.cost + _ext_cost,
+                            "invocations": _ext_existing.invocations + 1,
+                            "cost_by_role": {
+                                **_ext_existing.cost_by_role,
+                                "review": _ext_existing.cost_by_role.get("review", Decimal("0")) + _ext_cost,
+                            },
+                            "invocations_by_role": {
+                                **_ext_existing.invocations_by_role,
+                                "review": _ext_existing.invocations_by_role.get("review", 0) + 1,
+                            },
+                            "tokens_input_by_role": {
+                                **_ext_existing.tokens_input_by_role,
+                                "review": _ext_existing.tokens_input_by_role.get("review", 0) + _ext_ti,
+                            },
+                            "tokens_output_by_role": {
+                                **_ext_existing.tokens_output_by_role,
+                                "review": _ext_existing.tokens_output_by_role.get("review", 0) + _ext_to,
+                            },
+                        }
+                    )
+                    state = state.model_copy(
+                        update={
+                            "budget": state.budget.model_copy(
+                                update={
+                                    "invocation_count": state.budget.invocation_count + 1,
+                                    "total_tokens": state.budget.total_tokens + _ext_ti + _ext_to,
+                                    "total_tokens_input": state.budget.total_tokens_input + _ext_ti,
+                                    "total_tokens_output": state.budget.total_tokens_output + _ext_to,
+                                    "estimated_cost": state.budget.estimated_cost + _ext_cost,
+                                    "per_story": {**state.budget.per_story, _ext_slug: _ext_new_story},
+                                }
+                            )
+                        }
+                    )
+
                 # Generate PR body and open PR (AC: #3, #4)
                 try:
                     pr_body = await generate_pr_body(run_id, story_slug, project_root=project_root)
@@ -1625,19 +1705,20 @@ def _derive_halt_reason(state: StoryState) -> str:
     Inspects ``BudgetState`` to detect budget-caused escalation regardless of
     whether retry history is present (retries can also push budget over).
     Falls back to validation-based reasons when budget ceilings are not
-    breached.
+    breached, and detects agent SDK errors when no retry history exists.
 
     Args:
         state: Story execution state in ESCALATED terminal status.
 
     Returns:
-        Halt reason string: ``"budget_exceeded"``, ``"v6_invariant_failure"``,
-        ``"max_retries_exhausted"``, or ``"validation_failure"``.
+        Halt reason string: ``"agent_sdk_error"``, ``"budget_exceeded"``,
+        ``"v6_invariant_failure"``, ``"max_retries_exhausted"``, or
+        ``"validation_failure"``.
     """
     if _is_budget_exceeded(state.budget):
         return "budget_exceeded"
     if not state.retry_history:
-        return "budget_exceeded"
+        return "agent_sdk_error"
     last = state.retry_history[-1]
     if last.outcome == PipelineOutcome.FAIL_V6:
         return "v6_invariant_failure"
@@ -1695,7 +1776,7 @@ def _derive_suggested_fix(state: StoryState) -> str:
         Human-readable suggested fix string.
     """
     budget = state.budget
-    if _is_budget_exceeded(budget) or not state.retry_history:
+    if _is_budget_exceeded(budget):
         breached = _determine_breached_ceiling(budget)
         return (
             f"Budget ceiling exceeded ({breached}). "
@@ -1704,6 +1785,13 @@ def _derive_suggested_fix(state: StoryState) -> str:
             f"cost=${budget.estimated_cost}/${budget.max_cost}, "
             f"total_tokens={budget.total_tokens}. "
             "Consider increasing `limits.cost_per_run` or `limits.tokens_per_story` in pyproject.toml."
+        )
+    if not state.retry_history:
+        return (
+            "Agent invocation failed before producing any output (SDK error). "
+            "Check the `agent.sdk_stderr` log event and halt report for details. "
+            "Common causes: invalid API key, model access denied, network error, "
+            "or Claude Code CLI misconfiguration."
         )
     last = state.retry_history[-1]
     if last.outcome == PipelineOutcome.FAIL_V6:

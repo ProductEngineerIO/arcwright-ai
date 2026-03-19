@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
-from pydantic import ConfigDict, Field, model_validator
+from pydantic import ConfigDict, Field, SecretStr, model_validator
 from pydantic import ValidationError as PydanticValidationError
 
 from arcwright_ai.core.constants import (
@@ -69,11 +69,13 @@ class ApiConfig(ArcwrightModel):
 
     Attributes:
         claude_api_key: Anthropic Claude API key. Required — no default.
+            Stored as ``SecretStr`` so that LangGraph checkpoint serialisation
+            (and therefore LangSmith traces) never expose the raw value.
     """
 
     model_config = ConfigDict(frozen=True, extra="ignore", str_strip_whitespace=True)
 
-    claude_api_key: str
+    claude_api_key: SecretStr
 
 
 class ModelPricing(ArcwrightModel):
