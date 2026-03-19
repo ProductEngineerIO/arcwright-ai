@@ -12,7 +12,13 @@ if TYPE_CHECKING:
 
     from arcwright_ai.core.types import ProvenanceEntry
 
-__all__: list[str] = ["append_entry", "merge_validation_checkpoint", "render_validation_row", "write_entries"]
+__all__: list[str] = [
+    "append_entry",
+    "append_entry_to_section",
+    "merge_validation_checkpoint",
+    "render_validation_row",
+    "write_entries",
+]
 
 # ---------------------------------------------------------------------------
 # Private rendering helpers
@@ -21,6 +27,7 @@ __all__: list[str] = ["append_entry", "merge_validation_checkpoint", "render_val
 _VALIDATION_SECTION_HEADER = "## Validation History"
 _CONTEXT_SECTION_HEADER = "## Context Provided"
 _AGENT_DECISIONS_HEADER = "## Agent Decisions"
+_IMPLEMENTATION_DECISIONS_HEADER = "## Implementation Decisions"
 
 
 def _extract_story_slug(path: Path) -> str:
@@ -199,6 +206,7 @@ async def write_entries(path: Path, entries: list[ProvenanceEntry]) -> None:
         f"# Provenance: {story_slug}\n\n"
         f"{_AGENT_DECISIONS_HEADER}\n\n"
         f"{decisions_body}\n"
+        f"{_IMPLEMENTATION_DECISIONS_HEADER}\n\n"
         f"{_render_validation_history()}\n\n"
         f"{_render_context_provided(entries)}\n"
     )
@@ -250,6 +258,57 @@ async def append_entry(path: Path, entry: ProvenanceEntry) -> None:
     await write_text_async(path, content)
 
 
+async def append_entry_to_section(path: Path, entry: ProvenanceEntry, *, section: str = "agent") -> None:
+    """Append a single provenance entry to either the agent or implementation section.
+
+    When *section* is ``"implementation"``, the entry is inserted into the
+    ``## Implementation Decisions`` block.  When *section* is ``"agent"``
+    (the default), behaviour is identical to :func:`append_entry`.
+
+    If the target section header is absent from the file, it is injected
+    immediately before ``## Validation History`` so subsequent calls work
+    correctly.  If the file does not exist, a fresh provenance file is
+    created first via :func:`write_entries`.
+
+    Args:
+        path: Path to the target provenance file.
+        entry: The new provenance entry to append.
+        section: ``"agent"`` (default) or ``"implementation"``.
+    """
+    if section == "agent":
+        await append_entry(path, entry)
+        return
+
+    # --- implementation section ---
+    exists = await asyncio.to_thread(path.exists)
+    if not exists:
+        # Bootstrap file, then insert into implementation section recursively.
+        await write_entries(path, [])
+        await append_entry_to_section(path, entry, section="implementation")
+        return
+
+    content = await read_text_async(path)
+    new_decision = _render_decision_section(entry)
+
+    impl_idx = content.find(_IMPLEMENTATION_DECISIONS_HEADER)
+    if impl_idx == -1:
+        # Inject the Implementation Decisions section before Validation History.
+        val_idx = content.find(_VALIDATION_SECTION_HEADER)
+        impl_block = f"{_IMPLEMENTATION_DECISIONS_HEADER}\n\n{new_decision}\n"
+        if val_idx == -1:
+            content = content.rstrip("\n") + "\n\n" + impl_block
+        else:
+            content = content[:val_idx] + impl_block + "\n" + content[val_idx:]
+    else:
+        # Find the end of the Implementation Decisions section (next ## header or EOF).
+        val_idx = content.find(_VALIDATION_SECTION_HEADER, impl_idx)
+        end_of_impl = val_idx if val_idx != -1 else len(content)
+        # Insert the new decision block before the next section.
+        content = content[:end_of_impl].rstrip("\n") + "\n\n" + new_decision + "\n" + content[end_of_impl:]
+
+    await write_text_async(path, content)
+
+
 async def merge_validation_checkpoint(
     path: Path,
     attempt: int,
@@ -258,11 +317,12 @@ async def merge_validation_checkpoint(
 ) -> None:
     """Merge a validation result row into the ``## Validation History`` section.
 
-    Preserves every existing ``## Agent Decisions`` entry in the file.  If the
-    file does not exist, a fresh provenance file is created in the 3-section
-    format with the validation row as its first history entry.  If the file
-    exists but has no ``## Validation History`` section, the section is
-    injected before ``## Context Provided`` (or appended) so that subsequent
+    Preserves every existing ``## Agent Decisions`` and
+    ``## Implementation Decisions`` entry in the file.  If the file does not
+    exist, a fresh provenance file is created in the 3-section format with the
+    validation row as its first history entry.  If the file exists but has no
+    ``## Validation History`` section, the section is injected before
+    ``## Context Provided`` (or appended) so that subsequent
     :func:`append_entry` calls work correctly.
 
     This function replaces the previous unconditional overwrite with

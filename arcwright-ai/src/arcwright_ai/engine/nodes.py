@@ -30,6 +30,7 @@ from arcwright_ai.core.io import write_text_async
 from arcwright_ai.core.lifecycle import TaskState
 from arcwright_ai.core.types import BudgetState, ProvenanceEntry, StoryCost, calculate_invocation_cost
 from arcwright_ai.engine.state import StoryState  # noqa: TC001
+from arcwright_ai.output.decisions import extract_agent_decisions
 from arcwright_ai.output.provenance import append_entry, merge_validation_checkpoint, render_validation_row
 from arcwright_ai.output.run_manager import update_run_status, update_story_status
 from arcwright_ai.output.summary import write_halt_report, write_success_summary
@@ -706,6 +707,8 @@ async def agent_dispatch_node(state: StoryState) -> StoryState:
     )
     await asyncio.to_thread(checkpoint_dir_success.mkdir, parents=True, exist_ok=True)
     await write_text_async(checkpoint_dir_success / AGENT_OUTPUT_FILENAME, result.output_text)
+    attempt_output_filename = f"agent-output.attempt-{state.retry_count + 1}.md"
+    await write_text_async(checkpoint_dir_success / attempt_output_filename, result.output_text)
 
     # Provenance: record agent invocation decision (best-effort)
     try:
@@ -1480,6 +1483,77 @@ async def commit_node(state: StoryState) -> StoryState:
                 )
 
             if push_succeeded:
+                # Extract implementation decisions before PR body generation (best-effort)
+                _extraction_base_ref = resolved_base_ref or "HEAD~1"
+                _checkpoint_dir_extract: Path = (
+                    project_root / DIR_ARCWRIGHT / DIR_RUNS / run_id / DIR_STORIES / story_slug
+                )
+                _provenance_path_extract = _checkpoint_dir_extract / VALIDATION_FILENAME
+                _review_spec_extract = state.config.models.get(ModelRole.REVIEW)
+                try:
+                    _extraction_result = await extract_agent_decisions(
+                        state.worktree_path,
+                        _checkpoint_dir_extract,
+                        _extraction_base_ref,
+                        _provenance_path_extract,
+                        model=_review_spec_extract.version,
+                        api_key=state.config.api.claude_api_key.get_secret_value(),
+                        story_slug=story_slug,
+                        project_root=project_root,
+                    )
+                except Exception as _extract_exc:
+                    logger.warning(
+                        "decisions.extract.error",
+                        extra={"data": {"story": story_slug, "error": str(_extract_exc)}},
+                    )
+                    _extraction_result = None
+
+                # Accumulate extraction cost into budget (review role)
+                if _extraction_result is not None:
+                    _ext_slug = story_slug
+                    _ext_existing = state.budget.per_story.get(_ext_slug, StoryCost())
+                    _ext_cost = _extraction_result.total_cost
+                    _ext_ti = _extraction_result.tokens_input
+                    _ext_to = _extraction_result.tokens_output
+                    _ext_new_story = _ext_existing.model_copy(
+                        update={
+                            "tokens_input": _ext_existing.tokens_input + _ext_ti,
+                            "tokens_output": _ext_existing.tokens_output + _ext_to,
+                            "cost": _ext_existing.cost + _ext_cost,
+                            "invocations": _ext_existing.invocations + 1,
+                            "cost_by_role": {
+                                **_ext_existing.cost_by_role,
+                                "review": _ext_existing.cost_by_role.get("review", Decimal("0")) + _ext_cost,
+                            },
+                            "invocations_by_role": {
+                                **_ext_existing.invocations_by_role,
+                                "review": _ext_existing.invocations_by_role.get("review", 0) + 1,
+                            },
+                            "tokens_input_by_role": {
+                                **_ext_existing.tokens_input_by_role,
+                                "review": _ext_existing.tokens_input_by_role.get("review", 0) + _ext_ti,
+                            },
+                            "tokens_output_by_role": {
+                                **_ext_existing.tokens_output_by_role,
+                                "review": _ext_existing.tokens_output_by_role.get("review", 0) + _ext_to,
+                            },
+                        }
+                    )
+                    state = state.model_copy(
+                        update={
+                            "budget": state.budget.model_copy(
+                                update={
+                                    "invocation_count": state.budget.invocation_count + 1,
+                                    "total_tokens": state.budget.total_tokens + _ext_ti + _ext_to,
+                                    "total_tokens_input": state.budget.total_tokens_input + _ext_ti,
+                                    "total_tokens_output": state.budget.total_tokens_output + _ext_to,
+                                    "estimated_cost": state.budget.estimated_cost + _ext_cost,
+                                    "per_story": {**state.budget.per_story, _ext_slug: _ext_new_story},
+                                }
+                            )
+                        }
+                    )
+
                 # Generate PR body and open PR (AC: #3, #4)
                 try:
                     pr_body = await generate_pr_body(run_id, story_slug, project_root=project_root)

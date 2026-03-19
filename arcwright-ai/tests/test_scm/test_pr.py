@@ -13,6 +13,9 @@ from arcwright_ai.core.exceptions import ScmError
 from arcwright_ai.scm.pr import (
     MergeOutcome,
     _detect_default_branch,
+    _extract_decisions,
+    _extract_implementation_decisions,
+    _render_pr_body,
     generate_pr_body,
     get_pull_request_merge_sha,
     merge_pull_request,
@@ -262,12 +265,13 @@ async def test_generate_pr_body_includes_decision_sections(
 
     body = await generate_pr_body(_RUN_ID, _SLUG, project_root=tmp_path)
 
-    assert "### Decision Provenance" in body
+    assert "### Pipeline Activity" in body
     assert "#### Use NamedTuple for _Decision" in body
     assert "**Alternatives**" in body
     assert "**Rationale**" in body
     assert "**References**" in body
     assert "NamedTuple is immutable and lightweight." in body
+    assert "### Decision Provenance" not in body
 
 
 # ---------------------------------------------------------------------------
@@ -373,7 +377,7 @@ async def test_generate_pr_body_no_decisions_shows_note(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """generate_pr_body outputs 'No agent decisions recorded' when decisions section is empty."""
+    """generate_pr_body outputs pipeline activity note when pipeline decisions section is empty."""
     monkeypatch.setattr(
         "arcwright_ai.scm.pr.read_text_async",
         _make_mock_read(_PROVENANCE_MINIMAL, _STORY_CONTENT),
@@ -381,7 +385,7 @@ async def test_generate_pr_body_no_decisions_shows_note(
 
     body = await generate_pr_body(_RUN_ID, _SLUG, project_root=tmp_path)
 
-    assert "No agent decisions recorded" in body
+    assert "No pipeline activity recorded" in body
 
 
 # ---------------------------------------------------------------------------
@@ -1659,7 +1663,7 @@ async def test_generate_pr_body_includes_decisions_from_post_fix_provenance(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """generate_pr_body returns populated Decision Provenance section from post-fix provenance.
+    """generate_pr_body returns populated Pipeline Activity section from post-fix provenance.
 
     AC #2 and #3: after validate_node preserves ## Agent Decisions,
     _extract_decisions() finds them and _render_pr_body() includes them.
@@ -1671,10 +1675,10 @@ async def test_generate_pr_body_includes_decisions_from_post_fix_provenance(
 
     body = await generate_pr_body(_RUN_ID, _SLUG, project_root=tmp_path)
 
-    assert "### Decision Provenance" in body
+    assert "### Pipeline Activity" in body
     assert "Agent invoked for story 6-4-pr-body-generator" in body
     assert "Validation attempt 1: pass" in body
-    assert "No agent decisions recorded" not in body
+    assert "No pipeline activity recorded" not in body
 
 
 # ---------------------------------------------------------------------------
@@ -1826,3 +1830,178 @@ async def test_merge_auto_queue_real_failure_returns_error(
         result = await merge_pull_request(_PR_URL, project_root=tmp_path, wait_timeout=300)
 
     assert result is MergeOutcome.ERROR
+
+
+# ---------------------------------------------------------------------------
+# Fixture: provenance with ## Implementation Decisions section
+# ---------------------------------------------------------------------------
+
+_PROVENANCE_WITH_IMPL_DECISIONS = (
+    f"# Provenance: {_SLUG}\n\n"
+    "## Agent Decisions\n\n"
+    "### Decision: Low-level pipeline choice\n\n"
+    "- **Timestamp**: 2026-01-01T00:00:00Z\n"
+    "- **Alternatives**: option-x\n"
+    "- **Rationale**: Pipeline metadata reason.\n"
+    "- **References**: None\n\n"
+    "## Implementation Decisions\n\n"
+    "### Decision: Used Strategy pattern for dispatch\n\n"
+    "- **Timestamp**: 2026-01-02T00:00:00Z\n"
+    "- **Alternatives**: if/else chain, registry dict\n"
+    "- **Rationale**: Extensibility without modifying existing code.\n"
+    "- **References**: AC-1, FR-9\n\n"
+    "## Validation History\n\n"
+    "| Attempt | Result | Feedback |\n"
+    "|---------|--------|----------|\n"
+    "| 1 | pass | All criteria satisfied |\n\n"
+    "## Context Provided\n\n"
+    "- AC-1\n"
+    "- FR-9\n"
+)
+
+_PROVENANCE_NO_IMPL_DECISIONS = _PROVENANCE_WITH_DECISION  # no ## Implementation Decisions section
+
+
+# ---------------------------------------------------------------------------
+# 5.3 — _render_pr_body() produces ### Agent Decisions and ### Pipeline Activity
+# ---------------------------------------------------------------------------
+
+
+def test_render_pr_body_has_agent_decisions_section_with_impl() -> None:
+    """_render_pr_body renders ### Agent Decisions when impl_decisions is provided."""
+    from arcwright_ai.scm.pr import _Decision
+
+    impl = [_Decision(title="Strategy pattern", timestamp="t", rationale="r", alternatives=["x"], references=["AC-1"])]
+    body = _render_pr_body("title", [], "", [], impl_decisions=impl)
+
+    assert "### Agent Decisions" in body
+    assert "Strategy pattern" in body
+
+
+def test_render_pr_body_agent_decisions_unavailable_when_none() -> None:
+    """_render_pr_body renders 'Decision extraction unavailable' when impl_decisions is None."""
+    body = _render_pr_body("title", [], "", [], impl_decisions=None)
+
+    assert "### Agent Decisions" in body
+    assert "Decision extraction unavailable" in body
+
+
+def test_render_pr_body_agent_decisions_unavailable_when_empty() -> None:
+    """_render_pr_body renders 'Decision extraction unavailable' when impl_decisions is []."""
+    body = _render_pr_body("title", [], "", [], impl_decisions=[])
+
+    assert "### Agent Decisions" in body
+    assert "Decision extraction unavailable" in body
+
+
+def test_render_pr_body_has_pipeline_activity_section() -> None:
+    """_render_pr_body includes ### Pipeline Activity (not ### Decision Provenance)."""
+    body = _render_pr_body("title", [], "", [], impl_decisions=None)
+
+    assert "### Pipeline Activity" in body
+    assert "### Decision Provenance" not in body
+
+
+def test_render_pr_body_pipeline_activity_renders_decisions() -> None:
+    """_render_pr_body renders pipeline decisions under ### Pipeline Activity."""
+    from arcwright_ai.scm.pr import _Decision
+
+    decisions = [_Decision(title="Some pipeline choice", timestamp="t", rationale="r", alternatives=[], references=[])]
+    body = _render_pr_body("title", [], "", decisions, impl_decisions=None)
+
+    assert "### Pipeline Activity" in body
+    assert "Some pipeline choice" in body
+
+
+@pytest.mark.asyncio
+async def test_generate_pr_body_agent_decisions_section_present(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """generate_pr_body includes ### Agent Decisions with LLM-extracted content."""
+    monkeypatch.setattr(
+        "arcwright_ai.scm.pr.read_text_async",
+        _make_mock_read(_PROVENANCE_WITH_IMPL_DECISIONS, _STORY_CONTENT),
+    )
+
+    body = await generate_pr_body(_RUN_ID, _SLUG, project_root=tmp_path)
+
+    assert "### Agent Decisions" in body
+    assert "Used Strategy pattern for dispatch" in body
+
+
+@pytest.mark.asyncio
+async def test_generate_pr_body_pipeline_activity_section_present(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """generate_pr_body includes ### Pipeline Activity for ## Agent Decisions content."""
+    monkeypatch.setattr(
+        "arcwright_ai.scm.pr.read_text_async",
+        _make_mock_read(_PROVENANCE_WITH_IMPL_DECISIONS, _STORY_CONTENT),
+    )
+
+    body = await generate_pr_body(_RUN_ID, _SLUG, project_root=tmp_path)
+
+    assert "### Pipeline Activity" in body
+    assert "Low-level pipeline choice" in body
+
+
+@pytest.mark.asyncio
+async def test_generate_pr_body_decision_extraction_unavailable_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """generate_pr_body shows 'Decision extraction unavailable' when no ## Implementation Decisions."""
+    monkeypatch.setattr(
+        "arcwright_ai.scm.pr.read_text_async",
+        _make_mock_read(_PROVENANCE_NO_IMPL_DECISIONS, _STORY_CONTENT),
+    )
+
+    body = await generate_pr_body(_RUN_ID, _SLUG, project_root=tmp_path)
+
+    assert "### Agent Decisions" in body
+    assert "Decision extraction unavailable" in body
+
+
+# ---------------------------------------------------------------------------
+# 5.4 — _extract_implementation_decisions() and _extract_decisions() boundaries
+# ---------------------------------------------------------------------------
+
+
+def test_extract_implementation_decisions_parses_correctly() -> None:
+    """_extract_implementation_decisions parses ## Implementation Decisions section."""
+    decisions = _extract_implementation_decisions(_PROVENANCE_WITH_IMPL_DECISIONS)
+
+    assert len(decisions) == 1
+    d = decisions[0]
+    assert d.title == "Used Strategy pattern for dispatch"
+    assert "if/else chain" in d.alternatives
+    assert d.rationale == "Extensibility without modifying existing code."
+    assert "AC-1" in d.references
+
+
+def test_extract_implementation_decisions_returns_empty_when_absent() -> None:
+    """_extract_implementation_decisions returns [] when section is not in provenance."""
+    decisions = _extract_implementation_decisions(_PROVENANCE_WITH_DECISION)
+
+    assert decisions == []
+
+
+def test_extract_implementation_decisions_does_not_bleed_into_validation_history() -> None:
+    """_extract_implementation_decisions boundary stops at ## Validation History."""
+    decisions = _extract_implementation_decisions(_PROVENANCE_WITH_IMPL_DECISIONS)
+
+    # Should only find the one decision in ## Implementation Decisions
+    assert len(decisions) == 1
+    assert all("Validation" not in d.title for d in decisions)
+
+
+def test_extract_decisions_excludes_implementation_section() -> None:
+    """_extract_decisions() stops at ## Implementation Decisions and excludes its content."""
+    decisions = _extract_decisions(_PROVENANCE_WITH_IMPL_DECISIONS)
+
+    # Only the ## Agent Decisions entry should be found
+    assert len(decisions) == 1
+    assert decisions[0].title == "Low-level pipeline choice"
+    assert not any(d.title == "Used Strategy pattern for dispatch" for d in decisions)

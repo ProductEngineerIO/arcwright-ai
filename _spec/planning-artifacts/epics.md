@@ -1613,6 +1613,48 @@ So that the raw key value never appears in the LangSmith UI or any trace export.
 
 ---
 
+### Story 10.11: LLM-Extracted Agent Decisions in PR Body
+
+**Priority**: MEDIUM | **Points**: 5
+**Requirements**: FR12 (decision provenance), FR14 (provenance in PRs), FR35 (PR body), NFR17 (traceability)
+**Dependencies**: Story 10.7 (provenance preservation), Story 6.4 (PR body generator)
+
+**Description:**
+As a code reviewer using Arcwright AI,
+I want pull requests to contain a section with the agent's actual implementation decisions extracted by a review model from the diff and conversation output,
+So that I can understand the reasoning behind code changes — not just pipeline execution metadata.
+
+**Problem:** The current `### Decision Provenance` section in PRs contains pipeline execution metadata (which model was invoked, prompt length, validation results, merge outcomes) — not actual agent implementation decisions. The entries like "Agent invoked for story X (attempt 1)" and "Validation attempt 1: pass" describe what the pipeline *did*, not what the agent *decided* during implementation (e.g., "chose Strategy pattern over simple if/else chain", "added retry logic not in spec because API is flaky").
+
+**Design:**
+- Add an **extraction step** after `agent_dispatch_node` writes agent output but before `validate_node` runs (or as early logic in `commit_node` before PR generation)
+- A **review model** reads the git diff (from worktree against base ref) and the saved `agent-output.md` conversation transcript
+- The review model extracts structured implementation decisions: what choices the agent made, what alternatives existed, and why
+- Extracted decisions are written to a new `## Implementation Decisions` section in the provenance file
+- The PR body renderer is updated to:
+  - Rename `### Decision Provenance` → `### Pipeline Activity` (existing metadata entries)
+  - Add a new `### Agent Decisions` section above it, populated from the extracted decisions
+- If extraction fails (model error, empty diff), fall back gracefully — PR is created without the section
+
+**Acceptance Criteria:**
+
+**Given** `agent_dispatch_node` has completed and saved agent output to `agent-output.md` **When** the extraction step runs **Then** it invokes the `review` role model with the git diff and agent output text as input
+**Given** the review model returns structured decisions **When** decisions are recorded **Then** they are written to ``## Implementation Decisions`` in the provenance file as ``### Decision:`` subsections following the existing `ProvenanceEntry` format
+**Given** `commit_node` calls `generate_pr_body()` **When** the PR body is rendered **Then** the existing pipeline metadata entries appear under `### Pipeline Activity` (renamed from `### Decision Provenance`) and the extracted decisions appear under a new `### Agent Decisions` heading
+**Given** the extraction step encounters an error (model timeout, invalid response) **When** the PR body is rendered **Then** pipeline activity is still shown and `### Agent Decisions` displays "Decision extraction unavailable" — the PR is created regardless
+**Given** a retry cycle occurs (validate → retry → dispatch → extract → validate) **When** the final PR is generated **Then** extracted decisions from ALL attempts are present in the `### Agent Decisions` section
+**And** `ruff check`, `mypy --strict`, and `pytest` all pass with zero regressions
+
+**Files touched (expected):**
+- `src/arcwright_ai/engine/nodes.py` — New extraction logic (in `commit_node` before `generate_pr_body`, or as a dedicated step)
+- `src/arcwright_ai/output/provenance.py` — Support for `## Implementation Decisions` section (read/write/preserve)
+- `src/arcwright_ai/scm/pr.py` — Rename `### Decision Provenance` → `### Pipeline Activity`, add `### Agent Decisions` section with new extractor
+- `src/arcwright_ai/core/constants.py` — New filename constant if decisions are stored separately
+- `tests/test_engine/` — Extraction step tests (success, failure, retry accumulation)
+- `tests/test_scm/test_pr.py` — PR body rendering tests for new section layout
+
+---
+
 ## Epic 11: BMAD 6.1 Framework Upgrade
 
 > **Value prop**: Developer upgrades the project's BMAD development infrastructure from v6.0.3 to v6.1.0, gaining the new skills-based architecture, Edge Case Hunter code review capability, critical bug fixes, and a 91% smaller framework footprint — without any disruption to the product's source code or test suite.

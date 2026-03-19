@@ -10,6 +10,7 @@ from arcwright_ai.core.types import ProvenanceEntry
 from arcwright_ai.output.provenance import (
     _extract_story_slug,
     append_entry,
+    append_entry_to_section,
     merge_validation_checkpoint,
     render_validation_row,
     write_entries,
@@ -728,3 +729,120 @@ async def test_merge_validation_checkpoint_retry_cycle_preserves_all_decisions(
     # Both validation rows present
     assert "| 1 | fail_v3 | AC 1 unmet |" in content
     assert "| 2 | pass | All checks passed |" in content
+
+
+# ---------------------------------------------------------------------------
+# 5.7 — append_entry_to_section() retry accumulation and section creation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_append_entry_to_section_creates_impl_section_if_missing(
+    tmp_path: Path,
+    simple_entry: ProvenanceEntry,
+) -> None:
+    """append_entry_to_section creates ## Implementation Decisions header when absent."""
+    path = tmp_path / "stories" / "1-1-foo" / "validation.md"
+    await write_entries(path, [simple_entry])
+
+    impl_entry = ProvenanceEntry(
+        decision="LLM extracted: use adapter pattern",
+        alternatives=["direct call"],
+        rationale="Decouples third-party API.",
+        ac_references=["AC-3"],
+        timestamp="2026-06-01T00:00:00Z",
+    )
+    await append_entry_to_section(path, impl_entry, section="implementation")
+
+    content = path.read_text(encoding="utf-8")
+
+    assert "## Implementation Decisions" in content
+    assert "### Decision: LLM extracted: use adapter pattern" in content
+
+
+@pytest.mark.asyncio
+async def test_append_entry_to_section_accumulates_on_retry(
+    tmp_path: Path,
+    simple_entry: ProvenanceEntry,
+) -> None:
+    """append_entry_to_section called twice accumulates both entries (does not overwrite)."""
+    path = tmp_path / "stories" / "1-1-foo" / "validation.md"
+    await write_entries(path, [simple_entry])
+
+    entry_a = ProvenanceEntry(
+        decision="First LLM decision",
+        alternatives=[],
+        rationale="Reason A.",
+        ac_references=[],
+        timestamp="2026-06-01T00:00:00Z",
+    )
+    entry_b = ProvenanceEntry(
+        decision="Second LLM decision",
+        alternatives=[],
+        rationale="Reason B.",
+        ac_references=[],
+        timestamp="2026-06-01T01:00:00Z",
+    )
+    await append_entry_to_section(path, entry_a, section="implementation")
+    await append_entry_to_section(path, entry_b, section="implementation")
+
+    content = path.read_text(encoding="utf-8")
+
+    assert "### Decision: First LLM decision" in content
+    assert "### Decision: Second LLM decision" in content
+    pos_a = content.find("### Decision: First LLM decision")
+    pos_b = content.find("### Decision: Second LLM decision")
+    assert pos_a != -1 and pos_b != -1
+    # Both decisions preserved, no overwrite occurred
+
+
+@pytest.mark.asyncio
+async def test_append_entry_to_section_agent_section_delegates_to_append_entry(
+    tmp_path: Path,
+    simple_entry: ProvenanceEntry,
+) -> None:
+    """append_entry_to_section(section='agent') inserts before ## Validation History."""
+    path = tmp_path / "stories" / "1-1-foo" / "validation.md"
+    await write_entries(path, [simple_entry])
+
+    new_agent_entry = ProvenanceEntry(
+        decision="New agent decision",
+        alternatives=["alt-x"],
+        rationale="New reason.",
+        ac_references=["AC-5"],
+        timestamp="2026-07-01T00:00:00Z",
+    )
+    await append_entry_to_section(path, new_agent_entry, section="agent")
+
+    content = path.read_text(encoding="utf-8")
+
+    assert "### Decision: New agent decision" in content
+    pos_entry = content.find("### Decision: New agent decision")
+    pos_val = content.find("## Validation History")
+    assert pos_entry < pos_val
+
+
+@pytest.mark.asyncio
+async def test_append_entry_to_section_impl_section_before_validation_history(
+    tmp_path: Path,
+    simple_entry: ProvenanceEntry,
+) -> None:
+    """append_entry_to_section(section='implementation') places section before ## Validation History."""
+    path = tmp_path / "stories" / "1-1-foo" / "validation.md"
+    await write_entries(path, [simple_entry])
+
+    impl_entry = ProvenanceEntry(
+        decision="Impl decision",
+        alternatives=[],
+        rationale="Why.",
+        ac_references=[],
+        timestamp="2026-06-01T00:00:00Z",
+    )
+    await append_entry_to_section(path, impl_entry, section="implementation")
+
+    content = path.read_text(encoding="utf-8")
+
+    pos_impl_header = content.find("## Implementation Decisions")
+    pos_val = content.find("## Validation History")
+    assert pos_impl_header != -1
+    assert pos_impl_header < pos_val
