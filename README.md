@@ -243,6 +243,9 @@ python3 -m venv .venv && source .venv/bin/activate && pip install -r requirement
 
    ```bash
    python -m arcwright_ai validate-setup
+
+   # Check installed version
+   python -m arcwright_ai version
    ```
 
    Expect output like:
@@ -277,6 +280,7 @@ python3 -m venv .venv && source .venv/bin/activate && pip install -r requirement
 | `arcwright-ai validate-setup` | Validate config, API key, project structure |
 | `arcwright-ai status [--run RUN-ID]` | Show current/last run status with cost summary |
 | `arcwright-ai cleanup` | Clean up git worktrees |
+| `arcwright-ai version` | Print the installed package version |
 
 ### Exit Codes
 
