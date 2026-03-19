@@ -4,7 +4,7 @@
 
 A methodology-agnostic agent orchestration platform that automates multi-stage software development workflows, enforces deterministic validation gates around non-deterministic AI agent output, and provides full observability and traceability via [LangGraph](https://langchain-ai.github.io/langgraph/).
 
-Ships with the [BMAD Method](https://github.com/bmadcode/BMAD-METHOD) as its reference implementation — but any team can encode their own development methodology as executable workflows.
+Uses the [BMAD Method](https://github.com/bmadcode/BMAD-METHOD) as its reference implementation — but any team can encode their own development methodology as executable workflows.
 
 ```mermaid
 flowchart LR
@@ -115,16 +115,18 @@ python -m arcwright_ai dispatch --epic 3 --resume
 
 ### Validation Pipeline
 
-Six validation patterns ordered by cost, with artifact-specific pipelines:
+Six validation patterns ordered by cost, with artifact-specific pipelines. V6 (deterministic) and V3 (reflexion) are implemented; the rest are planned.
 
-| Pattern | Description | Use Case |
-|---------|-------------|----------|
-| **V1** | BMAD native validators | Cross-doc validation workflows |
-| **V2** | LLM-as-Judge | Independent model scoring |
-| **V3** | Reflexion | Agent self-critique + revise loop |
-| **V4** | Cross-document consistency | Artifact agreement checks |
-| **V5** | Multi-perspective ensemble | Parallel persona review |
-| **V6** | Invariant checks | Static rule-based assertions |
+| Pattern | Status | Description | Use Case |
+|---------|--------|-------------|----------|
+| **V1** | Planned | BMAD native validators | Cross-doc validation workflows |
+| **V2** | Planned | LLM-as-Judge | Independent model scoring |
+| **V3** | **Implemented** | Reflexion | Agent self-critique + revise loop |
+| **V4** | Planned | Cross-document consistency | Artifact agreement checks |
+| **V5** | Planned | Multi-perspective ensemble | Parallel persona review |
+| **V6** | **Implemented** | Invariant checks | Static rule-based assertions |
+
+See [docs/validation-pipeline.md](docs/validation-pipeline.md) for the full technical reference — V6 check details, V3 reflexion flow, retry mechanics, halt classification, artifact formats, and configuration.
 
 ### Cost Tracking
 
@@ -203,7 +205,7 @@ pip install arcwright-ai
 To version-control the dependency, add a `requirements.txt` to your project:
 
 ```text
-arcwright-ai>=0.2.4
+arcwright-ai>=0.2.20
 ```
 
 Then anyone cloning the project can reproduce the environment:
@@ -333,7 +335,9 @@ reproducibility:
 | Variable | Purpose |
 |----------|---------|
 | `ARCWRIGHT_API_CLAUDE_API_KEY` | Claude API key (set this in `.env`) |
-| `ARCWRIGHT_AI_MODEL_VERSION` | Override model version || `LANGCHAIN_TRACING_V2` | Set to `true` to enable LangSmith tracing (see below) |
+| `ARCWRIGHT_AI_MODEL_GENERATE_VERSION` | Override the generate (code-writing) model version |
+| `ARCWRIGHT_AI_MODEL_REVIEW_VERSION` | Override the review model version |
+| `LANGCHAIN_TRACING_V2` | Set to `true` to enable LangSmith tracing (see below) |
 | `LANGCHAIN_API_KEY` | Your LangSmith API key (set this in `.env`) |
 | `LANGCHAIN_PROJECT` | LangSmith project name (default: `default`) |
 
