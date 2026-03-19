@@ -16,6 +16,7 @@ Arcwright AI takes BMAD planning artifacts (PRD, Architecture, Epics, Stories) a
 - [Understanding the Output](#understanding-the-output)
 - [LangGraph Studio](#langgraph-studio)
 - [Development](#development)
+- [Versioning & Releases](#versioning--releases)
 - [Troubleshooting](#troubleshooting)
 
 ---
@@ -37,7 +38,7 @@ Arcwright AI takes BMAD planning artifacts (PRD, Architecture, Epics, Stories) a
 cd /path/to/your/project
 python3 -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install arcwright-ai
+pip install --upgrade arcwright-ai
 ```
 
 To version-control the dependency, add a `requirements.txt` to your project:
@@ -56,13 +57,9 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-Set your API key (add to your shell profile or `.env`):
+Set your API key in `.env` (recommended and required for docs):
 
-```bash
-export ARCWRIGHT_API_CLAUDE_API_KEY="sk-ant-..."
-```
-
-Or copy the generated `.env.example` and fill in your values:
+Copy the generated `.env.example` and fill in your values:
 
 ```bash
 cp .env.example .env
@@ -126,10 +123,8 @@ scm:
   branch_template: "arcwright-ai/{story_slug}"
 ```
 
-> **API key security**: Never put your API key in `config.yaml`. Use the
-> `.env` file (git-ignored), the `ARCWRIGHT_API_CLAUDE_API_KEY` environment
-> variable, or the global `~/.arcwright-ai/config.yaml` (user-level, outside
-> any repo).
+> **API key security**: Never put your API key in `config.yaml`. Use only the
+> project `.env` file (git-ignored).
 
 Verify your setup:
 
@@ -291,12 +286,12 @@ LangGraph has built-in support for [LangSmith](https://smith.langchain.com) — 
 
 1. Create a free account at [smith.langchain.com](https://smith.langchain.com)
 2. Go to **Settings → API Keys** and create an API key
-3. Set environment variables (add to your `.env` file or shell profile):
+3. Add the following entries to your `.env` file:
 
 ```bash
-export LANGCHAIN_TRACING_V2=true
-export LANGCHAIN_API_KEY="lsv2_pt_..."
-export LANGCHAIN_PROJECT="arcwright-ai"  # optional — names your project in the UI
+LANGCHAIN_TRACING_V2=true
+LANGCHAIN_API_KEY=lsv2_pt_...
+LANGCHAIN_PROJECT=arcwright-ai  # optional — names your project in the UI
 ```
 
 The next `python -m arcwright_ai dispatch` will send traces automatically — no code changes required.
@@ -341,6 +336,71 @@ pip install -e ".[dev]"
 ### Python version note
 
 The project targets Python 3.11+ and is developed against 3.14. The `.venv-studio` venv (Python 3.13) is **only** for running `langgraph dev`. Do not use it for tests or type checking — results may differ.
+
+---
+
+## Versioning & Releases
+
+Arcwright AI uses [hatch-vcs](https://github.com/ofek/hatch-vcs) to derive the package version from git tags. Tags drive two separate publish pipelines:
+
+| Channel | Tag Format | Registry | Trigger |
+|---------|-----------|----------|---------|
+| Stable | `v1.0.0` | [PyPI](https://pypi.org/project/arcwright-ai/) | `.github/workflows/publish.yml` |
+| Pre-release | `v1.1.0rc1`, `v1.1.0a1`, `v1.1.0b1` | [TestPyPI](https://test.pypi.org/project/arcwright-ai/) | `.github/workflows/publish-test.yml` |
+
+### Publishing a stable release (from `main`)
+
+```bash
+git checkout main
+git pull
+git tag -a v1.0.0 -m "v1.0.0"
+git push origin v1.0.0
+```
+
+The `publish.yml` workflow triggers, builds the package, and publishes to PyPI. The tag gate rejects any tag containing `a`, `b`, or `rc`, so pre-release tags never reach PyPI.
+
+### Publishing a pre-release (from `develop`)
+
+```bash
+git checkout develop
+git pull
+git tag -a v1.1.0rc1 -m "v1.1.0rc1"
+git push origin v1.1.0rc1
+```
+
+The `publish-test.yml` workflow triggers, builds the package, and publishes to TestPyPI. Only tags containing a PEP 440 pre-release segment (`a`, `b`, or `rc`) are published by this workflow.
+
+> **Prerequisite**: The `testpypi` GitHub Environment must be configured in the repository settings with an OIDC trusted publisher for TestPyPI before the pre-release pipeline will succeed. See [TestPyPI Trusted Publishing](https://test.pypi.org/manage/account/publishing/) for setup instructions.
+
+### Installing pre-release versions
+
+```bash
+# Install or upgrade to the latest stable release from PyPI (pre-releases excluded by default)
+pip install --upgrade arcwright-ai
+
+# Install a specific pre-release version from TestPyPI
+pip install --pre \
+  --index-url https://test.pypi.org/simple/ \
+  --extra-index-url https://pypi.org/simple/ \
+  arcwright-ai
+
+# Or pin to an exact pre-release
+pip install --index-url https://test.pypi.org/simple/ \
+  --extra-index-url https://pypi.org/simple/ \
+  arcwright-ai==1.1.0rc1
+```
+
+### Version string resolution
+
+hatch-vcs resolves the installed version from the git tag at build time. PEP 440 pre-release segments are natively supported:
+
+| Tag | Resolved `__version__` |
+|-----|------------------------|
+| `v1.0.0` | `1.0.0` |
+| `v1.1.0rc1` | `1.1.0rc1` |
+| `v1.1.0a1` | `1.1.0a1` |
+| `v1.1.0b1` | `1.1.0b1` |
+| *(untagged)* | `1.0.0.dev4+g...` |
 
 ---
 

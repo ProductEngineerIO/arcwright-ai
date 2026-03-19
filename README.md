@@ -226,7 +226,7 @@ python3 -m venv .venv && source .venv/bin/activate && pip install -r requirement
 
    This scaffolds the `.arcwright-ai/` directory, generates a default config, writes a `.env.example` template, adds temp/run directories and `.env` to `.gitignore`, and detects existing BMAD artifacts.
 
-2. **Configure** your API key:
+2. **Configure** your API key in `.env`:
 
    Copy the generated `.env.example` and fill in your values:
 
@@ -235,11 +235,7 @@ python3 -m venv .venv && source .venv/bin/activate && pip install -r requirement
    # Edit .env — at minimum set ARCWRIGHT_API_CLAUDE_API_KEY
    ```
 
-   Or export directly / add to `~/.arcwright-ai/config.yaml`:
-
-   ```bash
-   export ARCWRIGHT_API_CLAUDE_API_KEY="sk-ant-..."
-   ```
+  Arcwright AI reads `.env` automatically on startup.
 
 3. **Validate** your setup:
 
@@ -306,8 +302,6 @@ Arcwright AI uses a two-tier configuration model with environment variable overr
 ### Global Config (`~/.arcwright-ai/config.yaml`)
 
 ```yaml
-api:
-  claude_api_key: "sk-..."
 model:
   version: "claude-sonnet-4-20250514"
 limits:
@@ -338,9 +332,9 @@ reproducibility:
 
 | Variable | Purpose |
 |----------|---------|
-| `ARCWRIGHT_API_CLAUDE_API_KEY` | Claude API key (avoids committing keys to config) |
+| `ARCWRIGHT_API_CLAUDE_API_KEY` | Claude API key (set this in `.env`) |
 | `ARCWRIGHT_AI_MODEL_VERSION` | Override model version || `LANGCHAIN_TRACING_V2` | Set to `true` to enable LangSmith tracing (see below) |
-| `LANGCHAIN_API_KEY` | Your LangSmith API key |
+| `LANGCHAIN_API_KEY` | Your LangSmith API key (set this in `.env`) |
 | `LANGCHAIN_PROJECT` | LangSmith project name (default: `default`) |
 
 ## LangSmith Tracing
@@ -358,12 +352,12 @@ Arcwright AI runs on LangGraph, which has built-in support for [LangSmith](https
 
 1. Create a free account at [smith.langchain.com](https://smith.langchain.com)
 2. Go to **Settings → API Keys** and create an API key
-3. Set the following environment variables (add to your `.env` file or shell profile):
+3. Add the following entries to your `.env` file:
 
 ```bash
-export LANGCHAIN_TRACING_V2=true
-export LANGCHAIN_API_KEY="lsv2_pt_..."
-export LANGCHAIN_PROJECT="arcwright-ai"  # optional — names your project in the UI
+LANGCHAIN_TRACING_V2=true
+LANGCHAIN_API_KEY=lsv2_pt_...
+LANGCHAIN_PROJECT=arcwright-ai  # optional — names your project in the UI
 ```
 
 That's it. The next `python -m arcwright_ai dispatch` will send traces to your LangSmith project automatically — no code changes required.
