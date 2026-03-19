@@ -1316,7 +1316,7 @@ So that fetch → worktree → commit → push → PR → merge works as an unbr
 
 ## Epic 10: Ad-Hoc Improvements & Housekeeping
 
-**Added:** 2026-03-15 | **Stories:** 6 (ad-hoc — stories added as needed) | **Points:** 23+
+**Added:** 2026-03-15 | **Stories:** 7 (ad-hoc — stories added as needed) | **Points:** 26+
 
 **Purpose:** Collects small, cross-cutting improvements that don't warrant their own epic. These are housekeeping tasks, build infrastructure changes, and quality-of-life improvements identified during or after the main implementation sprints.
 
@@ -1518,6 +1518,45 @@ On retries, the problem compounds: `agent_dispatch_node` calls `append_entry()` 
 - `src/arcwright_ai/output/provenance.py` — Potentially add a merge/update function for validation results
 - `tests/test_engine/` — Integration test covering dispatch→validate→PR pipeline with provenance preservation
 - `tests/test_scm/test_pr.py` — Test with realistic validation.md content (post-validate format)
+
+---
+
+### Story 10.8: Pre-Release Versioning for Develop Branch — Test vs. Stable Differentiation
+
+**Priority**: MEDIUM | **Points**: 3
+**Requirements**: NFR19 (idempotency), Story 10.1 (hatch-vcs)
+**Dependencies**: Story 10.1 (dynamic versioning with hatch-vcs)
+
+**Description:**
+As a user or tester of Arcwright AI,
+I want to distinguish between stable releases merged to `main` and test/pre-release versions merged to `develop`,
+So that I can install the correct version for my use case — stable for production or pre-release for early testing — using standard pip semantics.
+
+**Context:** The project uses a two-branch model: `main` for stable releases and `develop` for integration/testing. Currently, hatch-vcs derives versions from git tags but there is no convention or CI infrastructure to publish pre-release versions (alpha, beta, release candidate) from the `develop` branch. Users cannot differentiate between a test build and a stable release without inspecting git history.
+
+**Design:**
+- **Stable releases** (merged to `main`): Tagged `v1.0.0` → version `1.0.0` → published to PyPI
+- **Pre-releases** (tagged on `develop`): Tagged `v1.1.0rc1` → version `1.1.0rc1` → published to TestPyPI (and optionally PyPI with pre-release flag)
+- **Dev builds** (untagged commits on any branch): Automatically versioned `1.0.1.dev7` by hatch-vcs — local only, never published
+- PEP 440 pre-release segments (`a`, `b`, `rc`) are natively supported by hatch-vcs and pip; no version-resolution code changes needed
+
+**Acceptance Criteria:**
+
+**Given** the existing `publish.yml` workflow triggers on `v*` tags **When** a stable tag like `v1.0.0` is pushed from `main` **Then** the package is built and published to PyPI as version `1.0.0` (existing behavior, unchanged)
+**Given** a new `publish-test.yml` workflow exists **When** a pre-release tag like `v1.1.0rc1`, `v1.1.0a1`, or `v1.1.0b1` is pushed from `develop` **Then** the package is built and published to TestPyPI as the corresponding PEP 440 pre-release version
+**And** `publish-test.yml` uses OIDC trusted publishing against the TestPyPI environment (no stored API tokens)
+**And** `publish.yml` is updated to exclude pre-release tags (only triggers on tags matching `v[0-9]+.[0-9]+.[0-9]+` without pre-release suffixes) so stable and pre-release publishes never collide
+**Given** a user runs `pip install arcwright-ai` **Then** only stable versions are installed (pip excludes pre-releases by default)
+**Given** a user runs `pip install --pre arcwright-ai` or `pip install arcwright-ai==1.1.0rc1` **Then** the pre-release version from TestPyPI is installable via `--index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/`
+**And** `arcwright-ai --version` (or `__version__`) correctly reports the pre-release version string (e.g., `1.1.0rc1`)
+**And** the project README or CONTRIBUTING.md documents the tagging convention and install commands for each channel
+**And** no changes to `src/arcwright_ai/__init__.py` version resolution are required (hatch-vcs handles PEP 440 pre-release tags natively)
+**And** `ruff check`, `mypy --strict`, and `pytest` all pass with zero regressions
+
+**Files touched:**
+- `.github/workflows/publish.yml` — Narrow tag filter to exclude pre-release suffixes
+- `.github/workflows/publish-test.yml` — New workflow: build + publish to TestPyPI on pre-release tags
+- `README.md` or `CONTRIBUTING.md` — Document tagging convention and install commands for stable vs. test channels
 
 ---
 
