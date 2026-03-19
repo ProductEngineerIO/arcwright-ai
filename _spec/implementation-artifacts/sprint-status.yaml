@@ -38,7 +38,8 @@ project: arcwright-ai
 project_key: NOKEY
 tracking_system: file-system
 story_location: _spec/implementation-artifacts
-last_updated: 2026-03-18
+last_updated: 2026-03-19
+
 
 development_status:
   # Epic 1: Project Foundation & Configuration (5 stories, 26 pts)
@@ -132,6 +133,7 @@ development_status:
   10-8-pre-release-versioning-for-develop-branch: done
   10-9-cli-version-command: done
   10-10-redact-api-key-from-langsmith-traces-via-secretstr: done
+  10-11-llm-extracted-agent-decisions-in-pr-body: done
 
   # Epic 11: BMAD 6.1 Framework Upgrade (3 stories, 13 pts)
   epic-11: done

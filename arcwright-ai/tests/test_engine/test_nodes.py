@@ -5,9 +5,11 @@ from __future__ import annotations
 import logging
 from decimal import Decimal
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import AsyncMock
 
 import pytest
+from pydantic import SecretStr
 
 from arcwright_ai.agent.invoker import InvocationResult
 from arcwright_ai.core.config import ApiConfig, LimitsConfig, ModelRole, RunConfig, ScmConfig
@@ -63,7 +65,7 @@ from arcwright_ai.validation.v6_invariant import V6CheckResult, V6ValidationResu
 def make_run_config(retry_budget: int = 3) -> RunConfig:
     """Build a minimal RunConfig suitable for tests."""
     return RunConfig(
-        api=ApiConfig(claude_api_key="test-key-not-real"),
+        api=ApiConfig(claude_api_key=SecretStr("test-key-not-real")),
         limits=LimitsConfig(retry_budget=retry_budget),
     )
 
@@ -713,7 +715,7 @@ async def test_validate_node_uses_worktree_path_as_cwd(
     captured_cwd: list[Path] = []
 
     async def _capture(*args: object, **kwargs: object) -> PipelineResult:
-        captured_cwd.append(kwargs["cwd"])
+        captured_cwd.append(cast("Path", kwargs["cwd"]))
         return _make_pass_result()
 
     monkeypatch.setattr("arcwright_ai.engine.nodes.run_validation_pipeline", _capture)
@@ -732,7 +734,7 @@ async def test_validate_node_falls_back_to_project_root_when_no_worktree(
     captured_cwd: list[Path] = []
 
     async def _capture(*args: object, **kwargs: object) -> PipelineResult:
-        captured_cwd.append(kwargs["cwd"])
+        captured_cwd.append(cast("Path", kwargs["cwd"]))
         return _make_pass_result()
 
     monkeypatch.setattr("arcwright_ai.engine.nodes.run_validation_pipeline", _capture)
@@ -984,13 +986,17 @@ async def test_preflight_node_context_error_never_transitions_to_running(
     transitions: list[TaskState] = []
     original_model_copy = StoryState.model_copy
 
-    def _tracking_model_copy(self: StoryState, *args: object, **kwargs: object) -> StoryState:
-        update = kwargs.get("update")
+    def _tracking_model_copy(
+        self: StoryState,
+        *,
+        update: dict[str, object] | None = None,
+        deep: bool = False,
+    ) -> StoryState:
         if isinstance(update, dict):
             status = update.get("status")
             if isinstance(status, TaskState):
                 transitions.append(status)
-        return original_model_copy(self, *args, **kwargs)
+        return original_model_copy(self, update=cast("Any", update), deep=deep)
 
     async def _raise_context_error(story_path: object, project_root: object, **kwargs: object) -> ContextBundle:
         raise ContextError("forced failure")
@@ -1186,6 +1192,28 @@ async def test_agent_dispatch_node_writes_agent_output_checkpoint(
     )
     assert checkpoint_file.exists()
     assert checkpoint_file.read_text(encoding="utf-8") == mock_invoke_result.output_text
+
+
+@pytest.mark.asyncio
+async def test_agent_dispatch_node_writes_attempt_output_checkpoint(
+    dispatch_ready_state: StoryState,
+    mock_invoke_result: InvocationResult,
+) -> None:
+    """agent_dispatch_node writes retry-scoped agent output checkpoint for extraction aggregation."""
+    retry_state = dispatch_ready_state.model_copy(update={"retry_count": 1})
+    await agent_dispatch_node(retry_state)
+
+    attempt_file = (
+        retry_state.project_root
+        / DIR_ARCWRIGHT
+        / DIR_RUNS
+        / str(retry_state.run_id)
+        / DIR_STORIES
+        / str(retry_state.story_id)
+        / "agent-output.attempt-2.md"
+    )
+    assert attempt_file.exists()
+    assert attempt_file.read_text(encoding="utf-8") == mock_invoke_result.output_text
 
 
 @pytest.mark.asyncio
@@ -1475,7 +1503,7 @@ async def test_validate_node_with_dual_model_config(
     from arcwright_ai.core.config import ModelRegistry, ModelSpec
 
     dual_config = RunConfig(
-        api=ApiConfig(claude_api_key="test-key"),
+        api=ApiConfig(claude_api_key=SecretStr("test-key")),
         models=ModelRegistry(
             roles={
                 "generate": ModelSpec(version="claude-sonnet-4-20250514"),
@@ -1657,11 +1685,11 @@ async def test_finalize_node_continues_when_write_success_summary_raises(
 
 
 @pytest.mark.asyncio
-async def test_finalize_node_escalated_with_empty_retry_history_uses_budget_exceeded(
+async def test_finalize_node_escalated_with_empty_retry_history_uses_agent_sdk_error(
     make_story_state: StoryState,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """finalize_node with ESCALATED + empty retry_history → halt_reason='budget_exceeded', history=[]."""
+    """finalize_node with ESCALATED + empty retry_history → halt_reason='agent_sdk_error', history=[]."""
     mock_halt = AsyncMock()
     monkeypatch.setattr("arcwright_ai.engine.nodes.write_halt_report", mock_halt)
 
@@ -1670,7 +1698,7 @@ async def test_finalize_node_escalated_with_empty_retry_history_uses_budget_exce
 
     assert mock_halt.call_count == 1
     call_kwargs = mock_halt.call_args[1]
-    assert call_kwargs["halt_reason"] == "budget_exceeded"
+    assert call_kwargs["halt_reason"] == "agent_sdk_error"
     assert call_kwargs["validation_history"] == []
 
 
@@ -2616,7 +2644,8 @@ async def test_agent_dispatch_node_sdk_error_logs_estimation_warning(
 
     estimation_records = [r for r in caplog.records if r.message == "budget.estimated_from_prompt"]
     assert estimation_records, "Expected budget.estimated_from_prompt warning"
-    assert estimation_records[0].data["estimated"] is True
+    record_data = cast("dict[str, object]", getattr(estimation_records[0], "data", {}))
+    assert record_data.get("estimated") is True
 
 
 @pytest.mark.asyncio
