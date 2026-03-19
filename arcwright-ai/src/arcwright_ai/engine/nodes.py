@@ -497,7 +497,7 @@ async def agent_dispatch_node(state: StoryState) -> StoryState:
             model=gen_spec.version,
             cwd=agent_cwd,
             sandbox=validate_path,
-            api_key=state.config.api.claude_api_key,
+            api_key=state.config.api.claude_api_key.get_secret_value(),
         )
     except Exception as exc:
         # SDK crash before any output — escalate cleanly so finalize_node can
@@ -972,7 +972,7 @@ async def validate_node(state: StoryState) -> StoryState:
             model=review_spec.version,
             cwd=state.worktree_path or state.project_root,
             sandbox=validate_path,
-            api_key=state.config.api.claude_api_key,
+            api_key=state.config.api.claude_api_key.get_secret_value(),
             attempt_number=state.retry_count + 1,
         )
     except Exception as exc:
