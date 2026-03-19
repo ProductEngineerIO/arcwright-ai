@@ -194,24 +194,83 @@ class _ToolValidationStats:
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+_STDERR_READ_LIMIT: int = 8192  # Max bytes to read from stderr temp file.
+
+
+def _enrich_error_with_stderr(exc: AgentError, stderr_path: str) -> None:
+    """Read captured stderr from the temp file and attach it to *exc*.
+
+    Mutates ``exc.details`` in place so the caller can re-raise the same
+    object with richer diagnostic info.  If the file is missing, empty, or
+    contains only the SDK placeholder, nothing is changed.
+    """
+    import os
+
+    try:
+        with open(stderr_path, encoding="utf-8", errors="replace") as fh:
+            stderr_content = fh.read(_STDERR_READ_LIMIT).strip()
+    except OSError:
+        return
+
+    if not stderr_content or stderr_content == "Check stderr output for details":
+        return
+
+    details = getattr(exc, "details", None)
+    if isinstance(details, dict):
+        details["captured_stderr"] = stderr_content
+    else:
+        exc.details = {"captured_stderr": stderr_content}  # type: ignore[attr-defined]
+
+    logger.error(
+        "agent.sdk_stderr",
+        extra={"data": {"stderr": stderr_content[:2048]}},
+    )
+
+
+def _cleanup_stderr_file(stderr_path: str) -> None:
+    """Best-effort removal of the stderr temp file."""
+    import os
+
+    try:
+        os.unlink(stderr_path)
+    except OSError:
+        pass
+
 
 def _wrap_sdk_error(error: Exception) -> AgentError:
     """Wrap an SDK or generic exception into the appropriate AgentError subclass.
+
+    Extracts ``stderr`` and ``exit_code`` from ``ProcessError`` instances so
+    diagnostic detail is preserved in the wrapped ``AgentError.details`` dict
+    rather than silently discarded.
 
     Args:
         error: The original exception to wrap.
 
     Returns:
         An ``AgentError`` (or appropriate subclass) preserving the original
-        message in ``details``.
+        message and any available diagnostic fields in ``details``.
     """
     from claude_code_sdk._errors import ClaudeSDKError
 
     message = str(error)
     details: dict[str, Any] = {"original_error": message}
+
+    # Extract diagnostic attributes from ProcessError (stderr, exit_code).
+    stderr: str | None = getattr(error, "stderr", None)
+    exit_code: int | None = getattr(error, "exit_code", None)
+    if stderr:
+        details["stderr"] = stderr
+    if exit_code is not None:
+        details["exit_code"] = exit_code
+
     if isinstance(error, ClaudeSDKError):
         if re.search(r"timeout", message, re.IGNORECASE):
             return AgentTimeoutError(f"Agent session timed out: {message}", details=details)
+        # Include stderr in the message when it contains real diagnostic info
+        # (not the SDK placeholder).
+        if stderr and stderr != "Check stderr output for details":
+            message = f"{message} | stderr={stderr}"
         return AgentError(f"SDK error: {message}", details=details)
     return AgentError(f"Unexpected error during agent invocation: {message}", details=details)
 
@@ -534,6 +593,8 @@ async def invoke_agent(
         SandboxViolation: If the agent attempts a file operation outside
             the sandbox boundary.
     """
+    import tempfile
+
     from claude_code_sdk import ClaudeCodeOptions, query  # noqa: F401
     from claude_code_sdk.types import AssistantMessage, ResultMessage, TextBlock, ToolUseBlock
 
@@ -543,6 +604,17 @@ async def invoke_agent(
 
     _tool_validation_stats = _ToolValidationStats()
 
+    # Capture stderr to a temp file so we have diagnostic output when the
+    # CLI process crashes.  The SDK only routes stderr when both
+    # ``debug-to-stderr`` extra arg and ``debug_stderr`` are set.
+    stderr_file = tempfile.NamedTemporaryFile(
+        mode="w",
+        prefix="arcwright-sdk-stderr-",
+        suffix=".log",
+        delete=False,
+    )
+    stderr_path = stderr_file.name
+
     options = ClaudeCodeOptions(
         model=model,
         cwd=str(cwd),
@@ -551,6 +623,8 @@ async def invoke_agent(
         system_prompt=_SCM_GUARDRAIL_PROMPT,
         can_use_tool=_make_tool_validator(sandbox, cwd, _tool_validation_stats),
         env={"ANTHROPIC_API_KEY": api_key.strip()},
+        extra_args={"debug-to-stderr": None},
+        debug_stderr=stderr_file,
     )
 
     output_parts: list[str] = []
@@ -567,12 +641,16 @@ async def invoke_agent(
                         _validate_tool_use(block, sandbox, cwd)
             elif isinstance(message, ResultMessage):
                 result_message = message
-    except AgentError:
+    except AgentError as agent_exc:
+        _enrich_error_with_stderr(agent_exc, stderr_path)
         raise
     except Exception as exc:
-        raise _wrap_sdk_error(exc) from exc
+        wrapped = _wrap_sdk_error(exc)
+        _enrich_error_with_stderr(wrapped, stderr_path)
+        raise wrapped from exc
     finally:
         await stream.aclose()
+        _cleanup_stderr_file(stderr_path)
 
     if result_message is None:
         raise AgentError(

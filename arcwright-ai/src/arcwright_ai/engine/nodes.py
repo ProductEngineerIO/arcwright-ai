@@ -503,16 +503,22 @@ async def agent_dispatch_node(state: StoryState) -> StoryState:
     except Exception as exc:
         # SDK crash before any output — escalate cleanly so finalize_node can
         # still run and remove the worktree (prevents worktree leaks).
+        exc_details = getattr(exc, "details", {})
+        captured_stderr = exc_details.get("captured_stderr", "") if isinstance(exc_details, dict) else ""
+        exit_code = exc_details.get("exit_code") if isinstance(exc_details, dict) else None
+        log_data: dict[str, Any] = {
+            "node": "agent_dispatch",
+            "story": str(state.story_id),
+            "attempt": state.retry_count + 1,
+            "error": str(exc),
+        }
+        if captured_stderr:
+            log_data["captured_stderr"] = captured_stderr[:2048]
+        if exit_code is not None:
+            log_data["exit_code"] = exit_code
         logger.error(
             "agent.sdk_error",
-            extra={
-                "data": {
-                    "node": "agent_dispatch",
-                    "story": str(state.story_id),
-                    "attempt": state.retry_count + 1,
-                    "error": str(exc),
-                }
-            },
+            extra={"data": log_data},
         )
         checkpoint_dir: Path = (
             state.project_root / DIR_ARCWRIGHT / DIR_RUNS / str(state.run_id) / DIR_STORIES / str(state.story_id)
@@ -1699,19 +1705,20 @@ def _derive_halt_reason(state: StoryState) -> str:
     Inspects ``BudgetState`` to detect budget-caused escalation regardless of
     whether retry history is present (retries can also push budget over).
     Falls back to validation-based reasons when budget ceilings are not
-    breached.
+    breached, and detects agent SDK errors when no retry history exists.
 
     Args:
         state: Story execution state in ESCALATED terminal status.
 
     Returns:
-        Halt reason string: ``"budget_exceeded"``, ``"v6_invariant_failure"``,
-        ``"max_retries_exhausted"``, or ``"validation_failure"``.
+        Halt reason string: ``"agent_sdk_error"``, ``"budget_exceeded"``,
+        ``"v6_invariant_failure"``, ``"max_retries_exhausted"``, or
+        ``"validation_failure"``.
     """
     if _is_budget_exceeded(state.budget):
         return "budget_exceeded"
     if not state.retry_history:
-        return "budget_exceeded"
+        return "agent_sdk_error"
     last = state.retry_history[-1]
     if last.outcome == PipelineOutcome.FAIL_V6:
         return "v6_invariant_failure"
@@ -1769,7 +1776,7 @@ def _derive_suggested_fix(state: StoryState) -> str:
         Human-readable suggested fix string.
     """
     budget = state.budget
-    if _is_budget_exceeded(budget) or not state.retry_history:
+    if _is_budget_exceeded(budget):
         breached = _determine_breached_ceiling(budget)
         return (
             f"Budget ceiling exceeded ({breached}). "
@@ -1778,6 +1785,13 @@ def _derive_suggested_fix(state: StoryState) -> str:
             f"cost=${budget.estimated_cost}/${budget.max_cost}, "
             f"total_tokens={budget.total_tokens}. "
             "Consider increasing `limits.cost_per_run` or `limits.tokens_per_story` in pyproject.toml."
+        )
+    if not state.retry_history:
+        return (
+            "Agent invocation failed before producing any output (SDK error). "
+            "Check the `agent.sdk_stderr` log event and halt report for details. "
+            "Common causes: invalid API key, model access denied, network error, "
+            "or Claude Code CLI misconfiguration."
         )
     last = state.retry_history[-1]
     if last.outcome == PipelineOutcome.FAIL_V6:

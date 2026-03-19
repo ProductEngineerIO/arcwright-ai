@@ -1685,11 +1685,11 @@ async def test_finalize_node_continues_when_write_success_summary_raises(
 
 
 @pytest.mark.asyncio
-async def test_finalize_node_escalated_with_empty_retry_history_uses_budget_exceeded(
+async def test_finalize_node_escalated_with_empty_retry_history_uses_agent_sdk_error(
     make_story_state: StoryState,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """finalize_node with ESCALATED + empty retry_history → halt_reason='budget_exceeded', history=[]."""
+    """finalize_node with ESCALATED + empty retry_history → halt_reason='agent_sdk_error', history=[]."""
     mock_halt = AsyncMock()
     monkeypatch.setattr("arcwright_ai.engine.nodes.write_halt_report", mock_halt)
 
@@ -1698,7 +1698,7 @@ async def test_finalize_node_escalated_with_empty_retry_history_uses_budget_exce
 
     assert mock_halt.call_count == 1
     call_kwargs = mock_halt.call_args[1]
-    assert call_kwargs["halt_reason"] == "budget_exceeded"
+    assert call_kwargs["halt_reason"] == "agent_sdk_error"
     assert call_kwargs["validation_history"] == []
 
 
