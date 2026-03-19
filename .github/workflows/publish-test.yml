@@ -1,4 +1,4 @@
-name: Publish to PyPI
+name: Publish to TestPyPI
 
 on:
   push:
@@ -10,8 +10,8 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    # Only publish stable releases (reject tags with pre-release suffixes: a, b, rc)
-    if: ${{ !contains(github.ref_name, 'a') && !contains(github.ref_name, 'b') && !contains(github.ref_name, 'rc') }}
+    # Only publish pre-release versions (tags containing a, b, or rc suffix)
+    if: ${{ contains(github.ref_name, 'a') || contains(github.ref_name, 'b') || contains(github.ref_name, 'rc') }}
     defaults:
       run:
         working-directory: arcwright-ai
@@ -32,7 +32,7 @@ jobs:
   publish:
     needs: build
     runs-on: ubuntu-latest
-    environment: pypi
+    environment: testpypi
     permissions:
       id-token: write
     steps:
@@ -41,3 +41,5 @@ jobs:
           name: dist
           path: dist/
       - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
