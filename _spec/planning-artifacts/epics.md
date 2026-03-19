@@ -1316,7 +1316,7 @@ So that fetch → worktree → commit → push → PR → merge works as an unbr
 
 ## Epic 10: Ad-Hoc Improvements & Housekeeping
 
-**Added:** 2026-03-15 | **Stories:** 7 (ad-hoc — stories added as needed) | **Points:** 26+
+**Added:** 2026-03-15 | **Stories:** 8 (ad-hoc — stories added as needed) | **Points:** 28+
 
 **Purpose:** Collects small, cross-cutting improvements that don't warrant their own epic. These are housekeeping tasks, build infrastructure changes, and quality-of-life improvements identified during or after the main implementation sprints.
 
@@ -1557,6 +1557,31 @@ So that I can install the correct version for my use case — stable for product
 - `.github/workflows/publish.yml` — Narrow tag filter to exclude pre-release suffixes
 - `.github/workflows/publish-test.yml` — New workflow: build + publish to TestPyPI on pre-release tags
 - `README.md` or `CONTRIBUTING.md` — Document tagging convention and install commands for stable vs. test channels
+
+---
+
+### Story 10.9: CLI Version Command
+
+**Priority**: LOW | **Points**: 2
+**Requirements**: Developer experience, NFR (usability)
+**Dependencies**: Story 10.1 (dynamic versioning with hatch-vcs)
+
+**Description:**
+As a user of Arcwright AI,
+I want to check which version I'm running from the command line,
+So that I can quickly verify my installed version for debugging, support, and compatibility purposes.
+
+**Acceptance Criteria:**
+
+**Given** the CLI is installed **When** the user runs `arcwright-ai version` **Then** the installed package version is printed to stdout (e.g., `arcwright-ai 0.2.0`) and the process exits with code 0
+**And** `arcwright-ai --version` prints the same version string and exits with code 0 without invoking any subcommand
+**And** in editable installs without a git tag, the fallback version `0.0.0.dev0` is displayed (consistent with `__version__` from Story 10.1)
+**And** `version` appears in `arcwright-ai --help` command list and `--version` appears as a top-level option
+**And** `ruff check`, `mypy --strict`, and `pytest` all pass with zero regressions
+
+**Files touched:**
+- `src/arcwright_ai/cli/app.py` — Add `--version` callback to app and `version` subcommand
+- `tests/test_cli/` — Tests for version command and `--version` flag
 
 ---
 
