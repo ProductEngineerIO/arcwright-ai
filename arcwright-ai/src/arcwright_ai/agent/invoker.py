@@ -204,8 +204,6 @@ def _enrich_error_with_stderr(exc: AgentError, stderr_path: str) -> None:
     object with richer diagnostic info.  If the file is missing, empty, or
     contains only the SDK placeholder, nothing is changed.
     """
-    import os
-
     try:
         with open(stderr_path, encoding="utf-8", errors="replace") as fh:
             stderr_content = fh.read(_STDERR_READ_LIMIT).strip()
@@ -229,12 +227,11 @@ def _enrich_error_with_stderr(exc: AgentError, stderr_path: str) -> None:
 
 def _cleanup_stderr_file(stderr_path: str) -> None:
     """Best-effort removal of the stderr temp file."""
+    import contextlib
     import os
 
-    try:
+    with contextlib.suppress(OSError):
         os.unlink(stderr_path)
-    except OSError:
-        pass
 
 
 def _wrap_sdk_error(error: Exception) -> AgentError:
@@ -607,7 +604,7 @@ async def invoke_agent(
     # Capture stderr to a temp file so we have diagnostic output when the
     # CLI process crashes.  The SDK only routes stderr when both
     # ``debug-to-stderr`` extra arg and ``debug_stderr`` are set.
-    stderr_file = tempfile.NamedTemporaryFile(
+    stderr_file = tempfile.NamedTemporaryFile(  # noqa: SIM115
         mode="w",
         prefix="arcwright-sdk-stderr-",
         suffix=".log",
