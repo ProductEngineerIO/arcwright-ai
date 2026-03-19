@@ -159,7 +159,7 @@ def test_load_config_global_overrides_defaults(
 
     cfg = load_config()
     assert cfg.models.get(ModelRole.GENERATE).version == "v-global"
-    assert cfg.api.claude_api_key == "sk-global"
+    assert cfg.api.claude_api_key.get_secret_value() == "sk-global"
 
 
 # ---------------------------------------------------------------------------
@@ -319,7 +319,7 @@ def test_load_config_global_only_no_project(global_config_dir: Path, clean_env: 
         "api:\n  claude_api_key: sk-global-test\n",
     )
     cfg = load_config()
-    assert cfg.api.claude_api_key == "sk-global-test"
+    assert cfg.api.claude_api_key.get_secret_value() == "sk-global-test"
 
 
 def test_load_config_env_override_bool_parsing_true(

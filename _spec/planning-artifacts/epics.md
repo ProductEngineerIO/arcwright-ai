@@ -1585,6 +1585,34 @@ So that I can quickly verify my installed version for debugging, support, and co
 
 ---
 
+### Story 10.10: Redact API Key from LangSmith Traces via SecretStr
+
+**Priority**: HIGH | **Points**: 2
+**Requirements**: NFR6 (API key security), NFR20 (security)
+**Dependencies**: Story 1.3 (configuration system)
+
+**Description:**
+As a maintainer using LangSmith for trace observability,
+I want the Anthropic API key to be redacted from all LangGraph checkpoint serialisations,
+So that the raw key value never appears in the LangSmith UI or any trace export.
+
+**Bug:** `ApiConfig.claude_api_key` is typed as a plain `str`. Since `RunConfig` (containing `ApiConfig`) is embedded in `StoryState` — the LangGraph state model — every checkpoint serialisation exposes the key in cleartext in LangSmith traces.
+
+**Acceptance Criteria:**
+
+**Given** `ApiConfig` defines `claude_api_key` **When** the field type is inspected **Then** it is `pydantic.SecretStr`, not `str`
+**Given** a `RunConfig` instance is serialised to dict or JSON (as happens during LangGraph checkpoint writes) **When** the output is inspected **Then** the `claude_api_key` value appears as `"**********"`, not the raw key
+**Given** engine nodes (`agent_dispatch_node`, `validate_node`) need the raw key for SDK invocation **When** they access the key **Then** they call `.get_secret_value()` to obtain the plaintext value
+**And** all existing config loading paths (env var, global YAML, .env file) continue to work — Pydantic coerces `str → SecretStr` automatically
+**And** `ruff check`, `mypy --strict`, and `pytest` all pass with zero regressions
+
+**Files touched:**
+- `src/arcwright_ai/core/config.py` — `ApiConfig.claude_api_key` type change to `SecretStr`, import addition
+- `src/arcwright_ai/engine/nodes.py` — `.get_secret_value()` calls in `agent_dispatch_node` and `validate_node`
+- `tests/test_core/test_config.py` — Update assertions to use `.get_secret_value()`
+
+---
+
 ## Epic 11: BMAD 6.1 Framework Upgrade
 
 > **Value prop**: Developer upgrades the project's BMAD development infrastructure from v6.0.3 to v6.1.0, gaining the new skills-based architecture, Edge Case Hunter code review capability, critical bug fixes, and a 91% smaller framework footprint — without any disruption to the product's source code or test suite.

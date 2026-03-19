@@ -129,8 +129,9 @@ development_status:
   10-5-retry-attempts-should-rebuild-fresh-context: ready-for-dev
   10-6-auto-merge-success-marked-error-on-branch-cleanup-failure: done
   10-7-validate-node-overwrites-provenance-decision-provenance-missing-from-prs: done
-  10-8-pre-release-versioning-for-develop-branch: in-progress
+  10-8-pre-release-versioning-for-develop-branch: done
   10-9-cli-version-command: done
+  10-10-redact-api-key-from-langsmith-traces-via-secretstr: done
 
   # Epic 11: BMAD 6.1 Framework Upgrade (3 stories, 13 pts)
   epic-11: done
