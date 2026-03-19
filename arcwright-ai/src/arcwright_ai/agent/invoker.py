@@ -639,14 +639,26 @@ async def invoke_agent(
             elif isinstance(message, ResultMessage):
                 result_message = message
     except AgentError as agent_exc:
+        try:
+            stderr_file.flush()
+        except Exception:
+            logger.debug("Failed to flush stderr temp file before enriching AgentError", exc_info=True)
         _enrich_error_with_stderr(agent_exc, stderr_path)
         raise
     except Exception as exc:
         wrapped = _wrap_sdk_error(exc)
+        try:
+            stderr_file.flush()
+        except Exception:
+            logger.debug("Failed to flush stderr temp file before enriching SDK error", exc_info=True)
         _enrich_error_with_stderr(wrapped, stderr_path)
         raise wrapped from exc
     finally:
         await stream.aclose()
+        try:
+            stderr_file.close()
+        except Exception:
+            logger.debug("Failed to close stderr temp file before cleanup", exc_info=True)
         _cleanup_stderr_file(stderr_path)
 
     if result_message is None:
