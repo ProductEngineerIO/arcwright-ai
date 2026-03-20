@@ -1790,7 +1790,7 @@ def _derive_suggested_fix(state: StoryState) -> str:
         return (
             "Agent invocation failed before producing any output (SDK error). "
             "Check the `agent.sdk_stderr` log event and halt report for details. "
-            "Common causes: invalid API key, model access denied, network error, "
+            "Common causes: invalid API key, insufficient API credits, model access denied, network error, "
             "or Claude Code CLI misconfiguration."
         )
     last = state.retry_history[-1]
