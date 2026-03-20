@@ -25,6 +25,7 @@ from arcwright_ai.core.constants import (
     STORY_COPY_FILENAME,
     VALIDATION_FILENAME,
 )
+from arcwright_ai.core.errors import CLAUDE_ERROR_REGISTRY, ClaudeErrorCategory
 from arcwright_ai.core.exceptions import ContextError, ScmError, ValidationError
 from arcwright_ai.core.io import write_text_async
 from arcwright_ai.core.lifecycle import TaskState
@@ -645,9 +646,16 @@ async def agent_dispatch_node(state: StoryState) -> StoryState:
                 }
             },
         )
-        return state.model_copy(update={"status": TaskState.ESCALATED, "agent_output": "", "budget": new_budget_error})
-
-    # Update budget with per-story tracking and pricing-based cost
+        _exc_details_fc = getattr(exc, "details", {})
+        _failure_category = _exc_details_fc.get("failure_category") if isinstance(_exc_details_fc, dict) else None
+        return state.model_copy(
+            update={
+                "status": TaskState.ESCALATED,
+                "agent_output": "",
+                "budget": new_budget_error,
+                "failure_category": _failure_category,
+            }
+        )
     invocation_cost = calculate_invocation_cost(
         result.tokens_input,
         result.tokens_output,
@@ -1852,6 +1860,24 @@ def _derive_suggested_fix(state: StoryState) -> str:
             "Consider increasing `limits.cost_per_run` or `limits.tokens_per_story` in pyproject.toml."
         )
     if not state.retry_history:
+        failure_cat = getattr(state, "failure_category", None)
+        if failure_cat:
+            try:
+                category = ClaudeErrorCategory(failure_cat)
+                if category in (
+                    ClaudeErrorCategory.BILLING_ERROR,
+                    ClaudeErrorCategory.AUTH_ERROR,
+                    ClaudeErrorCategory.MODEL_ACCESS_ERROR,
+                ):
+                    cls_entry = CLAUDE_ERROR_REGISTRY[category]
+                    steps = "\n".join(f"  {i + 1}. {step}" for i, step in enumerate(cls_entry.remediation_steps))
+                    return (
+                        f"\u26a0\ufe0f  Claude Platform/Account Issue \u2014 {cls_entry.title}\n"
+                        "This is a Claude platform/account issue, not a story code defect.\n"
+                        f"{cls_entry.summary}\n\nTo resolve:\n{steps}"
+                    )
+            except ValueError:
+                pass
         return (
             "Agent invocation failed before producing any output (SDK error). "
             "Check the `agent.sdk_stderr` log event and halt report for details. "

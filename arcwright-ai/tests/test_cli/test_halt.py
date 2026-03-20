@@ -422,9 +422,9 @@ def test_nfr3_timeout_error_wrapped_as_agent_error(
 
     result = runner.invoke(app, ["dispatch", "--epic", "5", "--yes"])
     # TimeoutError is wrapped as AgentError → exit code 2
-    assert result.exit_code == EXIT_AGENT, (
-        f"asyncio.TimeoutError must produce exit code 2 (EXIT_AGENT), got {result.exit_code}"
-    )
+    assert (
+        result.exit_code == EXIT_AGENT
+    ), f"asyncio.TimeoutError must produce exit code 2 (EXIT_AGENT), got {result.exit_code}"
 
 
 # ---------------------------------------------------------------------------
@@ -480,9 +480,9 @@ def test_nfr3_connection_error_wrapped_as_agent_error(
     monkeypatch.setattr("arcwright_ai.cli.dispatch.build_story_graph", _make_connection_error_graph)
 
     result = runner.invoke(app, ["dispatch", "--epic", "5", "--yes"])
-    assert result.exit_code == EXIT_AGENT, (
-        f"ConnectionError must produce exit code 2 (EXIT_AGENT), got {result.exit_code}"
-    )
+    assert (
+        result.exit_code == EXIT_AGENT
+    ), f"ConnectionError must produce exit code 2 (EXIT_AGENT), got {result.exit_code}"
 
 
 def test_nfr3_http_status_error_wrapped_as_agent_error(
@@ -537,9 +537,9 @@ def test_nfr3_http_status_error_wrapped_as_agent_error(
     monkeypatch.setattr("arcwright_ai.cli.dispatch.build_story_graph", _make_http_status_graph)
 
     result = runner.invoke(app, ["dispatch", "--epic", "5", "--yes"])
-    assert result.exit_code == EXIT_AGENT, (
-        f"HTTPStatusError must produce exit code 2 (EXIT_AGENT), got {result.exit_code}"
-    )
+    assert (
+        result.exit_code == EXIT_AGENT
+    ), f"HTTPStatusError must produce exit code 2 (EXIT_AGENT), got {result.exit_code}"
 
 
 # ---------------------------------------------------------------------------
@@ -659,9 +659,9 @@ async def test_best_effort_write_halt_report_failure_does_not_suppress_exit(
         last_completed=None,
     )
 
-    assert exit_code == EXIT_AGENT, (
-        "write_halt_report failure must not prevent halt controller returning correct exit code"
-    )
+    assert (
+        exit_code == EXIT_AGENT
+    ), "write_halt_report failure must not prevent halt controller returning correct exit code"
 
 
 async def test_best_effort_write_halt_report_failure_graph_halt(
@@ -718,9 +718,9 @@ async def test_best_effort_update_run_status_failure_does_not_suppress_exit(
         last_completed=None,
     )
 
-    assert exit_code == EXIT_SCM, (
-        "update_run_status failure must not prevent halt controller returning correct exit code"
-    )
+    assert (
+        exit_code == EXIT_SCM
+    ), "update_run_status failure must not prevent halt controller returning correct exit code"
 
 
 async def test_best_effort_update_run_status_failure_graph_halt(
@@ -1193,3 +1193,252 @@ async def test_handle_graph_halt_ignores_v6_rule_id_only_when_collecting_ac_ids(
     )
 
     assert captured_kwargs.get("failing_ac_ids") == []
+
+
+# ---------------------------------------------------------------------------
+# Story 13.2 — Platform-account failure guidance (AC: #1, #2, #3, #4)
+# ---------------------------------------------------------------------------
+
+
+def _make_agent_error_with_platform_classification(category_str: str) -> AgentError:
+    """Return an AgentError whose details carry a classified platform-account failure."""
+    from arcwright_ai.core.errors import CLAUDE_ERROR_REGISTRY, ClaudeErrorCategory
+
+    category = ClaudeErrorCategory(category_str)
+    cls = CLAUDE_ERROR_REGISTRY[category]
+    return AgentError(
+        cls.summary,
+        details={"classification": cls, "failure_category": category_str},
+    )
+
+
+class TestPlatformAccountSuggestedFix:
+    """_suggested_fix_for_exception returns platform-specific guidance for billing/auth/model_access.
+
+    Each test verifies AC#1 (billing) and AC#2 (auth, model_access).
+    """
+
+    def test_billing_error_mentions_credits_and_platform(self) -> None:
+        """billing_error suggested fix references Claude platform and credits/billing (AC#1)."""
+        exc = _make_agent_error_with_platform_classification("billing_error")
+        fix = HaltController._suggested_fix_for_exception(exc)
+        assert (
+            "Claude platform" in fix or "Claude Platform" in fix
+        ), "Billing fix must state this is a Claude platform/account issue"
+        assert "credit" in fix.lower() or "billing" in fix.lower(), "Billing fix must mention credits or billing"
+
+    def test_auth_error_mentions_api_key_and_platform(self) -> None:
+        """auth_error suggested fix references Claude platform and API key (AC#2)."""
+        exc = _make_agent_error_with_platform_classification("auth_error")
+        fix = HaltController._suggested_fix_for_exception(exc)
+        assert (
+            "Claude platform" in fix or "Claude Platform" in fix
+        ), "Auth fix must state this is a Claude platform/account issue"
+        assert "api key" in fix.lower() or "ANTHROPIC_API_KEY" in fix, "Auth fix must mention API key verification"
+
+    def test_model_access_error_mentions_model_and_platform(self) -> None:
+        """model_access_error suggested fix references Claude platform and model entitlement (AC#2)."""
+        exc = _make_agent_error_with_platform_classification("model_access_error")
+        fix = HaltController._suggested_fix_for_exception(exc)
+        assert (
+            "Claude platform" in fix or "Claude Platform" in fix
+        ), "Model access fix must state this is a Claude platform/account issue"
+        assert "model" in fix.lower(), "Model access fix must mention model"
+
+    def test_non_platform_agent_error_uses_generic_fix(self) -> None:
+        """AgentError without platform classification gets the existing generic message."""
+        exc = AgentError("SDK crash", details={"error_category": "sdk"})
+        fix = HaltController._suggested_fix_for_exception(exc)
+        assert "Agent invocation failed" in fix
+        assert "Claude Platform" not in fix
+
+    def test_billing_fix_does_not_expose_secrets(self) -> None:
+        """Platform guidance must never include raw API key values (AC#4 / scope boundary)."""
+        from arcwright_ai.core.errors import CLAUDE_ERROR_REGISTRY, ClaudeErrorCategory
+
+        cls = CLAUDE_ERROR_REGISTRY[ClaudeErrorCategory.AUTH_ERROR]
+        exc = AgentError(
+            cls.summary,
+            details={
+                "classification": cls,
+                "failure_category": "auth_error",
+                "captured_stderr": "Error: Invalid API key sk-ant-secret123abc",
+            },
+        )
+        fix = HaltController._suggested_fix_for_exception(exc)
+        assert "sk-ant-secret123abc" not in fix, "Raw API key must not appear in suggested fix"
+
+
+class TestPlatformAccountTerminalOutput:
+    """handle_halt() emits platform-account guidance in terminal output (AC#1, #2, #3)."""
+
+    async def test_billing_terminal_output_says_claude_platform(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """billing_error halt output explicitly says Claude platform issue (AC#1)."""
+        exc = _make_agent_error_with_platform_classification("billing_error")
+        controller = _make_halt_controller(tmp_path)
+        monkeypatch.setattr("arcwright_ai.cli.halt.write_halt_report", AsyncMock(return_value=tmp_path / "s.md"))
+        monkeypatch.setattr("arcwright_ai.cli.halt.update_run_status", AsyncMock())
+        monkeypatch.setattr("arcwright_ai.cli.halt.append_entry", AsyncMock())
+
+        await controller.handle_halt(
+            story_id=StoryId("13-2-billing-test"),
+            exception=exc,
+            accumulated_budget=_make_budget(),
+            completed_stories=[],
+            last_completed=None,
+        )
+
+        output = capsys.readouterr().err
+        assert (
+            "Claude platform" in output or "Claude Platform" in output
+        ), "Terminal output must explicitly say this is a Claude platform/account issue"
+        assert (
+            "credit" in output.lower() or "billing" in output.lower()
+        ), "Terminal output must mention credits or billing for billing failures"
+
+    async def test_auth_terminal_output_says_claude_platform(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """auth_error halt output instructs operator to verify API key (AC#2)."""
+        exc = _make_agent_error_with_platform_classification("auth_error")
+        controller = _make_halt_controller(tmp_path)
+        monkeypatch.setattr("arcwright_ai.cli.halt.write_halt_report", AsyncMock(return_value=tmp_path / "s.md"))
+        monkeypatch.setattr("arcwright_ai.cli.halt.update_run_status", AsyncMock())
+        monkeypatch.setattr("arcwright_ai.cli.halt.append_entry", AsyncMock())
+
+        await controller.handle_halt(
+            story_id=StoryId("13-2-auth-test"),
+            exception=exc,
+            accumulated_budget=_make_budget(),
+            completed_stories=[],
+            last_completed=None,
+        )
+
+        output = capsys.readouterr().err
+        assert "Claude platform" in output or "Claude Platform" in output
+        assert "api key" in output.lower() or "ANTHROPIC_API_KEY" in output
+
+    async def test_model_access_terminal_output_says_claude_platform(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """model_access_error halt output instructs operator to verify model entitlement (AC#2)."""
+        exc = _make_agent_error_with_platform_classification("model_access_error")
+        controller = _make_halt_controller(tmp_path)
+        monkeypatch.setattr("arcwright_ai.cli.halt.write_halt_report", AsyncMock(return_value=tmp_path / "s.md"))
+        monkeypatch.setattr("arcwright_ai.cli.halt.update_run_status", AsyncMock())
+        monkeypatch.setattr("arcwright_ai.cli.halt.append_entry", AsyncMock())
+
+        await controller.handle_halt(
+            story_id=StoryId("13-2-model-test"),
+            exception=exc,
+            accumulated_budget=_make_budget(),
+            completed_stories=[],
+            last_completed=None,
+        )
+
+        output = capsys.readouterr().err
+        assert "Claude platform" in output or "Claude Platform" in output
+        assert "model" in output.lower()
+
+    async def test_non_platform_agent_error_no_platform_guidance_in_terminal(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Non-platform AgentError must not emit platform guidance in terminal output."""
+        exc = AgentError("SDK crash", details={"error_category": "sdk"})
+        controller = _make_halt_controller(tmp_path)
+        monkeypatch.setattr("arcwright_ai.cli.halt.write_halt_report", AsyncMock(return_value=tmp_path / "s.md"))
+        monkeypatch.setattr("arcwright_ai.cli.halt.update_run_status", AsyncMock())
+        monkeypatch.setattr("arcwright_ai.cli.halt.append_entry", AsyncMock())
+
+        await controller.handle_halt(
+            story_id=StoryId("13-2-sdk-test"),
+            exception=exc,
+            accumulated_budget=_make_budget(),
+            completed_stories=[],
+            last_completed=None,
+        )
+
+        output = capsys.readouterr().err
+        assert "Claude Platform" not in output
+
+
+class TestPlatformGuidanceConsistency:
+    """Platform guidance is consistent across terminal output, halt report, and summary (AC#3)."""
+
+    async def test_billing_platform_guidance_in_halt_report_suggested_fix(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """billing_error suggested_fix passed to write_halt_report contains platform guidance (AC#3)."""
+        exc = _make_agent_error_with_platform_classification("billing_error")
+        controller = _make_halt_controller(tmp_path)
+
+        captured: dict[str, object] = {}
+
+        async def _mock_write(*args: object, **kwargs: object) -> Path:
+            captured.update(kwargs)
+            return tmp_path / "s.md"
+
+        monkeypatch.setattr("arcwright_ai.cli.halt.write_halt_report", _mock_write)
+        monkeypatch.setattr("arcwright_ai.cli.halt.update_run_status", AsyncMock())
+        monkeypatch.setattr("arcwright_ai.cli.halt.append_entry", AsyncMock())
+
+        await controller.handle_halt(
+            story_id=StoryId("13-2-billing-test"),
+            exception=exc,
+            accumulated_budget=_make_budget(),
+            completed_stories=[],
+            last_completed=None,
+        )
+
+        fix = str(captured.get("suggested_fix", ""))
+        assert (
+            "Claude platform" in fix or "Claude Platform" in fix
+        ), "Halt report suggested_fix must contain platform guidance"
+        assert "credit" in fix.lower() or "billing" in fix.lower()
+
+    async def test_auth_platform_guidance_in_halt_report_suggested_fix(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """auth_error suggested_fix passed to write_halt_report contains platform guidance (AC#3)."""
+        exc = _make_agent_error_with_platform_classification("auth_error")
+        controller = _make_halt_controller(tmp_path)
+
+        captured: dict[str, object] = {}
+
+        async def _mock_write(*args: object, **kwargs: object) -> Path:
+            captured.update(kwargs)
+            return tmp_path / "s.md"
+
+        monkeypatch.setattr("arcwright_ai.cli.halt.write_halt_report", _mock_write)
+        monkeypatch.setattr("arcwright_ai.cli.halt.update_run_status", AsyncMock())
+        monkeypatch.setattr("arcwright_ai.cli.halt.append_entry", AsyncMock())
+
+        await controller.handle_halt(
+            story_id=StoryId("13-2-auth-test"),
+            exception=exc,
+            accumulated_budget=_make_budget(),
+            completed_stories=[],
+            last_completed=None,
+        )
+
+        fix = str(captured.get("suggested_fix", ""))
+        assert "Claude platform" in fix or "Claude Platform" in fix
+        assert "api key" in fix.lower() or "ANTHROPIC_API_KEY" in fix

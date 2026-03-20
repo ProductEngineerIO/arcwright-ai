@@ -1,6 +1,6 @@
 # Story 13.2: Terminal Guidance for Claude Platform Account and Access Failures
 
-Status: ready-for-dev
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -42,20 +42,20 @@ So that I immediately know to check Claude configuration, API key validity, paym
 
 ## Tasks / Subtasks
 
-- [ ] Task 1: Render platform-account failures in the CLI (AC: #1, #2)
-  - [ ] 1.1: Add terminal-facing messages for billing, auth, and model-access failures.
-  - [ ] 1.2: Ensure the language explicitly says the issue is with Claude platform/account access rather than story code.
+- [x] Task 1: Render platform-account failures in the CLI (AC: #1, #2)
+  - [x] 1.1: Add terminal-facing messages for billing, auth, and model-access failures.
+  - [x] 1.2: Ensure the language explicitly says the issue is with Claude platform/account access rather than story code.
 
-- [ ] Task 2: Propagate platform guidance into run artifacts (AC: #3)
-  - [ ] 2.1: Preserve the same classified guidance in halt reports and summaries.
-  - [ ] 2.2: Keep raw diagnostics available in logs for debugging.
+- [x] Task 2: Propagate platform guidance into run artifacts (AC: #3)
+  - [x] 2.1: Preserve the same classified guidance in halt reports and summaries.
+  - [x] 2.2: Keep raw diagnostics available in logs for debugging.
 
-- [ ] Task 3: Add regression coverage and run quality gates (AC: #4)
-  - [ ] 3.1: Add tests for billing, auth, and model-access terminal messages.
-  - [ ] 3.2: Add artifact propagation tests if needed.
-  - [ ] 3.3: Run `ruff check src/ tests/`.
-  - [ ] 3.4: Run `mypy --strict src/`.
-  - [ ] 3.5: Run `pytest`.
+- [x] Task 3: Add regression coverage and run quality gates (AC: #4)
+  - [x] 3.1: Add tests for billing, auth, and model-access terminal messages.
+  - [x] 3.2: Add artifact propagation tests if needed.
+  - [x] 3.3: Run `ruff check src/ tests/`.
+  - [x] 3.4: Run `mypy --strict src/`.
+  - [x] 3.5: Run `pytest`.
 
 ## Dev Notes
 
@@ -77,14 +77,20 @@ So that I immediately know to check Claude configuration, API key validity, paym
 
 ### Agent Model Used
 
-GPT-5.4
+Claude Sonnet 4.6
 
 ### Completion Notes
 
 - Story created to capture explicit terminal UX for Claude platform/account failures.
+- Task 1 (exception path): `HaltController` in `halt.py` extended with `_PLATFORM_ACCOUNT_CATEGORIES`, `_extract_platform_classification()`, and `_format_platform_guidance()`. Both `_suggested_fix_for_exception()` and `_emit_halt_summary()` (via `handle_halt`) use platform guidance when classification is available.
+- Task 2 (graph-ESCALATED path): `StoryState` extended with `failure_category: str | None`. `agent_dispatch_node` now extracts and stores `failure_category` from the caught exception's details. `_derive_suggested_fix()` in `nodes.py` and `_suggested_fix_for_graph_state()` in `halt.py` check this field and return structured platform guidance. `handle_graph_halt` derives `operator_guidance` from `story_state.failure_category` and passes it to `_emit_halt_summary`.
+- Task 3: 11 new tests in `test_halt.py` covering billing/auth/model_access terminal output and halt report consistency. All 1068 tests pass; `ruff check` and `mypy --strict` clean.
 
 ### File List
 
+- `src/arcwright_ai/cli/halt.py`
+- `src/arcwright_ai/engine/nodes.py`
+- `src/arcwright_ai/engine/state.py`
+- `tests/test_cli/test_halt.py`
 - `_spec/implementation-artifacts/13-2-terminal-guidance-for-claude-platform-account-and-access-failures.md`
 - `_spec/implementation-artifacts/sprint-status.yaml`
-- `_spec/planning-artifacts/epics.md`

@@ -27,6 +27,7 @@ from arcwright_ai.core.constants import (
     EXIT_VALIDATION,
     VALIDATION_FILENAME,
 )
+from arcwright_ai.core.errors import CLAUDE_ERROR_REGISTRY, ClaudeErrorCategory, ClaudeErrorClassification
 from arcwright_ai.core.exceptions import (
     AgentBudgetError,
     AgentError,
@@ -56,6 +57,15 @@ logger = logging.getLogger(__name__)
 
 # Length of the "epic-" prefix used when parsing epic_spec strings.
 _EPIC_PREFIX_LEN: int = 5
+
+# Platform-account error categories that warrant explicit Claude platform guidance.
+_PLATFORM_ACCOUNT_CATEGORIES: frozenset[ClaudeErrorCategory] = frozenset(
+    {
+        ClaudeErrorCategory.BILLING_ERROR,
+        ClaudeErrorCategory.AUTH_ERROR,
+        ClaudeErrorCategory.MODEL_ACCESS_ERROR,
+    }
+)
 
 
 class HaltController:
@@ -188,7 +198,11 @@ class HaltController:
             )
 
         # AC#5: Emit structured halt summary and JSONL event.
-        self._emit_halt_summary(story_slug, halt_reason, accumulated_budget, completed_stories)
+        platform_cls = self._extract_platform_classification(exception)
+        operator_guidance = self._format_platform_guidance(platform_cls) if platform_cls is not None else None
+        self._emit_halt_summary(
+            story_slug, halt_reason, accumulated_budget, completed_stories, operator_guidance=operator_guidance
+        )
         self._emit_halt_jsonl_event(story_slug, halt_reason, accumulated_budget, completed_stories)
 
         return exit_code
@@ -293,7 +307,19 @@ class HaltController:
             )
 
         # AC#5: Emit structured halt summary and JSONL event.
-        self._emit_halt_summary(story_slug, halt_reason, accumulated_budget, completed_stories)
+        _graph_failure_cat = getattr(story_state, "failure_category", None)
+        _graph_operator_guidance: str | None = None
+        if _graph_failure_cat:
+            try:
+                _graph_category = ClaudeErrorCategory(_graph_failure_cat)
+                if _graph_category in _PLATFORM_ACCOUNT_CATEGORIES:
+                    _graph_cls = CLAUDE_ERROR_REGISTRY[_graph_category]
+                    _graph_operator_guidance = self._format_platform_guidance(_graph_cls)
+            except ValueError:
+                pass
+        self._emit_halt_summary(
+            story_slug, halt_reason, accumulated_budget, completed_stories, operator_guidance=_graph_operator_guidance
+        )
         self._emit_halt_jsonl_event(story_slug, halt_reason, accumulated_budget, completed_stories)
 
         return exit_code
@@ -546,6 +572,16 @@ class HaltController:
                 "`limits.timeout_per_story` or breaking the story into smaller subtasks."
             )
         if isinstance(exception, AgentError):
+            platform_cls = HaltController._extract_platform_classification(exception)
+            if platform_cls is not None:
+                steps = "\n".join(f"  {i + 1}. {step}" for i, step in enumerate(platform_cls.remediation_steps))
+                return (
+                    f"\u26a0\ufe0f  Claude Platform/Account Issue \u2014 {platform_cls.title}\n"
+                    "This is a Claude platform/account issue, not a story code defect.\n"
+                    f"{platform_cls.summary}\n"
+                    "\nTo resolve:\n"
+                    f"{steps}"
+                )
             return (
                 "Agent invocation failed. Check API key validity, available API credits, network connectivity, "
                 "and the agent invocation logs for details."
@@ -583,6 +619,20 @@ class HaltController:
                 "or `limits.tokens_per_story` in pyproject.toml."
             )
         if HaltController._retry_history_has_sdk_failure(story_state) or not story_state.retry_history:
+            failure_cat = getattr(story_state, "failure_category", None)
+            if failure_cat:
+                try:
+                    category = ClaudeErrorCategory(failure_cat)
+                    if category in _PLATFORM_ACCOUNT_CATEGORIES:
+                        cls_entry = CLAUDE_ERROR_REGISTRY[category]
+                        steps = "\n".join(f"  {i + 1}. {step}" for i, step in enumerate(cls_entry.remediation_steps))
+                        return (
+                            f"\u26a0\ufe0f  Claude Platform/Account Issue \u2014 {cls_entry.title}\n"
+                            "This is a Claude platform/account issue, not a story code defect.\n"
+                            f"{cls_entry.summary}\n\nTo resolve:\n{steps}"
+                        )
+                except ValueError:
+                    pass
             return (
                 "Agent invocation failed before validation completed. Check API key validity, available API credits, "
                 "model access (especially review model), network connectivity, and SDK stderr logs."
@@ -640,29 +690,86 @@ class HaltController:
                 extra={"data": {"story": story_slug, "error": str(exc)}},
             )
 
+    @staticmethod
+    def _extract_platform_classification(exception: Exception) -> ClaudeErrorClassification | None:
+        """Extract a platform-account ClaudeErrorClassification from an AgentError, if present.
+
+        Returns ``None`` for any exception that is not an ``AgentError`` with a
+        ``details["classification"]`` value mapping to a platform-account category
+        (billing, auth, or model_access).
+
+        Args:
+            exception: Exception to inspect.
+
+        Returns:
+            The ``ClaudeErrorClassification`` if it is a platform-account failure;
+            ``None`` otherwise.
+        """
+        if not isinstance(exception, AgentError):
+            return None
+        details = getattr(exception, "details", None)
+        if not isinstance(details, dict):
+            return None
+        classification = details.get("classification")
+        if not isinstance(classification, ClaudeErrorClassification):
+            return None
+        if classification.error_code not in _PLATFORM_ACCOUNT_CATEGORIES:
+            return None
+        return classification
+
+    @staticmethod
+    def _format_platform_guidance(classification: ClaudeErrorClassification) -> str:
+        """Format operator guidance for a platform-account Claude error.
+
+        Produces a multi-line string that explicitly labels the failure as
+        a Claude platform/account issue (not a story code defect) and lists
+        the ordered remediation steps from the taxonomy.
+
+        Args:
+            classification: Structured classification from the error taxonomy.
+
+        Returns:
+            Human-readable operator guidance string.
+        """
+        steps = "\n".join(f"  {i + 1}. {step}" for i, step in enumerate(classification.remediation_steps))
+        return (
+            f"\u26a0\ufe0f  This is a Claude platform/account issue, not a story code defect.\n"
+            f"  {classification.title}: {classification.summary}\n"
+            f"  To resolve:\n{steps}"
+        )
+
     def _emit_halt_summary(
         self,
         story_slug: str,
         halt_reason: str,
         accumulated_budget: BudgetState,
         completed_stories: list[str],
+        *,
+        operator_guidance: str | None = None,
     ) -> None:
         """Output a structured halt summary to stderr.
 
         Displays the full halt context per AC#5: completed stories list,
         failing story, halt reason, budget consumption, and the resume command.
+        When *operator_guidance* is provided (platform-account failures) it is
+        rendered immediately after the halt reason with explicit Claude platform
+        attribution.
 
         Args:
             story_slug: Slug of the story that caused the halt.
             halt_reason: Human-readable halt reason string.
             accumulated_budget: Budget state at halt time.
             completed_stories: Slugs of stories that completed successfully.
+            operator_guidance: Optional extra guidance for platform-account failures.
         """
         resume_cmd = self._build_resume_command()
         typer.echo(f"\n✗ Epic {self.epic_spec} halted at story {story_slug}.", err=True)
         typer.echo(f"  Stories completed ({len(completed_stories)}): {completed_stories}", err=True)
         typer.echo(f"  Halted story: {story_slug}", err=True)
         typer.echo(f"  Halt reason: {halt_reason}", err=True)
+        if operator_guidance:
+            for line in operator_guidance.splitlines():
+                typer.echo(f"  {line}", err=True)
         typer.echo(
             f"  💰 Budget: ${accumulated_budget.estimated_cost} cost | {accumulated_budget.total_tokens} tokens",
             err=True,
