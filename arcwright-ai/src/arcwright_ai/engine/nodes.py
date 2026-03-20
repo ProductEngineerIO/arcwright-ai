@@ -40,7 +40,7 @@ from arcwright_ai.core.types import BudgetState, ProvenanceEntry, StoryCost, cal
 from arcwright_ai.engine.state import StoryState  # noqa: TC001
 from arcwright_ai.output.decisions import extract_agent_decisions
 from arcwright_ai.output.provenance import append_entry, merge_validation_checkpoint, render_validation_row
-from arcwright_ai.output.run_manager import update_run_status, update_story_status
+from arcwright_ai.output.run_manager import RunStatusValue, update_run_status, update_story_status
 from arcwright_ai.output.summary import write_halt_report, write_success_summary
 from arcwright_ai.scm.branch import commit_story, delete_remote_branch, fetch_and_sync, push_branch
 from arcwright_ai.scm.git import git
@@ -72,6 +72,69 @@ __all__: list[str] = [
 ]
 
 logger = logging.getLogger(__name__)
+
+SCM_COMMIT_ERROR_PREFIX = "Commit SCM error:"
+SCM_CLEANUP_ERROR_PREFIX = "Worktree cleanup error:"
+
+
+async def _escalate_after_scm_failure(
+    state: StoryState,
+    *,
+    story_slug: str,
+    run_id: str,
+    detail: str,
+) -> StoryState:
+    """Convert a post-validation SCM failure into an ESCALATED terminal state.
+
+    Commit-stage SCM failures happen after validation has already passed, so they
+    must halt the story rather than being silently logged as warnings.
+    """
+
+    halted_state = state.model_copy(update={"status": TaskState.ESCALATED, "agent_output": detail})
+    completed_at = datetime.now(tz=UTC).isoformat()
+
+    try:
+        await update_story_status(
+            state.project_root,
+            run_id,
+            story_slug,
+            status="halted",
+            completed_at=completed_at,
+        )
+    except Exception as exc:
+        logger.warning(
+            "run_manager.write_error",
+            extra={
+                "data": {
+                    "node": "commit",
+                    "story": story_slug,
+                    "operation": "update_story_status_halted",
+                    "error": str(exc),
+                }
+            },
+        )
+
+    try:
+        await update_run_status(
+            state.project_root,
+            run_id,
+            status=RunStatusValue.HALTED,
+            budget=state.budget,
+        )
+    except Exception as exc:
+        logger.warning(
+            "run_manager.write_error",
+            extra={
+                "data": {
+                    "node": "commit",
+                    "story": story_slug,
+                    "operation": "update_run_status_halted",
+                    "error": str(exc),
+                }
+            },
+        )
+
+    return halted_state
 
 
 def _derive_story_title(story_id: str) -> str:
@@ -1370,12 +1433,15 @@ async def validate_node(state: StoryState) -> StoryState:
 async def commit_node(state: StoryState) -> StoryState:
     """Commit node — updates run.yaml, commits worktree, and removes worktree.
 
-    Calls run_manager to update story status to "success" with completion
-    timestamp, and updates the run-level last_completed_story pointer and
-    budget snapshot. If a worktree_path is set, calls ``commit_story`` to
-    stage and commit changes, then ``remove_worktree`` to clean up the
-    worktree. All writes and SCM operations are best-effort — failures are
-    logged as warnings but do not halt execution.
+    If a worktree_path is set, calls ``commit_story`` to stage and commit
+    changes, then ``remove_worktree`` to clean up the worktree. Those two SCM
+    operations are terminal: if either fails after validation has passed, the
+    story transitions to ``ESCALATED`` instead of being reported as a success.
+
+    Once the critical SCM operations succeed, run_manager is updated with story
+    status ``success``, a completion timestamp, and the run-level
+    ``last_completed_story`` pointer plus budget snapshot. Ancillary writes such
+    as PR metadata remain best-effort.
 
     Args:
         state: Current story execution state (expected SUCCESS).
@@ -1388,49 +1454,6 @@ async def commit_node(state: StoryState) -> StoryState:
     story_slug = str(state.story_id)
     project_root = state.project_root
     run_id = str(state.run_id)
-
-    # Update story status in run.yaml (best-effort)
-    try:
-        await update_story_status(
-            project_root,
-            run_id,
-            story_slug,
-            status="success",
-            completed_at=datetime.now(tz=UTC).isoformat(),
-        )
-    except Exception as exc:
-        logger.warning(
-            "run_manager.write_error",
-            extra={
-                "data": {
-                    "node": "commit",
-                    "story": story_slug,
-                    "operation": "update_story_status",
-                    "error": str(exc),
-                }
-            },
-        )
-
-    # Update run-level state (best-effort)
-    try:
-        await update_run_status(
-            project_root,
-            run_id,
-            last_completed_story=story_slug,
-            budget=state.budget,
-        )
-    except Exception as exc:
-        logger.warning(
-            "run_manager.write_error",
-            extra={
-                "data": {
-                    "node": "commit",
-                    "story": story_slug,
-                    "operation": "update_run_status",
-                    "error": str(exc),
-                }
-            },
-        )
 
     # SCM: commit and remove worktree (AC: #3, #6, #13)
     if state.worktree_path is not None:
@@ -1482,6 +1505,13 @@ async def commit_node(state: StoryState) -> StoryState:
             logger.warning(
                 "scm.commit.error",
                 extra={"data": {"story": story_slug, "error": exc.message, "details": exc.details}},
+            )
+            halted_detail = f"{SCM_COMMIT_ERROR_PREFIX} {exc.message}"
+            return await _escalate_after_scm_failure(
+                state,
+                story_slug=story_slug,
+                run_id=run_id,
+                detail=halted_detail,
             )
 
         # Push branch and open PR after successful commit (AC: #8, best-effort)
@@ -1708,6 +1738,56 @@ async def commit_node(state: StoryState) -> StoryState:
                 "scm.worktree.remove.error",
                 extra={"data": {"story": story_slug, "error": exc.message, "details": exc.details}},
             )
+            halted_detail = f"{SCM_CLEANUP_ERROR_PREFIX} {exc.message}"
+            return await _escalate_after_scm_failure(
+                state,
+                story_slug=story_slug,
+                run_id=run_id,
+                detail=halted_detail,
+            )
+
+    # Update story status in run.yaml after critical SCM operations succeed.
+    try:
+        await update_story_status(
+            project_root,
+            run_id,
+            story_slug,
+            status="success",
+            completed_at=datetime.now(tz=UTC).isoformat(),
+        )
+    except Exception as exc:
+        logger.warning(
+            "run_manager.write_error",
+            extra={
+                "data": {
+                    "node": "commit",
+                    "story": story_slug,
+                    "operation": "update_story_status",
+                    "error": str(exc),
+                }
+            },
+        )
+
+    # Update run-level state after success is durable.
+    try:
+        await update_run_status(
+            project_root,
+            run_id,
+            last_completed_story=story_slug,
+            budget=state.budget,
+        )
+    except Exception as exc:
+        logger.warning(
+            "run_manager.write_error",
+            extra={
+                "data": {
+                    "node": "commit",
+                    "story": story_slug,
+                    "operation": "update_run_status",
+                    "error": str(exc),
+                }
+            },
+        )
 
     logger.info(
         "engine.node.exit",
@@ -1728,13 +1808,18 @@ def _derive_halt_reason(state: StoryState) -> str:
         state: Story execution state in ESCALATED terminal status.
 
     Returns:
-        Halt reason string: ``"agent_sdk_error"``, ``"budget_exceeded"``,
-        ``"v6_invariant_failure"``, ``"max_retries_exhausted"``, or
-        ``"validation_failure"``.
+        Halt reason string: ``"scm_error"``, ``"agent_sdk_error"``,
+        ``"budget_exceeded"``, ``"v6_invariant_failure"``,
+        ``"max_retries_exhausted"``, or ``"validation_failure"``.
     """
     if _is_budget_exceeded(state.budget):
         return "budget_exceeded"
     if not state.retry_history:
+        if state.agent_output and (
+            state.agent_output.startswith(SCM_COMMIT_ERROR_PREFIX)
+            or state.agent_output.startswith(SCM_CLEANUP_ERROR_PREFIX)
+        ):
+            return "scm_error"
         return "agent_sdk_error"
     last = state.retry_history[-1]
     if last.outcome == PipelineOutcome.FAIL_V6:
@@ -1867,6 +1952,16 @@ def _derive_suggested_fix(state: StoryState) -> str:
             "Consider increasing `limits.cost_per_run` or `limits.tokens_per_story` in pyproject.toml."
         )
     if not state.retry_history:
+        if state.agent_output and state.agent_output.startswith(SCM_COMMIT_ERROR_PREFIX):
+            return (
+                "Git commit/staging failed after validation passed. Review the preserved worktree, "
+                "fix the repository or filesystem issue reported in the halt report, and rerun the story."
+            )
+        if state.agent_output and state.agent_output.startswith(SCM_CLEANUP_ERROR_PREFIX):
+            return (
+                "Worktree cleanup failed after the story completed. Inspect the preserved worktree, "
+                "remove or repair the blocking files, and rerun once cleanup succeeds."
+            )
         failure_cat = getattr(state, "failure_category", None)
         if failure_cat:
             try:
