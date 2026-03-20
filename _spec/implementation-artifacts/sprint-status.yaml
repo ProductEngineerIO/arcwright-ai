@@ -154,4 +154,4 @@ development_status:
   13-2-terminal-guidance-for-claude-platform-account-and-access-failures: done
   13-3-terminal-guidance-for-local-claude-runtime-and-configuration-failures: done
   13-4-terminal-guidance-for-transient-provider-failures-and-retryable-conditions: done
-  13-5-shared-error-rendering-redaction-and-troubleshooting-documentation: ready-for-dev
+  13-5-shared-error-rendering-redaction-and-troubleshooting-documentation: done

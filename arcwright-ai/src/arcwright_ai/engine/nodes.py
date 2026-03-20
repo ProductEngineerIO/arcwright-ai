@@ -25,7 +25,14 @@ from arcwright_ai.core.constants import (
     STORY_COPY_FILENAME,
     VALIDATION_FILENAME,
 )
-from arcwright_ai.core.errors import CLAUDE_ERROR_REGISTRY, ClaudeErrorCategory
+from arcwright_ai.core.errors import (
+    CLAUDE_ERROR_REGISTRY,
+    LOCAL_RUNTIME_CATEGORIES,
+    PLATFORM_ACCOUNT_CATEGORIES,
+    TRANSIENT_CATEGORIES,
+    ClaudeErrorCategory,
+    render_claude_guidance,
+)
 from arcwright_ai.core.exceptions import ContextError, ScmError, ValidationError
 from arcwright_ai.core.io import write_text_async
 from arcwright_ai.core.lifecycle import TaskState
@@ -1864,18 +1871,15 @@ def _derive_suggested_fix(state: StoryState) -> str:
         if failure_cat:
             try:
                 category = ClaudeErrorCategory(failure_cat)
-                if category in (
-                    ClaudeErrorCategory.BILLING_ERROR,
-                    ClaudeErrorCategory.AUTH_ERROR,
-                    ClaudeErrorCategory.MODEL_ACCESS_ERROR,
-                ):
+                if category in PLATFORM_ACCOUNT_CATEGORIES:
                     cls_entry = CLAUDE_ERROR_REGISTRY[category]
-                    steps = "\n".join(f"  {i + 1}. {step}" for i, step in enumerate(cls_entry.remediation_steps))
-                    return (
-                        f"\u26a0\ufe0f  Claude Platform/Account Issue \u2014 {cls_entry.title}\n"
-                        "This is a Claude platform/account issue, not a story code defect.\n"
-                        f"{cls_entry.summary}\n\nTo resolve:\n{steps}"
-                    )
+                    return render_claude_guidance(cls_entry)
+                if category in LOCAL_RUNTIME_CATEGORIES:
+                    cls_entry = CLAUDE_ERROR_REGISTRY[category]
+                    return render_claude_guidance(cls_entry)
+                if category in TRANSIENT_CATEGORIES:
+                    cls_entry = CLAUDE_ERROR_REGISTRY[category]
+                    return render_claude_guidance(cls_entry)
             except ValueError:
                 pass
         return (

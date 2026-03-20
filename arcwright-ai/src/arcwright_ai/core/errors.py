@@ -21,9 +21,14 @@ if TYPE_CHECKING:
 
 __all__: list[str] = [
     "CLAUDE_ERROR_REGISTRY",
+    "LOCAL_RUNTIME_CATEGORIES",
+    "PLATFORM_ACCOUNT_CATEGORIES",
+    "TRANSIENT_CATEGORIES",
     "ClaudeErrorCategory",
     "ClaudeErrorClassification",
     "classify_claude_error",
+    "redact_secrets",
+    "render_claude_guidance",
 ]
 
 # ---------------------------------------------------------------------------
@@ -220,6 +225,11 @@ def _redact_secrets(text: str) -> str:
     return text
 
 
+def redact_secrets(text: str) -> str:
+    """Public alias for credential redaction — safe for use across all rendering surfaces."""
+    return _redact_secrets(text)
+
+
 # ---------------------------------------------------------------------------
 # Classification patterns (order matters — first match wins)
 # ---------------------------------------------------------------------------
@@ -336,3 +346,90 @@ def classify_claude_error(
 def _has_secrets(text: str) -> bool:
     """Return True if *text* matches any credential pattern."""
     return any(p.search(text) for p in _REDACTION_PATTERNS)
+
+
+# ---------------------------------------------------------------------------
+# Category groupings — shared across all rendering surfaces
+# ---------------------------------------------------------------------------
+
+# Platform / account failures (billing, auth, model entitlement).
+PLATFORM_ACCOUNT_CATEGORIES: frozenset[ClaudeErrorCategory] = frozenset(
+    {
+        ClaudeErrorCategory.BILLING_ERROR,
+        ClaudeErrorCategory.AUTH_ERROR,
+        ClaudeErrorCategory.MODEL_ACCESS_ERROR,
+    }
+)
+
+# Local runtime / configuration failures (CLI missing, config, managed settings).
+LOCAL_RUNTIME_CATEGORIES: frozenset[ClaudeErrorCategory] = frozenset(
+    {
+        ClaudeErrorCategory.CLI_MISSING_ERROR,
+        ClaudeErrorCategory.LOCAL_CONFIG_ERROR,
+        ClaudeErrorCategory.MANAGED_SETTINGS_ERROR,
+    }
+)
+
+# Transient provider / SDK failures (rate-limit, network, timeout, unknown fallback).
+TRANSIENT_CATEGORIES: frozenset[ClaudeErrorCategory] = frozenset(
+    {
+        ClaudeErrorCategory.RATE_LIMIT_ERROR,
+        ClaudeErrorCategory.NETWORK_ERROR,
+        ClaudeErrorCategory.TIMEOUT_ERROR,
+        ClaudeErrorCategory.UNKNOWN_SDK_ERROR,
+    }
+)
+
+
+# ---------------------------------------------------------------------------
+# Shared renderer — single path for terminal, halt reports, summaries, and logs
+# ---------------------------------------------------------------------------
+
+
+def render_claude_guidance(
+    classification: ClaudeErrorClassification,
+    *,
+    diagnostic_hint: str | None = None,
+) -> str:
+    """Render operator guidance for a Claude error classification.
+
+    Single shared render path for all user-facing surfaces: terminal output,
+    halt reports, run summaries, and structured logs.  Credential redaction is
+    applied to any caller-supplied dynamic content (*diagnostic_hint*) before
+    inclusion so that secrets never appear in rendered output.
+
+    Args:
+        classification: Structured error classification from the taxonomy.
+        diagnostic_hint: Optional file-path or config target extracted from
+            captured stderr, e.g. ``~/.claude/remote-settings.json``.  Passed
+            through :func:`redact_secrets` before use.
+
+    Returns:
+        Human-readable operator guidance string, multi-line.
+    """
+    steps = "\n".join(f"  {i + 1}. {step}" for i, step in enumerate(classification.remediation_steps))
+    safe_hint = _redact_secrets(diagnostic_hint) if diagnostic_hint else None
+
+    if classification.error_code in PLATFORM_ACCOUNT_CATEGORIES:
+        return (
+            "\u26a0\ufe0f  This is a Claude platform/account issue, not a story code defect.\n"
+            f"  {classification.title}: {classification.summary}\n"
+            f"  To resolve:\n{steps}"
+        )
+
+    if classification.error_code in LOCAL_RUNTIME_CATEGORIES:
+        hint_line = f"\n  Inspect: {safe_hint}" if safe_hint else ""
+        return (
+            "\u26a0\ufe0f  This is a local Claude setup issue, not a story code defect.\n"
+            f"  {classification.title}: {classification.summary}{hint_line}\n"
+            f"  To resolve:\n{steps}"
+        )
+
+    # Transient / UNKNOWN_SDK_ERROR
+    if classification.retryable:
+        header = "\u26a0\ufe0f  This is a transient/retryable Claude provider issue, not a story code defect."
+        retry_note = "\n  You may retry after the condition clears."
+    else:
+        header = "\u26a0\ufe0f  An unrecognised Claude SDK/CLI error occurred."
+        retry_note = ""
+    return f"{header}\n  {classification.title}: {classification.summary}{retry_note}\n  To resolve:\n{steps}"

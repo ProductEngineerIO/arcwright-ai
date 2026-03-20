@@ -1,6 +1,6 @@
 # Story 13.5: Shared Error Rendering, Redaction, and Troubleshooting Documentation
 
-Status: ready-for-dev
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -40,23 +40,23 @@ So that operator messaging stays consistent across surfaces and future error cat
 
 ## Tasks / Subtasks
 
-- [ ] Task 1: Introduce a shared render path (AC: #1)
-  - [ ] 1.1: Replace bespoke string assembly with a shared renderer or shared message contract.
-  - [ ] 1.2: Ensure the same render path can produce concise terminal text and richer artifact/log output.
+- [x] Task 1: Introduce a shared render path (AC: #1)
+  - [x] 1.1: Replace bespoke string assembly with a shared renderer or shared message contract.
+  - [x] 1.2: Ensure the same render path can produce concise terminal text and richer artifact/log output.
 
-- [ ] Task 2: Centralize redaction (AC: #2)
-  - [ ] 2.1: Apply redaction in one shared location.
-  - [ ] 2.2: Verify all major failure surfaces consume the redacted form.
+- [x] Task 2: Centralize redaction (AC: #2)
+  - [x] 2.1: Apply redaction in one shared location.
+  - [x] 2.2: Verify all major failure surfaces consume the redacted form.
 
-- [ ] Task 3: Document troubleshooting guidance (AC: #3)
-  - [ ] 3.1: Add or update documentation with a Claude error troubleshooting matrix.
-  - [ ] 3.2: Distinguish local operator actions from Claude platform/account actions.
+- [x] Task 3: Document troubleshooting guidance (AC: #3)
+  - [x] 3.1: Add or update documentation with a Claude error troubleshooting matrix.
+  - [x] 3.2: Distinguish local operator actions from Claude platform/account actions.
 
-- [ ] Task 4: Add cross-surface regression coverage and run quality gates (AC: #4)
-  - [ ] 4.1: Add tests proving guidance alignment across terminal, halt report, summary, and logs.
-  - [ ] 4.2: Run `ruff check src/ tests/`.
-  - [ ] 4.3: Run `mypy --strict src/`.
-  - [ ] 4.4: Run `pytest`.
+- [x] Task 4: Add cross-surface regression coverage and run quality gates (AC: #4)
+  - [x] 4.1: Add tests proving guidance alignment across terminal, halt report, summary, and logs.
+  - [x] 4.2: Run `ruff check src/ tests/`.
+  - [x] 4.3: Run `mypy --strict src/`.
+  - [x] 4.4: Run `pytest`.
 
 ## Dev Notes
 
@@ -81,14 +81,26 @@ So that operator messaging stays consistent across surfaces and future error cat
 
 ### Agent Model Used
 
-GPT-5.4
+Claude Sonnet 4.6
 
 ### Completion Notes
 
-- Story created to lock down shared rendering, redaction, documentation, and regression coverage for Epic 13.
+- **Task 1 (Shared render path):** Added `render_claude_guidance(classification, *, diagnostic_hint=None) -> str` to `core/errors.py` as the single authoritative renderer for all 10 error categories. `cli/halt.py` `_format_platform_guidance`, `_format_local_guidance`, `_format_transient_guidance` now delegate to it; `_suggested_fix_for_exception` and `_suggested_fix_for_graph_state` call it directly. `engine/nodes.py` `_derive_suggested_fix` extended from 3-category to full 10-category coverage via the same shared function.
+- **Task 2 (Centralized redaction):** `_redact_secrets` exposed as public `redact_secrets` in `core/errors.py`. `render_claude_guidance` applies `_redact_secrets` to `diagnostic_hint` before inclusion. All three rendering surfaces (terminal, halt report, summary) consume redacted content through the shared function.
+- **Task 3 (Documentation):** Created `docs/troubleshooting-claude-errors.md` with a full troubleshooting matrix covering all 4 categories (platform/account, local runtime/config, transient provider, unknown fallback), distinguishing local actions from Claude-platform actions.
+- **Task 4 (Regression tests):** Added 21 new tests in `tests/test_core/test_errors.py`: `TestRenderClaudeGuidanceSharedRenderer` (13 tests), `TestRedactSecretsPublicAPI` (4 tests), `TestCrossSurfaceGuidanceAlignment` (4 tests). All 1116 tests pass; ruff and mypy --strict are clean.
 
 ### File List
 
 - `_spec/implementation-artifacts/13-5-shared-error-rendering-redaction-and-troubleshooting-documentation.md`
 - `_spec/implementation-artifacts/sprint-status.yaml`
-- `_spec/planning-artifacts/epics.md`
+- `arcwright-ai/src/arcwright_ai/core/errors.py`
+- `arcwright-ai/src/arcwright_ai/cli/halt.py`
+- `arcwright-ai/src/arcwright_ai/engine/nodes.py`
+- `arcwright-ai/tests/test_core/test_errors.py`
+- `arcwright-ai/docs/troubleshooting-claude-errors.md`
+
+## Change Log
+
+- 2026-03-20: Implemented shared `render_claude_guidance` in `core/errors.py`; refactored `cli/halt.py` and `engine/nodes.py` to use shared renderer; added public `redact_secrets`; added `docs/troubleshooting-claude-errors.md`; added 21 cross-surface regression tests (1116 total passing).
+- 2026-03-20: Code review completed with no HIGH/MEDIUM/LOW findings; verification passed (`ruff check src/ tests/`, `mypy --strict src/`, `pytest -q`, targeted cross-surface guidance tests). Story moved to `done`.

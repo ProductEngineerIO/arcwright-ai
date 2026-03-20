@@ -267,3 +267,267 @@ def test_classify_redacts_bearer_token_from_summary() -> None:
     )
     assert "Bearer" not in result.summary
     assert "eyJhbG" not in result.summary
+
+
+# ---------------------------------------------------------------------------
+# Story 13.5 — render_claude_guidance shared renderer (AC #1, #2, #4)
+# ---------------------------------------------------------------------------
+
+
+from arcwright_ai.core.errors import (  # noqa: E402
+    LOCAL_RUNTIME_CATEGORIES,
+    PLATFORM_ACCOUNT_CATEGORIES,
+    TRANSIENT_CATEGORIES,
+    redact_secrets,
+    render_claude_guidance,
+)
+
+
+class TestRenderClaudeGuidanceSharedRenderer:
+    """render_claude_guidance is the single render path for all surfaces (AC #1, #2, #4)."""
+
+    def test_platform_guidance_labels_as_platform_issue(self) -> None:
+        """Platform categories produce output explicitly labelled as a platform/account issue."""
+        for cat in PLATFORM_ACCOUNT_CATEGORIES:
+            cls = CLAUDE_ERROR_REGISTRY[cat]
+            guidance = render_claude_guidance(cls)
+            assert (
+                "Claude platform/account issue" in guidance
+            ), f"{cat.value}: guidance must label failure as Claude platform/account issue"
+
+    def test_platform_guidance_includes_title_and_summary(self) -> None:
+        """Platform guidance includes the classification title and summary."""
+        cls = CLAUDE_ERROR_REGISTRY[ClaudeErrorCategory.BILLING_ERROR]
+        guidance = render_claude_guidance(cls)
+        assert cls.title in guidance
+        assert cls.summary in guidance
+
+    def test_platform_guidance_includes_remediation_steps(self) -> None:
+        """Platform guidance lists all remediation steps."""
+        cls = CLAUDE_ERROR_REGISTRY[ClaudeErrorCategory.AUTH_ERROR]
+        guidance = render_claude_guidance(cls)
+        for step in cls.remediation_steps:
+            assert step in guidance
+
+    def test_local_guidance_labels_as_local_setup_issue(self) -> None:
+        """Local categories produce output explicitly labelled as a local Claude setup issue."""
+        for cat in LOCAL_RUNTIME_CATEGORIES:
+            cls = CLAUDE_ERROR_REGISTRY[cat]
+            guidance = render_claude_guidance(cls)
+            assert (
+                "local Claude setup issue" in guidance
+            ), f"{cat.value}: guidance must label failure as local Claude setup issue"
+
+    def test_local_guidance_does_not_mention_platform(self) -> None:
+        """Local guidance must not say 'Claude platform/account issue'."""
+        for cat in LOCAL_RUNTIME_CATEGORIES:
+            cls = CLAUDE_ERROR_REGISTRY[cat]
+            guidance = render_claude_guidance(cls)
+            assert (
+                "Claude platform/account issue" not in guidance
+            ), f"{cat.value}: local guidance must not reference Claude platform/account issue"
+
+    def test_local_guidance_with_diagnostic_hint_includes_hint(self) -> None:
+        """Diagnostic hint is included in local guidance when provided."""
+        cls = CLAUDE_ERROR_REGISTRY[ClaudeErrorCategory.MANAGED_SETTINGS_ERROR]
+        hint = "~/.claude/remote-settings.json"
+        guidance = render_claude_guidance(cls, diagnostic_hint=hint)
+        assert hint in guidance, "Diagnostic hint path must appear in local guidance"
+
+    def test_local_guidance_without_diagnostic_hint_omits_inspect_line(self) -> None:
+        """No 'Inspect:' line appears when diagnostic_hint is None."""
+        cls = CLAUDE_ERROR_REGISTRY[ClaudeErrorCategory.LOCAL_CONFIG_ERROR]
+        guidance = render_claude_guidance(cls, diagnostic_hint=None)
+        assert "Inspect:" not in guidance
+
+    def test_transient_retryable_guidance_labels_as_transient(self) -> None:
+        """Retryable transient categories are labelled as transient/retryable provider issues."""
+        retryable_cats = {cat for cat in TRANSIENT_CATEGORIES if CLAUDE_ERROR_REGISTRY[cat].retryable}
+        for cat in retryable_cats:
+            cls = CLAUDE_ERROR_REGISTRY[cat]
+            guidance = render_claude_guidance(cls)
+            assert (
+                "transient/retryable Claude provider issue" in guidance
+            ), f"{cat.value}: transient guidance must label failure as transient/retryable issue"
+
+    def test_transient_retryable_guidance_includes_retry_note(self) -> None:
+        """Retryable transient guidance includes a retry note."""
+        cls = CLAUDE_ERROR_REGISTRY[ClaudeErrorCategory.RATE_LIMIT_ERROR]
+        guidance = render_claude_guidance(cls)
+        assert "retry" in guidance.lower()
+
+    def test_unknown_sdk_error_labeled_as_unrecognised(self) -> None:
+        """unknown_sdk_error produces an 'unrecognised' label (not 'transient/retryable')."""
+        cls = CLAUDE_ERROR_REGISTRY[ClaudeErrorCategory.UNKNOWN_SDK_ERROR]
+        guidance = render_claude_guidance(cls)
+        assert "unrecognised" in guidance.lower()
+        assert "transient/retryable" not in guidance
+
+    def test_all_categories_produce_non_empty_guidance(self) -> None:
+        """Every category in the registry produces non-empty guidance output."""
+        for cat in ClaudeErrorCategory:
+            cls = CLAUDE_ERROR_REGISTRY[cat]
+            guidance = render_claude_guidance(cls)
+            assert guidance.strip(), f"{cat.value}: render_claude_guidance returned empty string"
+
+    def test_diagnostic_hint_is_redacted_when_it_contains_api_key(self) -> None:
+        """Credential redaction is applied to diagnostic_hint before inclusion (AC #2)."""
+        cls = CLAUDE_ERROR_REGISTRY[ClaudeErrorCategory.MANAGED_SETTINGS_ERROR]
+        tainted_hint = "/path/config?api_key=sk-ant-api03-FAKEKEY12345678"
+        guidance = render_claude_guidance(cls, diagnostic_hint=tainted_hint)
+        assert (
+            "sk-ant-api03-FAKEKEY12345678" not in guidance
+        ), "render_claude_guidance must redact credentials from diagnostic_hint"
+
+    def test_category_sets_are_exhaustive_and_disjoint(self) -> None:
+        """PLATFORM, LOCAL, and TRANSIENT sets together cover all 10 categories exactly once."""
+        all_sets = PLATFORM_ACCOUNT_CATEGORIES | LOCAL_RUNTIME_CATEGORIES | TRANSIENT_CATEGORIES
+        all_cats = set(ClaudeErrorCategory)
+        assert all_sets == all_cats, f"Gap or overlap: {all_cats.symmetric_difference(all_sets)}"
+
+
+class TestRedactSecretsPublicAPI:
+    """redact_secrets is the public credential-redaction API (AC #2)."""
+
+    def test_redacts_sk_ant_key(self) -> None:
+        text = "auth failed with key sk-ant-api03-SECRETVALUE1234567890"
+        result = redact_secrets(text)
+        assert "sk-ant-api03-SECRETVALUE1234567890" not in result
+        assert "[REDACTED]" in result
+
+    def test_redacts_bearer_token(self) -> None:
+        text = "Authorization: Bearer eyJhbGciOiJSUzI1NiJ9.payload.sig"
+        result = redact_secrets(text)
+        assert "eyJhbGci" not in result
+
+    def test_redacts_api_key_assignment(self) -> None:
+        text = "api_key = mysecretvalue123456789012345"
+        result = redact_secrets(text)
+        assert "mysecretvalue" not in result
+
+    def test_safe_text_unchanged(self) -> None:
+        text = "No credentials here, just a file path: /home/user/.claude/config.json"
+        result = redact_secrets(text)
+        assert result == text
+
+
+class TestCrossSurfaceGuidanceAlignment:
+    """Guidance produced for the same category is aligned across halt and nodes surfaces (AC #4)."""
+
+    def test_halt_and_nodes_produce_identical_platform_guidance(self) -> None:
+        """HaltController._suggested_fix_for_exception and _derive_suggested_fix agree on platform errors."""
+        from unittest.mock import MagicMock
+
+        from arcwright_ai.cli.halt import HaltController
+        from arcwright_ai.core.exceptions import AgentError
+
+        for cat in PLATFORM_ACCOUNT_CATEGORIES:
+            cls = CLAUDE_ERROR_REGISTRY[cat]
+            exc = AgentError(cls.summary, details={"classification": cls, "failure_category": cat.value})
+
+            # Terminal/halt-report surface (exception path)
+            halt_fix = HaltController._suggested_fix_for_exception(exc)
+
+            # Engine surface (_derive_suggested_fix with no retry history)
+            mock_state = MagicMock()
+            mock_state.retry_history = []
+            mock_state.failure_category = cat.value
+            # budget not exceeded
+            budget = MagicMock()
+            budget.max_invocations = 0
+            budget.invocation_count = 0
+            budget.max_cost = 0
+            budget.estimated_cost = 0
+            mock_state.budget = budget
+
+            from arcwright_ai.engine.nodes import _derive_suggested_fix
+
+            nodes_fix = _derive_suggested_fix(mock_state)
+
+            # Both must contain the category title from the shared renderer
+            assert cls.title in halt_fix, f"{cat.value}: title missing from halt fix"
+            assert cls.title in nodes_fix, f"{cat.value}: title missing from nodes fix"
+            # Both must flag as Claude platform/account issue
+            assert "Claude platform/account issue" in halt_fix
+            assert "Claude platform/account issue" in nodes_fix
+
+    def test_halt_and_nodes_produce_identical_local_guidance(self) -> None:
+        """HaltController._suggested_fix_for_exception and _derive_suggested_fix agree on local errors."""
+        from unittest.mock import MagicMock
+
+        from arcwright_ai.cli.halt import HaltController
+        from arcwright_ai.core.exceptions import AgentError
+
+        for cat in LOCAL_RUNTIME_CATEGORIES:
+            cls = CLAUDE_ERROR_REGISTRY[cat]
+            exc = AgentError(cls.summary, details={"classification": cls, "failure_category": cat.value})
+
+            halt_fix = HaltController._suggested_fix_for_exception(exc)
+
+            mock_state = MagicMock()
+            mock_state.retry_history = []
+            mock_state.failure_category = cat.value
+            budget = MagicMock()
+            budget.max_invocations = 0
+            budget.invocation_count = 0
+            budget.max_cost = 0
+            budget.estimated_cost = 0
+            mock_state.budget = budget
+
+            from arcwright_ai.engine.nodes import _derive_suggested_fix
+
+            nodes_fix = _derive_suggested_fix(mock_state)
+
+            assert cls.title in halt_fix, f"{cat.value}: title missing from halt fix"
+            assert cls.title in nodes_fix, f"{cat.value}: title missing from nodes fix"
+            assert "local Claude setup issue" in halt_fix
+            assert "local Claude setup issue" in nodes_fix
+
+    def test_halt_and_nodes_produce_identical_transient_guidance(self) -> None:
+        """HaltController._suggested_fix_for_exception and _derive_suggested_fix agree on transient errors."""
+        from unittest.mock import MagicMock
+
+        from arcwright_ai.cli.halt import HaltController
+        from arcwright_ai.core.exceptions import AgentError
+
+        for cat in TRANSIENT_CATEGORIES:
+            cls = CLAUDE_ERROR_REGISTRY[cat]
+            exc = AgentError(cls.summary, details={"classification": cls, "failure_category": cat.value})
+
+            halt_fix = HaltController._suggested_fix_for_exception(exc)
+
+            mock_state = MagicMock()
+            mock_state.retry_history = []
+            mock_state.failure_category = cat.value
+            budget = MagicMock()
+            budget.max_invocations = 0
+            budget.invocation_count = 0
+            budget.max_cost = 0
+            budget.estimated_cost = 0
+            mock_state.budget = budget
+
+            from arcwright_ai.engine.nodes import _derive_suggested_fix
+
+            nodes_fix = _derive_suggested_fix(mock_state)
+
+            # Both must contain the category title
+            assert cls.title in halt_fix, f"{cat.value}: title missing from halt fix"
+            assert cls.title in nodes_fix, f"{cat.value}: title missing from nodes fix"
+
+    def test_render_claude_guidance_matches_halt_suggested_fix_for_all_categories(self) -> None:
+        """render_claude_guidance and _suggested_fix_for_exception produce identical output for every category."""
+        from arcwright_ai.cli.halt import HaltController
+        from arcwright_ai.core.exceptions import AgentError
+
+        for cat in ClaudeErrorCategory:
+            cls = CLAUDE_ERROR_REGISTRY[cat]
+            exc = AgentError(cls.summary, details={"classification": cls, "failure_category": cat.value})
+
+            halt_fix = HaltController._suggested_fix_for_exception(exc)
+            direct_render = render_claude_guidance(cls)
+
+            assert halt_fix == direct_render, (
+                f"{cat.value}: halt _suggested_fix_for_exception diverges from render_claude_guidance.\n"
+                f"  halt:   {halt_fix!r}\n"
+                f"  render: {direct_render!r}"
+            )

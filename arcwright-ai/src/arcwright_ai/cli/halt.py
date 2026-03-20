@@ -27,7 +27,15 @@ from arcwright_ai.core.constants import (
     EXIT_VALIDATION,
     VALIDATION_FILENAME,
 )
-from arcwright_ai.core.errors import CLAUDE_ERROR_REGISTRY, ClaudeErrorCategory, ClaudeErrorClassification
+from arcwright_ai.core.errors import (
+    CLAUDE_ERROR_REGISTRY,
+    LOCAL_RUNTIME_CATEGORIES,
+    PLATFORM_ACCOUNT_CATEGORIES,
+    TRANSIENT_CATEGORIES,
+    ClaudeErrorCategory,
+    ClaudeErrorClassification,
+    render_claude_guidance,
+)
 from arcwright_ai.core.exceptions import (
     AgentBudgetError,
     AgentError,
@@ -57,34 +65,6 @@ logger = logging.getLogger(__name__)
 
 # Length of the "epic-" prefix used when parsing epic_spec strings.
 _EPIC_PREFIX_LEN: int = 5
-
-# Platform-account error categories that warrant explicit Claude platform guidance.
-_PLATFORM_ACCOUNT_CATEGORIES: frozenset[ClaudeErrorCategory] = frozenset(
-    {
-        ClaudeErrorCategory.BILLING_ERROR,
-        ClaudeErrorCategory.AUTH_ERROR,
-        ClaudeErrorCategory.MODEL_ACCESS_ERROR,
-    }
-)
-
-# Local runtime / configuration categories that warrant local setup guidance.
-_LOCAL_RUNTIME_CATEGORIES: frozenset[ClaudeErrorCategory] = frozenset(
-    {
-        ClaudeErrorCategory.CLI_MISSING_ERROR,
-        ClaudeErrorCategory.LOCAL_CONFIG_ERROR,
-        ClaudeErrorCategory.MANAGED_SETTINGS_ERROR,
-    }
-)
-
-# Transient provider / SDK failure categories (rate-limit, network, timeout, unknown fallback).
-_TRANSIENT_CATEGORIES: frozenset[ClaudeErrorCategory] = frozenset(
-    {
-        ClaudeErrorCategory.RATE_LIMIT_ERROR,
-        ClaudeErrorCategory.NETWORK_ERROR,
-        ClaudeErrorCategory.TIMEOUT_ERROR,
-        ClaudeErrorCategory.UNKNOWN_SDK_ERROR,
-    }
-)
 
 # Regex to extract a plausible file path or home-relative path from stderr text.
 _PATH_HINT_RE: re.Pattern[str] = re.compile(r"(~?/[\w./\-]+\.\w+|~[\w./\-]+)")
@@ -222,18 +202,15 @@ class HaltController:
         # AC#5: Emit structured halt summary and JSONL event.
         platform_cls = self._extract_platform_classification(exception)
         if platform_cls is not None:
-            operator_guidance: str | None = self._format_platform_guidance(platform_cls)
+            operator_guidance: str | None = render_claude_guidance(platform_cls)
         else:
             local_cls = self._extract_local_classification(exception)
             if local_cls is not None:
                 diagnostic_hint = self._extract_local_diagnostic_hint(exception)
-                operator_guidance = self._format_local_guidance(local_cls, diagnostic_hint=diagnostic_hint)
+                operator_guidance = render_claude_guidance(local_cls, diagnostic_hint=diagnostic_hint)
             else:
                 transient_cls = self._extract_transient_classification(exception)
-                if transient_cls is not None:
-                    operator_guidance = self._format_transient_guidance(transient_cls)
-                else:
-                    operator_guidance = None
+                operator_guidance = render_claude_guidance(transient_cls) if transient_cls is not None else None
         self._emit_halt_summary(
             story_slug, halt_reason, accumulated_budget, completed_stories, operator_guidance=operator_guidance
         )
@@ -346,15 +323,10 @@ class HaltController:
         if _graph_failure_cat:
             try:
                 _graph_category = ClaudeErrorCategory(_graph_failure_cat)
-                if _graph_category in _PLATFORM_ACCOUNT_CATEGORIES:
+                _all_known = PLATFORM_ACCOUNT_CATEGORIES | LOCAL_RUNTIME_CATEGORIES | TRANSIENT_CATEGORIES
+                if _graph_category in _all_known:
                     _graph_cls = CLAUDE_ERROR_REGISTRY[_graph_category]
-                    _graph_operator_guidance = self._format_platform_guidance(_graph_cls)
-                elif _graph_category in _LOCAL_RUNTIME_CATEGORIES:
-                    _graph_cls = CLAUDE_ERROR_REGISTRY[_graph_category]
-                    _graph_operator_guidance = self._format_local_guidance(_graph_cls)
-                elif _graph_category in _TRANSIENT_CATEGORIES:
-                    _graph_cls = CLAUDE_ERROR_REGISTRY[_graph_category]
-                    _graph_operator_guidance = self._format_transient_guidance(_graph_cls)
+                    _graph_operator_guidance = render_claude_guidance(_graph_cls)
             except ValueError:
                 pass
         self._emit_halt_summary(
@@ -614,29 +586,14 @@ class HaltController:
         if isinstance(exception, AgentError):
             platform_cls = HaltController._extract_platform_classification(exception)
             if platform_cls is not None:
-                steps = "\n".join(f"  {i + 1}. {step}" for i, step in enumerate(platform_cls.remediation_steps))
-                return (
-                    f"\u26a0\ufe0f  Claude Platform/Account Issue \u2014 {platform_cls.title}\n"
-                    "This is a Claude platform/account issue, not a story code defect.\n"
-                    f"{platform_cls.summary}\n"
-                    "\nTo resolve:\n"
-                    f"{steps}"
-                )
+                return render_claude_guidance(platform_cls)
             local_cls = HaltController._extract_local_classification(exception)
             if local_cls is not None:
                 diagnostic_hint = HaltController._extract_local_diagnostic_hint(exception)
-                steps = "\n".join(f"  {i + 1}. {step}" for i, step in enumerate(local_cls.remediation_steps))
-                hint_line = f"\n  Inspect: {diagnostic_hint}" if diagnostic_hint else ""
-                return (
-                    f"\u26a0\ufe0f  Local Claude Setup Issue \u2014 {local_cls.title}\n"
-                    "This is a local Claude installation or configuration issue, not a story code defect.\n"
-                    f"{local_cls.summary}{hint_line}\n"
-                    "\nTo resolve:\n"
-                    f"{steps}"
-                )
+                return render_claude_guidance(local_cls, diagnostic_hint=diagnostic_hint)
             transient_cls = HaltController._extract_transient_classification(exception)
             if transient_cls is not None:
-                return HaltController._format_transient_guidance(transient_cls)
+                return render_claude_guidance(transient_cls)
             return (
                 "Agent invocation failed. Check API key validity, available API credits, network connectivity, "
                 "and the agent invocation logs for details."
@@ -678,25 +635,15 @@ class HaltController:
             if failure_cat:
                 try:
                     category = ClaudeErrorCategory(failure_cat)
-                    if category in _PLATFORM_ACCOUNT_CATEGORIES:
+                    if category in PLATFORM_ACCOUNT_CATEGORIES:
                         cls_entry = CLAUDE_ERROR_REGISTRY[category]
-                        steps = "\n".join(f"  {i + 1}. {step}" for i, step in enumerate(cls_entry.remediation_steps))
-                        return (
-                            f"\u26a0\ufe0f  Claude Platform/Account Issue \u2014 {cls_entry.title}\n"
-                            "This is a Claude platform/account issue, not a story code defect.\n"
-                            f"{cls_entry.summary}\n\nTo resolve:\n{steps}"
-                        )
-                    if category in _LOCAL_RUNTIME_CATEGORIES:
+                        return render_claude_guidance(cls_entry)
+                    if category in LOCAL_RUNTIME_CATEGORIES:
                         cls_entry = CLAUDE_ERROR_REGISTRY[category]
-                        steps = "\n".join(f"  {i + 1}. {step}" for i, step in enumerate(cls_entry.remediation_steps))
-                        return (
-                            f"\u26a0\ufe0f  Local Claude Setup Issue \u2014 {cls_entry.title}\n"
-                            "This is a local Claude installation or configuration issue, not a story code defect.\n"
-                            f"{cls_entry.summary}\n\nTo resolve:\n{steps}"
-                        )
-                    if category in _TRANSIENT_CATEGORIES:
+                        return render_claude_guidance(cls_entry)
+                    if category in TRANSIENT_CATEGORIES:
                         cls_entry = CLAUDE_ERROR_REGISTRY[category]
-                        return HaltController._format_transient_guidance(cls_entry)
+                        return render_claude_guidance(cls_entry)
                 except ValueError:
                     pass
             return (
@@ -779,7 +726,7 @@ class HaltController:
         classification = details.get("classification")
         if not isinstance(classification, ClaudeErrorClassification):
             return None
-        if classification.error_code not in _PLATFORM_ACCOUNT_CATEGORIES:
+        if classification.error_code not in PLATFORM_ACCOUNT_CATEGORIES:
             return None
         return classification
 
@@ -787,9 +734,8 @@ class HaltController:
     def _format_platform_guidance(classification: ClaudeErrorClassification) -> str:
         """Format operator guidance for a platform-account Claude error.
 
-        Produces a multi-line string that explicitly labels the failure as
-        a Claude platform/account issue (not a story code defect) and lists
-        the ordered remediation steps from the taxonomy.
+        Delegates to :func:`~arcwright_ai.core.errors.render_claude_guidance`.
+        Kept for compatibility with call sites that reference it directly.
 
         Args:
             classification: Structured classification from the error taxonomy.
@@ -797,12 +743,7 @@ class HaltController:
         Returns:
             Human-readable operator guidance string.
         """
-        steps = "\n".join(f"  {i + 1}. {step}" for i, step in enumerate(classification.remediation_steps))
-        return (
-            f"\u26a0\ufe0f  This is a Claude platform/account issue, not a story code defect.\n"
-            f"  {classification.title}: {classification.summary}\n"
-            f"  To resolve:\n{steps}"
-        )
+        return render_claude_guidance(classification)
 
     @staticmethod
     def _extract_local_classification(exception: Exception) -> ClaudeErrorClassification | None:
@@ -827,7 +768,7 @@ class HaltController:
         classification = details.get("classification")
         if not isinstance(classification, ClaudeErrorClassification):
             return None
-        if classification.error_code not in _LOCAL_RUNTIME_CATEGORIES:
+        if classification.error_code not in LOCAL_RUNTIME_CATEGORIES:
             return None
         return classification
 
@@ -865,27 +806,17 @@ class HaltController:
     ) -> str:
         """Format operator guidance for a local Claude runtime/configuration error.
 
-        Produces a multi-line string that explicitly labels the failure as a
-        local Claude setup issue (not a story code defect, billing, or API
-        access problem) and lists the ordered remediation steps.  When a
-        concrete file path or configuration target (*diagnostic_hint*) is
-        available it is included as a concise "inspect" note (AC #2).
+        Delegates to :func:`~arcwright_ai.core.errors.render_claude_guidance`.
+        Kept for compatibility with call sites that reference it directly.
 
         Args:
             classification: Structured classification from the error taxonomy.
-            diagnostic_hint: Optional path extracted from captured stderr to
-                include as a concrete inspection target.
+            diagnostic_hint: Optional path extracted from captured stderr.
 
         Returns:
             Human-readable operator guidance string.
         """
-        steps = "\n".join(f"  {i + 1}. {step}" for i, step in enumerate(classification.remediation_steps))
-        hint_line = f"\n  Inspect: {diagnostic_hint}" if diagnostic_hint else ""
-        return (
-            f"\u26a0\ufe0f  This is a local Claude setup issue, not a story code defect.\n"
-            f"  {classification.title}: {classification.summary}{hint_line}\n"
-            f"  To resolve:\n{steps}"
-        )
+        return render_claude_guidance(classification, diagnostic_hint=diagnostic_hint)
 
     @staticmethod
     def _extract_transient_classification(exception: Exception) -> ClaudeErrorClassification | None:
@@ -910,7 +841,7 @@ class HaltController:
         classification = details.get("classification")
         if not isinstance(classification, ClaudeErrorClassification):
             return None
-        if classification.error_code not in _TRANSIENT_CATEGORIES:
+        if classification.error_code not in TRANSIENT_CATEGORIES:
             return None
         return classification
 
@@ -918,10 +849,8 @@ class HaltController:
     def _format_transient_guidance(classification: ClaudeErrorClassification) -> str:
         """Format operator guidance for a transient provider or unknown SDK error.
 
-        Retryable failures (rate-limit, network, timeout) are labelled as
-        transient/retryable provider issues with a retry prompt.  The unknown
-        SDK fallback is rendered as an unrecognised error without the retry
-        label, since retryability cannot be confirmed.
+        Delegates to :func:`~arcwright_ai.core.errors.render_claude_guidance`.
+        Kept for compatibility with call sites that reference it directly.
 
         Args:
             classification: Structured classification from the error taxonomy.
@@ -929,14 +858,7 @@ class HaltController:
         Returns:
             Human-readable operator guidance string.
         """
-        steps = "\n".join(f"  {i + 1}. {step}" for i, step in enumerate(classification.remediation_steps))
-        if classification.retryable:
-            header = "\u26a0\ufe0f  This is a transient/retryable Claude provider issue, not a story code defect."
-            retry_note = "\n  You may retry after the condition clears."
-        else:
-            header = "\u26a0\ufe0f  An unrecognised Claude SDK/CLI error occurred."
-            retry_note = ""
-        return f"{header}\n  {classification.title}: {classification.summary}{retry_note}\n  To resolve:\n{steps}"
+        return render_claude_guidance(classification)
 
     def _emit_halt_summary(
         self,
