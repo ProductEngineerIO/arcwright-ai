@@ -167,8 +167,8 @@ CLAUDE_ERROR_REGISTRY: Mapping[ClaudeErrorCategory, ClaudeErrorClassification] =
         retryable=False,
         remediation_steps=[
             "Ensure ANTHROPIC_API_KEY is set in your environment or .env file.",
-            "Run 'arcwright init' to regenerate configuration if needed.",
-            "Check arcwright config file for missing or malformed values.",
+            "Run 'arcwright-ai init' to regenerate configuration if needed.",
+            "Check your ~/.arcwright-ai configuration files for missing or malformed values.",
         ],
     ),
     ClaudeErrorCategory.MANAGED_SETTINGS_ERROR: ClaudeErrorClassification(
