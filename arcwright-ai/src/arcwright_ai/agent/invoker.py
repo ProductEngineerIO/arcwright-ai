@@ -75,6 +75,29 @@ def _claude_meta_dir() -> Path:
     return (_Path.home() / ".claude").resolve()
 
 
+def _ensure_claude_remote_settings_file() -> None:
+    """Create ``~/.claude/remote-settings.json`` if missing.
+
+    Some Claude Code SDK builds abort startup when this file is absent.
+    Arcwright does not require remote settings, so an empty object is safe.
+    """
+    remote_settings = _claude_meta_dir() / "remote-settings.json"
+    if remote_settings.exists():
+        return
+
+    try:
+        remote_settings.parent.mkdir(parents=True, exist_ok=True)
+        remote_settings.write_text("{}\n", encoding="utf-8")
+        # Best-effort: keep sensitive home config files private by default.
+        os.chmod(remote_settings, 0o600)
+        logger.info("agent.remote_settings.created", extra={"data": {"path": str(remote_settings)}})
+    except OSError as exc:
+        logger.warning(
+            "agent.remote_settings.create_failed",
+            extra={"data": {"path": str(remote_settings), "error": str(exc)}},
+        )
+
+
 def _suppress_bg_cancel_scope_errors() -> None:
     """Install a one-shot asyncio exception handler to silence Python 3.14 / anyio
     ``RuntimeError: Attempted to exit cancel scope in a different task`` noise.
@@ -598,6 +621,7 @@ async def invoke_agent(
     # Suppress Python 3.14 / anyio cancel-scope RuntimeErrors emitted as
     # unhandled background-task warnings during async generator cleanup.
     _suppress_bg_cancel_scope_errors()
+    _ensure_claude_remote_settings_file()
 
     _tool_validation_stats = _ToolValidationStats()
 
@@ -620,7 +644,12 @@ async def invoke_agent(
         system_prompt=_SCM_GUARDRAIL_PROMPT,
         can_use_tool=_make_tool_validator(sandbox, cwd, _tool_validation_stats),
         env={"ANTHROPIC_API_KEY": api_key.strip()},
-        extra_args={"debug-to-stderr": None},
+        # Keep Arcwright runs deterministic by not inheriting user session/MCP state.
+        extra_args={
+            "debug-to-stderr": None,
+            "no-session-persistence": None,
+            "strict-mcp-config": None,
+        },
         debug_stderr=stderr_file,
     )
 
