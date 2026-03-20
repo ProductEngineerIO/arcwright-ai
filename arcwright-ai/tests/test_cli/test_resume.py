@@ -293,9 +293,9 @@ def test_resume_skips_completed_stories_dispatches_remaining(
     assert len(call_log["invoke_calls"]) == 3, f"Expected 3 story dispatches, got {len(call_log['invoke_calls'])}"
     dispatched_ids = [str(state.story_id) for state in call_log["invoke_calls"]]  # type: ignore[attr-defined]
     for sid in dispatched_ids:
-        assert not sid.startswith("5-1-") and not sid.startswith(
-            "5-2-"
-        ), f"Completed stories must be skipped; got {sid!r}"
+        assert not sid.startswith("5-1-") and not sid.startswith("5-2-"), (
+            f"Completed stories must be skipped; got {sid!r}"
+        )
     assert dispatched_ids[0].startswith("5-3-"), f"First dispatched story should be 5-3, got {dispatched_ids[0]}"
 
 
@@ -330,12 +330,12 @@ def test_resume_budget_carry_forward(
 
     # First resumed story should carry the prior run's budget
     first_budget = call_log["invoke_calls"][0].budget  # type: ignore[attr-defined]
-    assert first_budget.estimated_cost >= Decimal(
-        "0.15"
-    ), f"Expected carried-forward cost >= 0.15, got {first_budget.estimated_cost}"
-    assert (
-        first_budget.invocation_count >= 4
-    ), f"Expected carried-forward invocation_count >= 4, got {first_budget.invocation_count}"
+    assert first_budget.estimated_cost >= Decimal("0.15"), (
+        f"Expected carried-forward cost >= 0.15, got {first_budget.estimated_cost}"
+    )
+    assert first_budget.invocation_count >= 4, (
+        f"Expected carried-forward invocation_count >= 4, got {first_budget.invocation_count}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -358,9 +358,9 @@ def test_resume_already_completed_run_exit_0(
     result = runner.invoke(app, ["dispatch", "--epic", "5", "--yes", "--resume"])
 
     assert result.exit_code == 0, f"Completed run resume should exit 0, got {result.exit_code}"
-    assert (
-        "already completed" in result.output.lower() or "all stories passed" in result.output.lower()
-    ), f"Expected informative message, got:\n{result.output}"
+    assert "already completed" in result.output.lower() or "all stories passed" in result.output.lower(), (
+        f"Expected informative message, got:\n{result.output}"
+    )
     assert len(call_log["invoke_calls"]) == 0, "No stories should be dispatched on completed run"
 
 
@@ -383,9 +383,9 @@ def test_resume_no_prior_run_exit_3(
     result = runner.invoke(app, ["dispatch", "--epic", "5", "--yes", "--resume"])
 
     assert result.exit_code == 3, f"Expected exit code 3, got {result.exit_code}:\n{result.output}"
-    assert (
-        "no previous run" in result.output.lower() or "without --resume" in result.output.lower()
-    ), f"Expected error message, got:\n{result.output}"
+    assert "no previous run" in result.output.lower() or "without --resume" in result.output.lower(), (
+        f"Expected error message, got:\n{result.output}"
+    )
     assert len(call_log["invoke_calls"]) == 0, "No stories should be dispatched when no prior run"
 
 
@@ -424,9 +424,9 @@ def test_resume_with_story_flag_errors(
     result = runner.invoke(app, ["dispatch", "--story", "5.1", "--resume"])
 
     assert result.exit_code == 1, f"Expected exit code 1, got {result.exit_code}:\n{result.output}"
-    assert (
-        "--resume" in result.output and "--story" in result.output
-    ), f"Expected error mentioning --resume and --story, got:\n{result.output}"
+    assert "--resume" in result.output and "--story" in result.output, (
+        f"Expected error mentioning --resume and --story, got:\n{result.output}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -543,9 +543,9 @@ def test_resume_halt_controller_uses_new_run_id(
     assert result.exit_code == 0, f"Unexpected exit {result.exit_code}:\n{result.output}"
     assert halt_controller_run_ids, "HaltController must have been instantiated"
     used_run_id = halt_controller_run_ids[-1]
-    assert used_run_id == str(
-        new_run_id
-    ), f"HaltController should use new run_id {str(new_run_id)!r}, got {used_run_id!r}"
+    assert used_run_id == str(new_run_id), (
+        f"HaltController should use new run_id {str(new_run_id)!r}, got {used_run_id!r}"
+    )
     assert used_run_id != original_run_id, "HaltController must NOT use the original halted run_id"
 
 

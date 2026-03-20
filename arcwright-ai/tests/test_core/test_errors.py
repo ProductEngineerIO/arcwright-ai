@@ -291,9 +291,9 @@ class TestRenderClaudeGuidanceSharedRenderer:
         for cat in PLATFORM_ACCOUNT_CATEGORIES:
             cls = CLAUDE_ERROR_REGISTRY[cat]
             guidance = render_claude_guidance(cls)
-            assert (
-                "Claude platform/account issue" in guidance
-            ), f"{cat.value}: guidance must label failure as Claude platform/account issue"
+            assert "Claude platform/account issue" in guidance, (
+                f"{cat.value}: guidance must label failure as Claude platform/account issue"
+            )
 
     def test_platform_guidance_includes_title_and_summary(self) -> None:
         """Platform guidance includes the classification title and summary."""
@@ -314,18 +314,18 @@ class TestRenderClaudeGuidanceSharedRenderer:
         for cat in LOCAL_RUNTIME_CATEGORIES:
             cls = CLAUDE_ERROR_REGISTRY[cat]
             guidance = render_claude_guidance(cls)
-            assert (
-                "local Claude setup issue" in guidance
-            ), f"{cat.value}: guidance must label failure as local Claude setup issue"
+            assert "local Claude setup issue" in guidance, (
+                f"{cat.value}: guidance must label failure as local Claude setup issue"
+            )
 
     def test_local_guidance_does_not_mention_platform(self) -> None:
         """Local guidance must not say 'Claude platform/account issue'."""
         for cat in LOCAL_RUNTIME_CATEGORIES:
             cls = CLAUDE_ERROR_REGISTRY[cat]
             guidance = render_claude_guidance(cls)
-            assert (
-                "Claude platform/account issue" not in guidance
-            ), f"{cat.value}: local guidance must not reference Claude platform/account issue"
+            assert "Claude platform/account issue" not in guidance, (
+                f"{cat.value}: local guidance must not reference Claude platform/account issue"
+            )
 
     def test_local_guidance_with_diagnostic_hint_includes_hint(self) -> None:
         """Diagnostic hint is included in local guidance when provided."""
@@ -346,9 +346,9 @@ class TestRenderClaudeGuidanceSharedRenderer:
         for cat in retryable_cats:
             cls = CLAUDE_ERROR_REGISTRY[cat]
             guidance = render_claude_guidance(cls)
-            assert (
-                "transient/retryable Claude provider issue" in guidance
-            ), f"{cat.value}: transient guidance must label failure as transient/retryable issue"
+            assert "transient/retryable Claude provider issue" in guidance, (
+                f"{cat.value}: transient guidance must label failure as transient/retryable issue"
+            )
 
     def test_transient_retryable_guidance_includes_retry_note(self) -> None:
         """Retryable transient guidance includes a retry note."""
@@ -375,9 +375,9 @@ class TestRenderClaudeGuidanceSharedRenderer:
         cls = CLAUDE_ERROR_REGISTRY[ClaudeErrorCategory.MANAGED_SETTINGS_ERROR]
         tainted_hint = "/path/config?api_key=sk-ant-api03-FAKEKEY12345678"
         guidance = render_claude_guidance(cls, diagnostic_hint=tainted_hint)
-        assert (
-            "sk-ant-api03-FAKEKEY12345678" not in guidance
-        ), "render_claude_guidance must redact credentials from diagnostic_hint"
+        assert "sk-ant-api03-FAKEKEY12345678" not in guidance, (
+            "render_claude_guidance must redact credentials from diagnostic_hint"
+        )
 
     def test_category_sets_are_exhaustive_and_disjoint(self) -> None:
         """PLATFORM, LOCAL, and TRANSIENT sets together cover all 10 categories exactly once."""

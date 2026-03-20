@@ -422,9 +422,9 @@ def test_nfr3_timeout_error_wrapped_as_agent_error(
 
     result = runner.invoke(app, ["dispatch", "--epic", "5", "--yes"])
     # TimeoutError is wrapped as AgentError → exit code 2
-    assert (
-        result.exit_code == EXIT_AGENT
-    ), f"asyncio.TimeoutError must produce exit code 2 (EXIT_AGENT), got {result.exit_code}"
+    assert result.exit_code == EXIT_AGENT, (
+        f"asyncio.TimeoutError must produce exit code 2 (EXIT_AGENT), got {result.exit_code}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -480,9 +480,9 @@ def test_nfr3_connection_error_wrapped_as_agent_error(
     monkeypatch.setattr("arcwright_ai.cli.dispatch.build_story_graph", _make_connection_error_graph)
 
     result = runner.invoke(app, ["dispatch", "--epic", "5", "--yes"])
-    assert (
-        result.exit_code == EXIT_AGENT
-    ), f"ConnectionError must produce exit code 2 (EXIT_AGENT), got {result.exit_code}"
+    assert result.exit_code == EXIT_AGENT, (
+        f"ConnectionError must produce exit code 2 (EXIT_AGENT), got {result.exit_code}"
+    )
 
 
 def test_nfr3_http_status_error_wrapped_as_agent_error(
@@ -537,9 +537,9 @@ def test_nfr3_http_status_error_wrapped_as_agent_error(
     monkeypatch.setattr("arcwright_ai.cli.dispatch.build_story_graph", _make_http_status_graph)
 
     result = runner.invoke(app, ["dispatch", "--epic", "5", "--yes"])
-    assert (
-        result.exit_code == EXIT_AGENT
-    ), f"HTTPStatusError must produce exit code 2 (EXIT_AGENT), got {result.exit_code}"
+    assert result.exit_code == EXIT_AGENT, (
+        f"HTTPStatusError must produce exit code 2 (EXIT_AGENT), got {result.exit_code}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -659,9 +659,9 @@ async def test_best_effort_write_halt_report_failure_does_not_suppress_exit(
         last_completed=None,
     )
 
-    assert (
-        exit_code == EXIT_AGENT
-    ), "write_halt_report failure must not prevent halt controller returning correct exit code"
+    assert exit_code == EXIT_AGENT, (
+        "write_halt_report failure must not prevent halt controller returning correct exit code"
+    )
 
 
 async def test_best_effort_write_halt_report_failure_graph_halt(
@@ -718,9 +718,9 @@ async def test_best_effort_update_run_status_failure_does_not_suppress_exit(
         last_completed=None,
     )
 
-    assert (
-        exit_code == EXIT_SCM
-    ), "update_run_status failure must not prevent halt controller returning correct exit code"
+    assert exit_code == EXIT_SCM, (
+        "update_run_status failure must not prevent halt controller returning correct exit code"
+    )
 
 
 async def test_best_effort_update_run_status_failure_graph_halt(
@@ -1222,27 +1222,27 @@ class TestPlatformAccountSuggestedFix:
         """billing_error suggested fix references Claude platform and credits/billing (AC#1)."""
         exc = _make_agent_error_with_platform_classification("billing_error")
         fix = HaltController._suggested_fix_for_exception(exc)
-        assert (
-            "Claude platform" in fix or "Claude Platform" in fix
-        ), "Billing fix must state this is a Claude platform/account issue"
+        assert "Claude platform" in fix or "Claude Platform" in fix, (
+            "Billing fix must state this is a Claude platform/account issue"
+        )
         assert "credit" in fix.lower() or "billing" in fix.lower(), "Billing fix must mention credits or billing"
 
     def test_auth_error_mentions_api_key_and_platform(self) -> None:
         """auth_error suggested fix references Claude platform and API key (AC#2)."""
         exc = _make_agent_error_with_platform_classification("auth_error")
         fix = HaltController._suggested_fix_for_exception(exc)
-        assert (
-            "Claude platform" in fix or "Claude Platform" in fix
-        ), "Auth fix must state this is a Claude platform/account issue"
+        assert "Claude platform" in fix or "Claude Platform" in fix, (
+            "Auth fix must state this is a Claude platform/account issue"
+        )
         assert "api key" in fix.lower() or "ANTHROPIC_API_KEY" in fix, "Auth fix must mention API key verification"
 
     def test_model_access_error_mentions_model_and_platform(self) -> None:
         """model_access_error suggested fix references Claude platform and model entitlement (AC#2)."""
         exc = _make_agent_error_with_platform_classification("model_access_error")
         fix = HaltController._suggested_fix_for_exception(exc)
-        assert (
-            "Claude platform" in fix or "Claude Platform" in fix
-        ), "Model access fix must state this is a Claude platform/account issue"
+        assert "Claude platform" in fix or "Claude Platform" in fix, (
+            "Model access fix must state this is a Claude platform/account issue"
+        )
         assert "model" in fix.lower(), "Model access fix must mention model"
 
     def test_non_platform_agent_error_uses_generic_fix(self) -> None:
@@ -1294,12 +1294,12 @@ class TestPlatformAccountTerminalOutput:
         )
 
         output = capsys.readouterr().err
-        assert (
-            "Claude platform" in output or "Claude Platform" in output
-        ), "Terminal output must explicitly say this is a Claude platform/account issue"
-        assert (
-            "credit" in output.lower() or "billing" in output.lower()
-        ), "Terminal output must mention credits or billing for billing failures"
+        assert "Claude platform" in output or "Claude Platform" in output, (
+            "Terminal output must explicitly say this is a Claude platform/account issue"
+        )
+        assert "credit" in output.lower() or "billing" in output.lower(), (
+            "Terminal output must mention credits or billing for billing failures"
+        )
 
     async def test_auth_terminal_output_says_claude_platform(
         self,
@@ -1407,9 +1407,9 @@ class TestPlatformGuidanceConsistency:
         )
 
         fix = str(captured.get("suggested_fix", ""))
-        assert (
-            "Claude platform" in fix or "Claude Platform" in fix
-        ), "Halt report suggested_fix must contain platform guidance"
+        assert "Claude platform" in fix or "Claude Platform" in fix, (
+            "Halt report suggested_fix must contain platform guidance"
+        )
         assert "credit" in fix.lower() or "billing" in fix.lower()
 
     async def test_auth_platform_guidance_in_halt_report_suggested_fix(
@@ -1477,12 +1477,12 @@ class TestLocalRuntimeSuggestedFix:
         """cli_missing_error suggested fix labels failure as a local Claude setup issue (AC#1)."""
         exc = _make_agent_error_with_local_classification("cli_missing_error")
         fix = HaltController._suggested_fix_for_exception(exc)
-        assert (
-            "local Claude setup" in fix.lower() or "local Claude" in fix
-        ), "Fix must state this is a local Claude setup issue"
-        assert (
-            "Claude platform" not in fix and "billing" not in fix.lower()
-        ), "Fix must NOT reference Claude platform/account issues"
+        assert "local Claude setup" in fix.lower() or "local Claude" in fix, (
+            "Fix must state this is a local Claude setup issue"
+        )
+        assert "Claude platform" not in fix and "billing" not in fix.lower(), (
+            "Fix must NOT reference Claude platform/account issues"
+        )
 
     def test_cli_missing_error_mentions_install(self) -> None:
         """cli_missing_error fix mentions installing the Claude CLI (AC#1)."""
@@ -1494,9 +1494,9 @@ class TestLocalRuntimeSuggestedFix:
         """managed_settings_error fix labels failure as local setup issue (AC#1)."""
         exc = _make_agent_error_with_local_classification("managed_settings_error")
         fix = HaltController._suggested_fix_for_exception(exc)
-        assert (
-            "local Claude setup" in fix.lower() or "local Claude" in fix
-        ), "Fix must state this is a local Claude setup issue"
+        assert "local Claude setup" in fix.lower() or "local Claude" in fix, (
+            "Fix must state this is a local Claude setup issue"
+        )
         assert "Claude platform" not in fix, "Fix must NOT reference Claude platform/account issues"
 
     def test_managed_settings_error_includes_path_hint_from_stderr(self) -> None:
@@ -1506,17 +1506,17 @@ class TestLocalRuntimeSuggestedFix:
             captured_stderr="Error loading /home/user/.claude/remote-settings.json: invalid JSON",
         )
         fix = HaltController._suggested_fix_for_exception(exc)
-        assert (
-            "/home/user/.claude/remote-settings.json" in fix
-        ), "Fix must include the concrete path from captured_stderr when available"
+        assert "/home/user/.claude/remote-settings.json" in fix, (
+            "Fix must include the concrete path from captured_stderr when available"
+        )
 
     def test_local_config_error_labels_as_local_setup(self) -> None:
         """local_config_error fix labels failure as local setup issue (AC#1)."""
         exc = _make_agent_error_with_local_classification("local_config_error")
         fix = HaltController._suggested_fix_for_exception(exc)
-        assert (
-            "local Claude setup" in fix.lower() or "local Claude" in fix
-        ), "Fix must state this is a local Claude setup issue"
+        assert "local Claude setup" in fix.lower() or "local Claude" in fix, (
+            "Fix must state this is a local Claude setup issue"
+        )
         assert "billing" not in fix.lower(), "Fix must NOT mention billing"
 
     def test_local_fix_does_not_expose_secrets(self) -> None:
@@ -1568,9 +1568,9 @@ class TestLocalRuntimeTerminalOutput:
         )
 
         output = capsys.readouterr().err
-        assert (
-            "local Claude setup" in output.lower() or "local Claude" in output
-        ), "Terminal output must explicitly say this is a local Claude setup issue"
+        assert "local Claude setup" in output.lower() or "local Claude" in output, (
+            "Terminal output must explicitly say this is a local Claude setup issue"
+        )
         assert "Claude platform" not in output, "Terminal output must NOT claim this is a Claude platform/account issue"
 
     async def test_managed_settings_terminal_output_includes_path_hint(
@@ -1598,9 +1598,9 @@ class TestLocalRuntimeTerminalOutput:
         )
 
         output = capsys.readouterr().err
-        assert (
-            "/home/user/.claude/remote-settings.json" in output
-        ), "Terminal output must include the path from captured stderr (AC#2)"
+        assert "/home/user/.claude/remote-settings.json" in output, (
+            "Terminal output must include the path from captured stderr (AC#2)"
+        )
 
     async def test_local_config_terminal_output_does_not_expose_secrets(
         self,
@@ -1668,9 +1668,9 @@ class TestLocalRuntimeGuidanceConsistency:
         )
 
         fix = str(captured.get("suggested_fix", ""))
-        assert (
-            "local Claude setup" in fix.lower() or "local Claude" in fix
-        ), "Halt report suggested_fix must contain local setup guidance"
+        assert "local Claude setup" in fix.lower() or "local Claude" in fix, (
+            "Halt report suggested_fix must contain local setup guidance"
+        )
         assert "Claude platform" not in fix, "Halt report must NOT reference platform/account issues"
 
     async def test_managed_settings_guidance_in_halt_report_includes_path(
@@ -1704,9 +1704,9 @@ class TestLocalRuntimeGuidanceConsistency:
         )
 
         fix = str(captured.get("suggested_fix", ""))
-        assert (
-            "/tmp/test-settings.json" in fix
-        ), "Halt report suggested_fix must include path from captured_stderr when available"
+        assert "/tmp/test-settings.json" in fix, (
+            "Halt report suggested_fix must include path from captured_stderr when available"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1738,12 +1738,12 @@ class TestTransientSuggestedFix:
         """rate_limit_error suggested fix identifies it as a transient/retryable issue (AC#1)."""
         exc = _make_agent_error_with_transient_classification("rate_limit_error")
         fix = HaltController._suggested_fix_for_exception(exc)
-        assert (
-            "transient" in fix.lower() or "retryable" in fix.lower()
-        ), "Rate-limit fix must label the failure as transient/retryable"
-        assert (
-            "Claude platform" not in fix and "local Claude" not in fix.lower()
-        ), "Rate-limit fix must NOT reference platform-account or local setup issues"
+        assert "transient" in fix.lower() or "retryable" in fix.lower(), (
+            "Rate-limit fix must label the failure as transient/retryable"
+        )
+        assert "Claude platform" not in fix and "local Claude" not in fix.lower(), (
+            "Rate-limit fix must NOT reference platform-account or local setup issues"
+        )
 
     def test_rate_limit_error_instructs_wait_and_retry(self) -> None:
         """rate_limit_error fix instructs the user to wait and retry (AC#2)."""
@@ -1755,25 +1755,25 @@ class TestTransientSuggestedFix:
         """network_error suggested fix identifies it as a transient/retryable issue (AC#1)."""
         exc = _make_agent_error_with_transient_classification("network_error")
         fix = HaltController._suggested_fix_for_exception(exc)
-        assert (
-            "transient" in fix.lower() or "retryable" in fix.lower()
-        ), "Network fix must label the failure as transient/retryable"
+        assert "transient" in fix.lower() or "retryable" in fix.lower(), (
+            "Network fix must label the failure as transient/retryable"
+        )
 
     def test_network_error_instructs_connectivity_check(self) -> None:
         """network_error fix instructs the user to retry after checking connectivity (AC#2)."""
         exc = _make_agent_error_with_transient_classification("network_error")
         fix = HaltController._suggested_fix_for_exception(exc)
-        assert (
-            "connect" in fix.lower() or "network" in fix.lower() or "retry" in fix.lower()
-        ), "Network fix must mention connectivity or retry"
+        assert "connect" in fix.lower() or "network" in fix.lower() or "retry" in fix.lower(), (
+            "Network fix must mention connectivity or retry"
+        )
 
     def test_timeout_error_labeled_as_transient(self) -> None:
         """timeout_error suggested fix identifies it as a transient/retryable issue (AC#1)."""
         exc = _make_agent_error_with_transient_classification("timeout_error")
         fix = HaltController._suggested_fix_for_exception(exc)
-        assert (
-            "transient" in fix.lower() or "retryable" in fix.lower()
-        ), "Timeout fix must label the failure as transient/retryable"
+        assert "transient" in fix.lower() or "retryable" in fix.lower(), (
+            "Timeout fix must label the failure as transient/retryable"
+        )
 
     def test_timeout_error_instructs_retry_after_connectivity(self) -> None:
         """timeout_error fix instructs the user to retry after checking connectivity (AC#2)."""
@@ -1785,12 +1785,12 @@ class TestTransientSuggestedFix:
         """unknown_sdk_error is rendered as an unrecognised SDK error, not as transient (AC#4)."""
         exc = _make_agent_error_with_transient_classification("unknown_sdk_error")
         fix = HaltController._suggested_fix_for_exception(exc)
-        assert (
-            "unrecognised" in fix.lower() or "unknown" in fix.lower() or "sdk" in fix.lower()
-        ), "Unknown SDK fix must reference unrecognised/unknown/SDK"
-        assert (
-            "Claude platform" not in fix and "local Claude" not in fix.lower()
-        ), "Unknown SDK fix must NOT reference platform-account or local setup issues"
+        assert "unrecognised" in fix.lower() or "unknown" in fix.lower() or "sdk" in fix.lower(), (
+            "Unknown SDK fix must reference unrecognised/unknown/SDK"
+        )
+        assert "Claude platform" not in fix and "local Claude" not in fix.lower(), (
+            "Unknown SDK fix must NOT reference platform-account or local setup issues"
+        )
 
     def test_non_transient_agent_error_uses_generic_fix(self) -> None:
         """AgentError without a transient classification gets the existing generic message."""
@@ -1825,9 +1825,9 @@ class TestTransientTerminalOutput:
         )
 
         output = capsys.readouterr().err
-        assert (
-            "transient" in output.lower() or "retryable" in output.lower()
-        ), "Terminal output must label rate_limit_error as transient/retryable"
+        assert "transient" in output.lower() or "retryable" in output.lower(), (
+            "Terminal output must label rate_limit_error as transient/retryable"
+        )
         assert "Claude platform" not in output, "Terminal output must NOT claim this is a Claude platform/account issue"
 
     async def test_network_error_terminal_output_says_transient(
@@ -1852,9 +1852,9 @@ class TestTransientTerminalOutput:
         )
 
         output = capsys.readouterr().err
-        assert (
-            "transient" in output.lower() or "retryable" in output.lower()
-        ), "Terminal output must label network_error as transient/retryable"
+        assert "transient" in output.lower() or "retryable" in output.lower(), (
+            "Terminal output must label network_error as transient/retryable"
+        )
 
     async def test_timeout_error_terminal_output_says_transient(
         self,
@@ -1878,9 +1878,9 @@ class TestTransientTerminalOutput:
         )
 
         output = capsys.readouterr().err
-        assert (
-            "transient" in output.lower() or "retryable" in output.lower()
-        ), "Terminal output must label timeout_error as transient/retryable"
+        assert "transient" in output.lower() or "retryable" in output.lower(), (
+            "Terminal output must label timeout_error as transient/retryable"
+        )
 
     async def test_unknown_sdk_error_terminal_output_rendered(
         self,
@@ -1904,12 +1904,12 @@ class TestTransientTerminalOutput:
         )
 
         output = capsys.readouterr().err
-        assert (
-            "unrecognised" in output.lower() or "unknown" in output.lower() or "sdk" in output.lower()
-        ), "Terminal output must render the unknown SDK error fallback"
-        assert (
-            "Claude platform" not in output
-        ), "Unknown SDK output must NOT claim this is a Claude platform/account issue"
+        assert "unrecognised" in output.lower() or "unknown" in output.lower() or "sdk" in output.lower(), (
+            "Terminal output must render the unknown SDK error fallback"
+        )
+        assert "Claude platform" not in output, (
+            "Unknown SDK output must NOT claim this is a Claude platform/account issue"
+        )
         assert "local Claude" not in output.lower(), "Unknown SDK output must NOT claim this is a local setup issue"
 
     async def test_transient_errors_do_not_include_local_platform_language(
@@ -1969,9 +1969,9 @@ class TestTransientGuidanceConsistency:
         )
 
         fix = str(captured.get("suggested_fix", ""))
-        assert (
-            "transient" in fix.lower() or "retryable" in fix.lower()
-        ), "Halt report suggested_fix must contain transient guidance for rate_limit_error"
+        assert "transient" in fix.lower() or "retryable" in fix.lower(), (
+            "Halt report suggested_fix must contain transient guidance for rate_limit_error"
+        )
 
     async def test_unknown_sdk_guidance_in_halt_report_suggested_fix(
         self,
@@ -2001,7 +2001,7 @@ class TestTransientGuidanceConsistency:
         )
 
         fix = str(captured.get("suggested_fix", ""))
-        assert (
-            "unrecognised" in fix.lower() or "unknown" in fix.lower() or "sdk" in fix.lower()
-        ), "Halt report suggested_fix must render the unknown-SDK fallback"
+        assert "unrecognised" in fix.lower() or "unknown" in fix.lower() or "sdk" in fix.lower(), (
+            "Halt report suggested_fix must render the unknown-SDK fallback"
+        )
         assert "Claude platform" not in fix, "Unknown SDK halt report must NOT reference platform/account issues"

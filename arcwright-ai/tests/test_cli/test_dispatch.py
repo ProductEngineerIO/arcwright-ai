@@ -347,9 +347,9 @@ def test_dispatch_story_end_to_end_with_mock_sdk(
     run_yamls = list(tmp_path.glob(".arcwright-ai/runs/*/run.yaml"))
     assert len(run_yamls) == 1, "Expected run.yaml to be created by single-story dispatch"
     run_data = yaml.safe_load(run_yamls[0].read_text(encoding="utf-8"))
-    assert (
-        run_data["status"] == "completed"
-    ), f"Expected run status 'completed' after successful single-story dispatch, got: {run_data['status']}"
+    assert run_data["status"] == "completed", (
+        f"Expected run status 'completed' after successful single-story dispatch, got: {run_data['status']}"
+    )
 
     # Verify story.md copy written (guards against missing story copy regression)
     story_copies = list(tmp_path.glob(".arcwright-ai/runs/*/stories/*/story.md"))
@@ -604,9 +604,9 @@ def test_epic_dispatch_budget_carry_forward(
     assert len(call_log["invoke_calls"]) == 2
 
     story2_initial_budget: BudgetState = call_log["invoke_calls"][1].budget  # type: ignore[attr-defined]
-    assert story2_initial_budget.estimated_cost >= Decimal(
-        "0.05"
-    ), "Story 2's initial budget should carry story 1's accumulated cost"
+    assert story2_initial_budget.estimated_cost >= Decimal("0.05"), (
+        "Story 2's initial budget should carry story 1's accumulated cost"
+    )
 
 
 def test_epic_dispatch_initial_budget_uses_config_invocation_ceiling(

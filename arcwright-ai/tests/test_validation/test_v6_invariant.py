@@ -434,12 +434,12 @@ async def test_run_v6_validation_emits_structured_log_events(
         await run_v6_validation("no file references here", tmp_path, story_path)
 
     messages = [r.getMessage() for r in caplog.records]
-    assert any(
-        "validation.v6.start" in m for m in messages
-    ), f"Expected 'validation.v6.start' in log messages, got: {messages}"
-    assert any(
-        "validation.v6.complete" in m for m in messages
-    ), f"Expected 'validation.v6.complete' in log messages, got: {messages}"
+    assert any("validation.v6.start" in m for m in messages), (
+        f"Expected 'validation.v6.start' in log messages, got: {messages}"
+    )
+    assert any("validation.v6.complete" in m for m in messages), (
+        f"Expected 'validation.v6.complete' in log messages, got: {messages}"
+    )
 
     complete_records = [r for r in caplog.records if "validation.v6.complete" in r.getMessage()]
     assert len(complete_records) == 1

@@ -17,8 +17,9 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install -e ".[dev]"
-      - run: ruff check .
-      - run: ruff format --check .
+      # Use pre-commit hooks so local and CI Ruff versions stay consistent.
+      - run: pre-commit run ruff --all-files
+      - run: pre-commit run ruff-format --all-files
       - run: mypy --strict src/
       # Exit code 5 = no tests collected; acceptable until Epic 1 stories add tests
       - run: pytest || [ $? -eq 5 ]

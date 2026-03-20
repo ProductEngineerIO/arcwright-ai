@@ -2764,9 +2764,9 @@ async def test_finalize_node_persists_budget_on_escalated(
     result = await finalize_node(escalated_state)
 
     assert result.status == TaskState.ESCALATED
-    assert any(
-        b.invocation_count == 2 for b in captured_budgets
-    ), "update_run_status should be called with the escalated budget"
+    assert any(b.invocation_count == 2 for b in captured_budgets), (
+        "update_run_status should be called with the escalated budget"
+    )
 
 
 @pytest.mark.asyncio
@@ -3128,12 +3128,12 @@ async def test_integration_zero_invocations_missed(
         completed_state = _state_from_graph_result(graph_result, initial_state)
         current_budget = completed_state.budget
 
-    assert (
-        current_budget.invocation_count == n_stories
-    ), f"Expected {n_stories} invocations tracked, got {current_budget.invocation_count}"
-    assert (
-        len(current_budget.per_story) == n_stories
-    ), f"Expected {n_stories} per-story entries, got {len(current_budget.per_story)}"
+    assert current_budget.invocation_count == n_stories, (
+        f"Expected {n_stories} invocations tracked, got {current_budget.invocation_count}"
+    )
+    assert len(current_budget.per_story) == n_stories, (
+        f"Expected {n_stories} per-story entries, got {len(current_budget.per_story)}"
+    )
     for i in range(n_stories):
         slug = f"story-{i + 1}"
         assert slug in current_budget.per_story
