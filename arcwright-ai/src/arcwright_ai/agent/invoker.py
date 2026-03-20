@@ -12,6 +12,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from arcwright_ai.core.constants import DIR_ARCWRIGHT, DIR_TMP
+from arcwright_ai.core.errors import ClaudeErrorClassification, classify_claude_error
 from arcwright_ai.core.exceptions import AgentError, AgentTimeoutError, SandboxViolation
 
 if TYPE_CHECKING:
@@ -219,22 +220,6 @@ class _ToolValidationStats:
 
 _STDERR_READ_LIMIT: int = 8192  # Max bytes to read from stderr temp file.
 
-_BILLING_ERROR_RE = re.compile(
-    r"credit balance is too low|plans?\s*&\s*billing|billing_error|insufficient credit",
-    re.IGNORECASE,
-)
-_AUTH_ERROR_RE = re.compile(
-    r"authentication_error|invalid api key|api key[^\n]*invalid|incorrect api key|401\b|unauthorized|forbidden",
-    re.IGNORECASE,
-)
-_MODEL_ACCESS_ERROR_RE = re.compile(
-    (
-        r"model access denied|does not have access to (?:the )?model|"
-        r"not authorized to use (?:the )?model|model[^\n]*not available for this key"
-    ),
-    re.IGNORECASE,
-)
-
 
 def _set_exception_message(exc: AgentError, message: str) -> None:
     """Synchronize ``Exception.args`` and ``ArcwrightError.message`` after reclassification."""
@@ -248,42 +233,17 @@ def _classify_sdk_failure(
     message: str,
     stderr: str | None,
     exit_code: int | None,
-) -> tuple[str | None, str | None]:
-    """Map known Claude SDK/API failures to explicit operator-facing messages."""
+) -> ClaudeErrorClassification | None:
+    """Map Claude SDK/API failures to a structured classification.
 
+    Delegates to the shared ``classify_claude_error`` taxonomy.  Returns
+    ``None`` only when no input is provided.
+    """
     combined = "\n".join(part for part in (message, stderr or "") if part)
     if not combined:
-        return None, None
+        return None
 
-    if _BILLING_ERROR_RE.search(combined):
-        return (
-            "Claude API billing error: the configured Anthropic API key has insufficient credit balance. "
-            "Update the key or remove the Arcwright API-key override so Claude Code can use "
-            "your working CLI/OAuth auth.",
-            "billing_error",
-        )
-    if _AUTH_ERROR_RE.search(combined):
-        return (
-            "Claude API authentication error: the configured Anthropic API key was rejected. "
-            "Verify the key value or remove the Arcwright API-key override so Claude Code can "
-            "use your working CLI/OAuth auth.",
-            "auth_error",
-        )
-    if _MODEL_ACCESS_ERROR_RE.search(combined):
-        return (
-            "Claude model access error: the configured account or API key does not have access to the requested model. "
-            "Choose a model your account can use or update the configured Anthropic API key.",
-            "model_access_error",
-        )
-
-    if exit_code == 1 and "Check stderr output for details" in message and stderr:
-        first_line = stderr.strip().splitlines()[-1][:240]
-        return (
-            f"Claude SDK subprocess failed before producing output. Diagnostic stderr: {first_line}",
-            "sdk_subprocess_error",
-        )
-
-    return None, None
+    return classify_claude_error(message=message, stderr=stderr, exit_code=exit_code)
 
 
 def _enrich_error_with_stderr(exc: AgentError, stderr_path: str) -> None:
@@ -310,15 +270,16 @@ def _enrich_error_with_stderr(exc: AgentError, stderr_path: str) -> None:
         details = exc.details
 
     exit_code = details.get("exit_code") if isinstance(details, dict) else None
-    classified_message, failure_category = _classify_sdk_failure(
+    classification = _classify_sdk_failure(
         message=str(exc),
         stderr=stderr_content,
         exit_code=exit_code if isinstance(exit_code, int) else None,
     )
-    if classified_message and isinstance(details, dict):
-        details["failure_category"] = failure_category
-        details["classified_message"] = classified_message
-        _set_exception_message(exc, classified_message)
+    if classification and isinstance(details, dict):
+        details["failure_category"] = classification.error_code.value
+        details["classified_message"] = classification.summary
+        details["classification"] = classification
+        _set_exception_message(exc, classification.summary)
 
     logger.error(
         "agent.sdk_stderr",
@@ -362,23 +323,20 @@ def _wrap_sdk_error(error: Exception) -> AgentError:
     if exit_code is not None:
         details["exit_code"] = exit_code
 
-    classified_message, failure_category = _classify_sdk_failure(
+    classification = _classify_sdk_failure(
         message=message,
         stderr=stderr,
         exit_code=exit_code,
     )
-    if classified_message:
-        details["failure_category"] = failure_category
-        details["classified_message"] = classified_message
-        message = classified_message
+    if classification:
+        details["failure_category"] = classification.error_code.value
+        details["classified_message"] = classification.summary
+        details["classification"] = classification
+        message = classification.summary
 
     if isinstance(error, ClaudeSDKError):
         if re.search(r"timeout", message, re.IGNORECASE):
             return AgentTimeoutError(f"Agent session timed out: {message}", details=details)
-        # Include stderr in the message when it contains real diagnostic info
-        # (not the SDK placeholder).
-        if stderr and stderr != "Check stderr output for details":
-            message = f"{message} | stderr={stderr}"
         return AgentError(f"SDK error: {message}", details=details)
     return AgentError(f"Unexpected error during agent invocation: {message}", details=details)
 

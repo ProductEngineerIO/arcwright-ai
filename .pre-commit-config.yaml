@@ -1,6 +1,6 @@
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.8.6
+    rev: v0.15.6
     hooks:
       - id: ruff
         files: ^arcwright-ai/
@@ -21,6 +21,7 @@ repos:
             pyyaml,
             types-PyYAML,
             python-dotenv,
+            langgraph,
             claude-code-sdk,
           ]
         args: [--strict, --config-file=arcwright-ai/pyproject.toml]

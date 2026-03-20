@@ -27,6 +27,15 @@ from arcwright_ai.core.constants import (
     EXIT_VALIDATION,
     VALIDATION_FILENAME,
 )
+from arcwright_ai.core.errors import (
+    CLAUDE_ERROR_REGISTRY,
+    LOCAL_RUNTIME_CATEGORIES,
+    PLATFORM_ACCOUNT_CATEGORIES,
+    TRANSIENT_CATEGORIES,
+    ClaudeErrorCategory,
+    ClaudeErrorClassification,
+    render_claude_guidance,
+)
 from arcwright_ai.core.exceptions import (
     AgentBudgetError,
     AgentError,
@@ -56,6 +65,9 @@ logger = logging.getLogger(__name__)
 
 # Length of the "epic-" prefix used when parsing epic_spec strings.
 _EPIC_PREFIX_LEN: int = 5
+
+# Regex to extract a plausible file path or home-relative path from stderr text.
+_PATH_HINT_RE: re.Pattern[str] = re.compile(r"(~?/[\w./\-]+\.\w+|~[\w./\-]+)")
 
 
 class HaltController:
@@ -188,7 +200,20 @@ class HaltController:
             )
 
         # AC#5: Emit structured halt summary and JSONL event.
-        self._emit_halt_summary(story_slug, halt_reason, accumulated_budget, completed_stories)
+        platform_cls = self._extract_platform_classification(exception)
+        if platform_cls is not None:
+            operator_guidance: str | None = render_claude_guidance(platform_cls)
+        else:
+            local_cls = self._extract_local_classification(exception)
+            if local_cls is not None:
+                diagnostic_hint = self._extract_local_diagnostic_hint(exception)
+                operator_guidance = render_claude_guidance(local_cls, diagnostic_hint=diagnostic_hint)
+            else:
+                transient_cls = self._extract_transient_classification(exception)
+                operator_guidance = render_claude_guidance(transient_cls) if transient_cls is not None else None
+        self._emit_halt_summary(
+            story_slug, halt_reason, accumulated_budget, completed_stories, operator_guidance=operator_guidance
+        )
         self._emit_halt_jsonl_event(story_slug, halt_reason, accumulated_budget, completed_stories)
 
         return exit_code
@@ -293,7 +318,20 @@ class HaltController:
             )
 
         # AC#5: Emit structured halt summary and JSONL event.
-        self._emit_halt_summary(story_slug, halt_reason, accumulated_budget, completed_stories)
+        _graph_failure_cat = getattr(story_state, "failure_category", None)
+        _graph_operator_guidance: str | None = None
+        if _graph_failure_cat:
+            try:
+                _graph_category = ClaudeErrorCategory(_graph_failure_cat)
+                _all_known = PLATFORM_ACCOUNT_CATEGORIES | LOCAL_RUNTIME_CATEGORIES | TRANSIENT_CATEGORIES
+                if _graph_category in _all_known:
+                    _graph_cls = CLAUDE_ERROR_REGISTRY[_graph_category]
+                    _graph_operator_guidance = render_claude_guidance(_graph_cls)
+            except ValueError:
+                pass
+        self._emit_halt_summary(
+            story_slug, halt_reason, accumulated_budget, completed_stories, operator_guidance=_graph_operator_guidance
+        )
         self._emit_halt_jsonl_event(story_slug, halt_reason, accumulated_budget, completed_stories)
 
         return exit_code
@@ -546,6 +584,16 @@ class HaltController:
                 "`limits.timeout_per_story` or breaking the story into smaller subtasks."
             )
         if isinstance(exception, AgentError):
+            platform_cls = HaltController._extract_platform_classification(exception)
+            if platform_cls is not None:
+                return render_claude_guidance(platform_cls)
+            local_cls = HaltController._extract_local_classification(exception)
+            if local_cls is not None:
+                diagnostic_hint = HaltController._extract_local_diagnostic_hint(exception)
+                return render_claude_guidance(local_cls, diagnostic_hint=diagnostic_hint)
+            transient_cls = HaltController._extract_transient_classification(exception)
+            if transient_cls is not None:
+                return render_claude_guidance(transient_cls)
             return (
                 "Agent invocation failed. Check API key validity, available API credits, network connectivity, "
                 "and the agent invocation logs for details."
@@ -583,6 +631,21 @@ class HaltController:
                 "or `limits.tokens_per_story` in pyproject.toml."
             )
         if HaltController._retry_history_has_sdk_failure(story_state) or not story_state.retry_history:
+            failure_cat = getattr(story_state, "failure_category", None)
+            if failure_cat:
+                try:
+                    category = ClaudeErrorCategory(failure_cat)
+                    if category in PLATFORM_ACCOUNT_CATEGORIES:
+                        cls_entry = CLAUDE_ERROR_REGISTRY[category]
+                        return render_claude_guidance(cls_entry)
+                    if category in LOCAL_RUNTIME_CATEGORIES:
+                        cls_entry = CLAUDE_ERROR_REGISTRY[category]
+                        return render_claude_guidance(cls_entry)
+                    if category in TRANSIENT_CATEGORIES:
+                        cls_entry = CLAUDE_ERROR_REGISTRY[category]
+                        return render_claude_guidance(cls_entry)
+                except ValueError:
+                    pass
             return (
                 "Agent invocation failed before validation completed. Check API key validity, available API credits, "
                 "model access (especially review model), network connectivity, and SDK stderr logs."
@@ -640,29 +703,195 @@ class HaltController:
                 extra={"data": {"story": story_slug, "error": str(exc)}},
             )
 
+    @staticmethod
+    def _extract_platform_classification(exception: Exception) -> ClaudeErrorClassification | None:
+        """Extract a platform-account ClaudeErrorClassification from an AgentError, if present.
+
+        Returns ``None`` for any exception that is not an ``AgentError`` with a
+        ``details["classification"]`` value mapping to a platform-account category
+        (billing, auth, or model_access).
+
+        Args:
+            exception: Exception to inspect.
+
+        Returns:
+            The ``ClaudeErrorClassification`` if it is a platform-account failure;
+            ``None`` otherwise.
+        """
+        if not isinstance(exception, AgentError):
+            return None
+        details = getattr(exception, "details", None)
+        if not isinstance(details, dict):
+            return None
+        classification = details.get("classification")
+        if not isinstance(classification, ClaudeErrorClassification):
+            return None
+        if classification.error_code not in PLATFORM_ACCOUNT_CATEGORIES:
+            return None
+        return classification
+
+    @staticmethod
+    def _format_platform_guidance(classification: ClaudeErrorClassification) -> str:
+        """Format operator guidance for a platform-account Claude error.
+
+        Delegates to :func:`~arcwright_ai.core.errors.render_claude_guidance`.
+        Kept for compatibility with call sites that reference it directly.
+
+        Args:
+            classification: Structured classification from the error taxonomy.
+
+        Returns:
+            Human-readable operator guidance string.
+        """
+        return render_claude_guidance(classification)
+
+    @staticmethod
+    def _extract_local_classification(exception: Exception) -> ClaudeErrorClassification | None:
+        """Extract a local-runtime ClaudeErrorClassification from an AgentError, if present.
+
+        Returns ``None`` for any exception that is not an ``AgentError`` with a
+        ``details["classification"]`` value mapping to a local runtime/configuration
+        category (CLI missing, local config, or managed settings).
+
+        Args:
+            exception: Exception to inspect.
+
+        Returns:
+            The ``ClaudeErrorClassification`` if it is a local setup failure;
+            ``None`` otherwise.
+        """
+        if not isinstance(exception, AgentError):
+            return None
+        details = getattr(exception, "details", None)
+        if not isinstance(details, dict):
+            return None
+        classification = details.get("classification")
+        if not isinstance(classification, ClaudeErrorClassification):
+            return None
+        if classification.error_code not in LOCAL_RUNTIME_CATEGORIES:
+            return None
+        return classification
+
+    @staticmethod
+    def _extract_local_diagnostic_hint(exception: Exception) -> str | None:
+        """Extract a file path or configuration target from an exception's captured stderr.
+
+        Looks in ``exception.details["captured_stderr"]`` for the first plausible
+        file path so the terminal guidance can include a concrete "inspect this file"
+        hint when the path is known (AC #2).
+
+        Args:
+            exception: Exception to inspect.
+
+        Returns:
+            A short path string (e.g. ``~/.claude/remote-settings.json``) or
+            ``None`` when no recognisable path is found.
+        """
+        if not isinstance(exception, AgentError):
+            return None
+        details = getattr(exception, "details", None)
+        if not isinstance(details, dict):
+            return None
+        stderr = details.get("captured_stderr", "")
+        if not isinstance(stderr, str) or not stderr:
+            return None
+        match = _PATH_HINT_RE.search(stderr)
+        return match.group(1) if match else None
+
+    @staticmethod
+    def _format_local_guidance(
+        classification: ClaudeErrorClassification,
+        *,
+        diagnostic_hint: str | None = None,
+    ) -> str:
+        """Format operator guidance for a local Claude runtime/configuration error.
+
+        Delegates to :func:`~arcwright_ai.core.errors.render_claude_guidance`.
+        Kept for compatibility with call sites that reference it directly.
+
+        Args:
+            classification: Structured classification from the error taxonomy.
+            diagnostic_hint: Optional path extracted from captured stderr.
+
+        Returns:
+            Human-readable operator guidance string.
+        """
+        return render_claude_guidance(classification, diagnostic_hint=diagnostic_hint)
+
+    @staticmethod
+    def _extract_transient_classification(exception: Exception) -> ClaudeErrorClassification | None:
+        """Extract a transient/SDK ClaudeErrorClassification from an AgentError, if present.
+
+        Returns ``None`` for any exception that is not an ``AgentError`` with a
+        ``details["classification"]`` value mapping to a transient provider category
+        (rate-limit, network, timeout, or unknown SDK fallback).
+
+        Args:
+            exception: Exception to inspect.
+
+        Returns:
+            The ``ClaudeErrorClassification`` if it is a transient/SDK failure;
+            ``None`` otherwise.
+        """
+        if not isinstance(exception, AgentError):
+            return None
+        details = getattr(exception, "details", None)
+        if not isinstance(details, dict):
+            return None
+        classification = details.get("classification")
+        if not isinstance(classification, ClaudeErrorClassification):
+            return None
+        if classification.error_code not in TRANSIENT_CATEGORIES:
+            return None
+        return classification
+
+    @staticmethod
+    def _format_transient_guidance(classification: ClaudeErrorClassification) -> str:
+        """Format operator guidance for a transient provider or unknown SDK error.
+
+        Delegates to :func:`~arcwright_ai.core.errors.render_claude_guidance`.
+        Kept for compatibility with call sites that reference it directly.
+
+        Args:
+            classification: Structured classification from the error taxonomy.
+
+        Returns:
+            Human-readable operator guidance string.
+        """
+        return render_claude_guidance(classification)
+
     def _emit_halt_summary(
         self,
         story_slug: str,
         halt_reason: str,
         accumulated_budget: BudgetState,
         completed_stories: list[str],
+        *,
+        operator_guidance: str | None = None,
     ) -> None:
         """Output a structured halt summary to stderr.
 
         Displays the full halt context per AC#5: completed stories list,
         failing story, halt reason, budget consumption, and the resume command.
+        When *operator_guidance* is provided (platform-account failures) it is
+        rendered immediately after the halt reason with explicit Claude platform
+        attribution.
 
         Args:
             story_slug: Slug of the story that caused the halt.
             halt_reason: Human-readable halt reason string.
             accumulated_budget: Budget state at halt time.
             completed_stories: Slugs of stories that completed successfully.
+            operator_guidance: Optional extra guidance for platform-account failures.
         """
         resume_cmd = self._build_resume_command()
         typer.echo(f"\n✗ Epic {self.epic_spec} halted at story {story_slug}.", err=True)
         typer.echo(f"  Stories completed ({len(completed_stories)}): {completed_stories}", err=True)
         typer.echo(f"  Halted story: {story_slug}", err=True)
         typer.echo(f"  Halt reason: {halt_reason}", err=True)
+        if operator_guidance:
+            for line in operator_guidance.splitlines():
+                typer.echo(f"  {line}", err=True)
         typer.echo(
             f"  💰 Budget: ${accumulated_budget.estimated_cost} cost | {accumulated_budget.total_tokens} tokens",
             err=True,

@@ -5,18 +5,20 @@ inputDocuments:
   - '_spec/planning-artifacts/architecture.md'
 date: 2026-03-02
 author: Ed
-epicCount: 12
-storyCount: 50
-totalPoints: 228
+epicCount: 13
+storyCount: 55
+totalPoints: 249
 frCoverage: '36/36'
 nfrCoverage: '20/20'
-amendedDate: 2026-03-16
+amendedDate: 2026-03-20
 amendedBy: Ed
 amendments:
   - date: '2026-03-15'
     description: 'Epic 11: BMAD 6.1 Framework Upgrade — 3 stories, 13 pts. Course correction CC-2026-03-15 approved.'
   - date: '2026-03-16'
     description: 'Epic 12: CI-Aware Merge Wait for Epic Chain Integrity — 4 stories, 19 pts. Tech spec ci-aware-merge-wait.md approved.'
+  - date: '2026-03-20'
+    description: 'Epic 13: Operator-Facing Claude Error Guidance & Terminal UX — 5 stories, 21 pts. Added implementation-ready breakdown for Claude/platform/runtime/transient error messaging.'
 ---
 
 # Arcwright AI - Epic Breakdown
@@ -1880,3 +1882,155 @@ So that subsequent stories never build on stale, unmerged code.
 **Files touched:**
 - `src/arcwright_ai/cli/dispatch.py` — Merge outcome check after story SUCCESS
 - `tests/test_cli/test_dispatch.py` (or inline) — 4 dispatch halt tests
+
+---
+
+## Epic 13: Operator-Facing Claude Error Guidance & Terminal UX
+
+> **Value prop**: Developer sees an immediate, actionable terminal error when Arcwright AI hits a Claude-related failure, can distinguish between Claude platform/account issues and local Claude runtime/configuration issues, and receives consistent guidance across terminal output, halt reports, summaries, and logs without leaking secrets.
+
+### Story 13.1: Structured Claude Error Taxonomy and Remediation Contract
+
+**Priority**: HIGH | **Points**: 3
+**Requirements**: FR11 (structured failure report), FR19 (Claude SDK invocation), NFR1 (no silent incorrect output), NFR20 (security)
+**Dependencies**: Stories 10.11 and 12.4 complete; current SDK stderr capture behavior in place
+
+**Description:**
+As a maintainer of Arcwright AI,
+I want Claude SDK and Claude CLI failures to map into a structured taxonomy with operator guidance metadata,
+So that downstream terminal, halt, and summary surfaces can render clear, consistent, and secret-safe remediation steps for each error family.
+
+**Acceptance Criteria:**
+
+**Given** the agent invoker captures Claude subprocess stderr or SDK exceptions **When** the failure is classified **Then** the result includes a stable error code, user-facing title, concise terminal summary, retryability flag, and ordered remediation steps
+**And** the taxonomy includes at minimum: `billing_error`, `auth_error`, `model_access_error`, `local_config_error`, `managed_settings_error`, `cli_missing_error`, `network_error`, `rate_limit_error`, `timeout_error`, and `unknown_sdk_error`
+**And** all user-facing guidance is secret-safe: raw API keys, bearer tokens, or other credential values are never echoed in terminal output, halt reports, summaries, or logs
+**And** the classification contract supports both Claude platform issues and local machine/runtime issues without conflating them
+**And** unknown failures fall back to a generic Claude issue classification that still includes captured stderr summary when available
+**And** unit tests cover representative stderr/process-error samples for each supported category and the unknown fallback
+**And** `ruff check`, `mypy --strict`, and `pytest` all pass with zero regressions
+
+**Files touched:**
+- `src/arcwright_ai/agent/invoker.py` — Structured Claude error classification metadata
+- `src/arcwright_ai/core/errors.py` or `src/arcwright_ai/core/types.py` — Shared error code / guidance model if needed
+- `tests/test_agent/test_invoker.py` — Taxonomy classification coverage
+
+---
+
+### Story 13.2: Terminal Guidance for Claude Platform Account and Access Failures
+
+**Priority**: HIGH | **Points**: 5
+**Requirements**: FR11, FR19, FR27 (actionable fix instructions), NFR1
+**Dependencies**: Story 13.1
+
+**Description:**
+As a developer running dispatch or validation,
+I want billing, API-key, and model-access failures from the Claude platform to be surfaced directly in the terminal with explicit next steps,
+So that I immediately know to check Claude configuration, API key validity, payment status, and model entitlements instead of chasing unrelated project issues.
+
+**Acceptance Criteria:**
+
+**Given** Arcwright AI encounters a Claude platform billing, authentication, or model-access failure **When** the CLI renders the failure **Then** the terminal output clearly states that this is a Claude platform issue rather than a story implementation failure
+**And** billing failures instruct the operator to verify available credits or payment details with the Claude platform
+**And** authentication failures instruct the operator to verify the configured API key or auth mechanism being used by Arcwright AI
+**And** model-access failures instruct the operator to verify model entitlement/access for the configured Claude model
+**And** the same guidance appears consistently for both single-story dispatch and validation-time failures
+**And** halt reports and run summaries retain the classified operator guidance while logs keep the underlying diagnostic detail for debugging
+**And** regression tests verify terminal output for `billing_error`, `auth_error`, and `model_access_error` without exposing secrets
+**And** `ruff check`, `mypy --strict`, and `pytest` all pass with zero regressions
+
+**Files touched:**
+- `src/arcwright_ai/cli/halt.py` — Platform-specific terminal guidance
+- `src/arcwright_ai/engine/nodes.py` — Preserve classified guidance into halt artifacts
+- `src/arcwright_ai/cli/dispatch.py` and/or CLI rendering helpers — User-facing terminal output path
+- `tests/test_cli/` — Terminal rendering tests for platform failures
+- `tests/test_engine/test_nodes.py` — Halt-report/summary propagation tests
+
+---
+
+### Story 13.3: Terminal Guidance for Local Claude Runtime and Configuration Failures
+
+**Priority**: HIGH | **Points**: 5
+**Requirements**: FR11, FR19, FR27, NFR1
+**Dependencies**: Story 13.1
+
+**Description:**
+As a developer using Arcwright AI locally,
+I want local Claude installation and configuration problems to be surfaced as local runtime issues with targeted troubleshooting hints,
+So that I can distinguish missing CLI/configuration problems from Claude platform account failures.
+
+**Acceptance Criteria:**
+
+**Given** Arcwright AI encounters a local Claude runtime/configuration failure such as missing `claude` binary, broken managed settings reference, unreadable settings file, or startup configuration error **When** the CLI renders the failure **Then** the terminal output explicitly labels it as a local Claude setup issue
+**And** the rendered guidance tells the operator to inspect the local Claude installation and configuration paths relevant to the detected failure
+**And** when a file path is known (for example `managed-settings.json`) the terminal output includes the path or filename in a concise diagnostic note without dumping full noisy stderr
+**And** platform-account guidance is not shown for local runtime/configuration failures
+**And** halt reports and logs preserve the detailed stderr-derived diagnostic for follow-up debugging
+**And** regression tests cover at least: missing CLI executable, broken managed settings path, and generic startup/config parse failure
+**And** `ruff check`, `mypy --strict`, and `pytest` all pass with zero regressions
+
+**Files touched:**
+- `src/arcwright_ai/agent/invoker.py` — Local runtime/config classification rules
+- `src/arcwright_ai/cli/halt.py` — Local setup-specific terminal guidance
+- `src/arcwright_ai/engine/nodes.py` — Concise local diagnostic propagation
+- `tests/test_agent/test_invoker.py` — Local runtime/config classification tests
+- `tests/test_cli/` and `tests/test_engine/` — Terminal and artifact coverage
+
+---
+
+### Story 13.4: Terminal Guidance for Transient Provider Failures and Retryable Conditions
+
+**Priority**: MEDIUM | **Points**: 3
+**Requirements**: FR19, FR22 (rate limit backoff), NFR1, NFR2 (recoverable partial completion)
+**Dependencies**: Story 13.1
+
+**Description:**
+As an operator running Arcwright AI over longer sessions,
+I want transient Claude/provider failures to be identified as retryable conditions with appropriate guidance,
+So that I know when to retry later versus when to fix configuration or account issues.
+
+**Acceptance Criteria:**
+
+**Given** Arcwright AI encounters rate limiting, network interruption, provider timeout, or similar transient Claude/provider failure **When** the error is rendered **Then** the terminal output identifies it as a retryable/transient Claude issue
+**And** rate-limit guidance instructs the operator to wait and retry instead of rotating unrelated credentials
+**And** timeout/network guidance instructs the operator to retry after checking connectivity or provider status
+**And** retryable classifications are exposed to the engine/CLI so future retry policy improvements can branch on them without string parsing
+**And** unknown failures continue to render a generic Claude issue message with diagnostic stderr summary if no known retryable category matches
+**And** regression tests cover `rate_limit_error`, `network_error`, `timeout_error`, and `unknown_sdk_error`
+**And** `ruff check`, `mypy --strict`, and `pytest` all pass with zero regressions
+
+**Files touched:**
+- `src/arcwright_ai/agent/invoker.py` — Retryable/transient classification rules
+- `src/arcwright_ai/cli/halt.py` — Retryable terminal guidance
+- `src/arcwright_ai/engine/nodes.py` — Optional retryability propagation on failure detail
+- `tests/test_agent/test_invoker.py` — Transient failure classification tests
+- `tests/test_cli/` — Transient failure rendering tests
+
+---
+
+### Story 13.5: Shared Error Rendering, Redaction, and Troubleshooting Documentation
+
+**Priority**: HIGH | **Points**: 5
+**Requirements**: FR11, FR27, NFR1, NFR20
+**Dependencies**: Stories 13.2, 13.3, 13.4
+
+**Description:**
+As the maintainer of Arcwright AI,
+I want terminal output, halt reports, summaries, and logs to use a shared Claude error rendering path with documented troubleshooting guidance,
+So that operator messaging stays consistent across surfaces and future error categories can be added without drift.
+
+**Acceptance Criteria:**
+
+**Given** a Claude-related failure is classified **When** Arcwright AI renders terminal output, halt reports, summaries, and structured logs **Then** all surfaces derive guidance from a shared renderer or shared message contract rather than bespoke string assembly in multiple locations
+**And** secret redaction is enforced centrally so the same protected behavior applies to every render surface
+**And** documentation is added or updated with a troubleshooting matrix covering platform/account failures, local runtime/config failures, transient provider failures, and unknown fallback cases
+**And** the documentation explains which errors are likely user-actionable locally versus which require checking the Claude platform/account
+**And** tests verify terminal/halt/summary/log outputs stay aligned for at least one example in each major category
+**And** `ruff check`, `mypy --strict`, and `pytest` all pass with zero regressions
+
+**Files touched:**
+- `src/arcwright_ai/cli/halt.py` — Shared render helper or message contract consumption
+- `src/arcwright_ai/engine/nodes.py` — Shared render helper integration for halt/summary output
+- `src/arcwright_ai/output/summary.py` or equivalent output layer — Summary rendering alignment if needed
+- `README.md` or `docs/validation-pipeline.md` — Troubleshooting matrix / operator guidance documentation
+- `tests/test_cli/`, `tests/test_engine/`, `tests/test_output/` — Cross-surface consistency tests

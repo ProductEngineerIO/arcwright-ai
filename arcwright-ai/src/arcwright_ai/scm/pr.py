@@ -639,10 +639,13 @@ async def _detect_default_branch(
             )
             stdout_bytes, _ = await proc.communicate()
             if proc.returncode == 0:
-                parsed = json.loads(stdout_bytes.decode("utf-8", errors="replace"))
-                branch = parsed.get("defaultBranchRef", {}).get("name")
-                if isinstance(branch, str) and branch:
-                    return branch
+                parsed_obj = json.loads(stdout_bytes.decode("utf-8", errors="replace"))
+                if isinstance(parsed_obj, dict):
+                    default_branch_ref = parsed_obj.get("defaultBranchRef")
+                    if isinstance(default_branch_ref, dict):
+                        branch_name = default_branch_ref.get("name")
+                        if isinstance(branch_name, str) and branch_name:
+                            return branch_name
         except Exception:
             pass
 
