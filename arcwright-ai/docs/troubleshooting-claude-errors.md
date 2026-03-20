@@ -88,7 +88,7 @@ billing or Claude platform issues.  Fix them on your local machine.
 
 **Actions (local machine):**
 1. Ensure `ANTHROPIC_API_KEY` is set in your environment or `.env` file.
-2. Run `arcwright init` to regenerate configuration if needed.
+2. Run `arcwright-ai init` to regenerate configuration if needed.
 3. Check the Arcwright config file for missing or malformed values.
 
 ---
