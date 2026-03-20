@@ -123,7 +123,10 @@ CLAUDE_ERROR_REGISTRY: Mapping[ClaudeErrorCategory, ClaudeErrorClassification] =
         retryable=False,
         remediation_steps=[
             "Check which models your API key is authorised for.",
-            "Choose a model your account can use in your Arcwright configuration (e.g. pyproject.toml or .arcwright-ai/config.yaml).",
+            (
+                "Choose a model your account can use in your Arcwright "
+                "configuration (e.g. pyproject.toml or .arcwright-ai/config.yaml)."
+            ),
             "Upgrade your Anthropic plan if the model requires a higher tier.",
         ],
     ),
