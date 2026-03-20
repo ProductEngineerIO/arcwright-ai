@@ -217,7 +217,7 @@ def _enrich_error_with_stderr(exc: AgentError, stderr_path: str) -> None:
     if isinstance(details, dict):
         details["captured_stderr"] = stderr_content
     else:
-        exc.details = {"captured_stderr": stderr_content}  # type: ignore[attr-defined]
+        exc.details = {"captured_stderr": stderr_content}
 
     logger.error(
         "agent.sdk_stderr",
