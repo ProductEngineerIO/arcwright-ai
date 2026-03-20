@@ -1244,6 +1244,43 @@ async def test_agent_dispatch_node_escalates_cleanly_on_sdk_failure(
 
 
 @pytest.mark.asyncio
+async def test_agent_dispatch_node_halt_report_includes_captured_stderr_summary(
+    dispatch_ready_state: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unclassified SDK crashes should still include a condensed stderr diagnostic in the halt report."""
+
+    async def _raise_agent_error(*args: object, **kwargs: object) -> InvocationResult:
+        raise AgentError(
+            (
+                "Unexpected error during agent invocation: Command failed with exit code 1\n"
+                "Error output: Check stderr output for details"
+            ),
+            details={
+                "exit_code": 1,
+                "captured_stderr": (
+                    "2026-03-20T02:26:52.126Z [DEBUG] MDM settings load completed in 1ms\n"
+                    "2026-03-20T02:26:52.186Z [DEBUG] Broken symlink or missing file encountered for "
+                    "settings.json at path: /Library/Application Support/ClaudeCode/managed-settings.json"
+                ),
+            },
+        )
+
+    monkeypatch.setattr("arcwright_ai.engine.nodes.invoke_agent", _raise_agent_error)
+
+    result = await agent_dispatch_node(dispatch_ready_state)
+
+    assert result.status == TaskState.ESCALATED
+    halt_reports = list(
+        dispatch_ready_state.project_root.glob(f".arcwright-ai/runs/*/stories/*/{HALT_REPORT_FILENAME}")
+    )
+    assert len(halt_reports) == 1
+    content = halt_reports[0].read_text(encoding="utf-8")
+    assert "Claude SDK subprocess failed before producing output." in content
+    assert "Broken symlink or missing file encountered" in content
+
+
+@pytest.mark.asyncio
 async def test_agent_dispatch_node_sdk_failure_passthrough_in_validate_node(
     dispatch_ready_state: StoryState,
     monkeypatch: pytest.MonkeyPatch,

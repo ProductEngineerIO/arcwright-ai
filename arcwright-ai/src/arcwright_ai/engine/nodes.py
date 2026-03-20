@@ -506,11 +506,12 @@ async def agent_dispatch_node(state: StoryState) -> StoryState:
         exc_details = getattr(exc, "details", {})
         captured_stderr = exc_details.get("captured_stderr", "") if isinstance(exc_details, dict) else ""
         exit_code = exc_details.get("exit_code") if isinstance(exc_details, dict) else None
+        failure_detail = _sdk_failure_detail_from_exception(exc)
         log_data: dict[str, Any] = {
             "node": "agent_dispatch",
             "story": str(state.story_id),
             "attempt": state.retry_count + 1,
-            "error": str(exc),
+            "error": failure_detail,
         }
         if captured_stderr:
             log_data["captured_stderr"] = captured_stderr[:2048]
@@ -527,7 +528,7 @@ async def agent_dispatch_node(state: StoryState) -> StoryState:
         sdk_error_check = V6CheckResult(
             check_name="agent_sdk_error",
             passed=False,
-            failure_detail=str(exc),
+            failure_detail=failure_detail,
         )
         synthetic_v6 = V6ValidationResult(passed=False, results=[sdk_error_check])
         synthetic_pipeline = PipelineResult(
@@ -987,20 +988,21 @@ async def validate_node(state: StoryState) -> StoryState:
     except Exception as exc:
         # SDK or filesystem crash during validation — convert to ESCALATED so
         # finalize_node can still run and remove the worktree (prevents leaks).
+        failure_detail = _sdk_failure_detail_from_exception(exc)
         logger.error(
             "validation.sdk_error",
             extra={
                 "data": {
                     "story": str(state.story_id),
                     "attempt": state.retry_count + 1,
-                    "error": str(exc),
+                    "error": failure_detail,
                 }
             },
         )
         sdk_error_check = V6CheckResult(
             check_name="validation_sdk_error",
             passed=False,
-            failure_detail=str(exc),
+            failure_detail=failure_detail,
         )
         synthetic_v6 = V6ValidationResult(passed=False, results=[sdk_error_check])
         pipeline_result = PipelineResult(
@@ -1741,6 +1743,69 @@ def _summarize_failures(result: PipelineResult) -> str:
     if result.feedback is not None and result.feedback.unmet_criteria:
         return f"V3: ACs {', '.join(result.feedback.unmet_criteria)}"
     return ""
+
+
+def _summarize_sdk_stderr(stderr: str) -> str | None:
+    """Condense captured Claude stderr into a single diagnostic line for reports."""
+
+    cleaned_lines: list[str] = []
+    for raw_line in stderr.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        line = re.sub(r"^\d{4}-\d{2}-\d{2}T[^ ]+ \[(?:DEBUG|INFO|WARN|ERROR)\]\s*", "", line)
+        if line and line not in cleaned_lines:
+            cleaned_lines.append(line)
+
+    if not cleaned_lines:
+        return None
+
+    priority_patterns = (
+        r"fatal",
+        r"invalid",
+        r"denied",
+        r"unauthorized",
+        r"forbidden",
+        r"timeout",
+        r"credit balance",
+        r"billing",
+        r"model access",
+        r"failed to",
+        r"unable to",
+        r"broken symlink",
+        r"missing file",
+        r"io error",
+    )
+    for line in cleaned_lines:
+        if any(re.search(pattern, line, re.IGNORECASE) for pattern in priority_patterns):
+            return line[:240]
+
+    return cleaned_lines[0][:240]
+
+
+def _sdk_failure_detail_from_exception(exc: Exception) -> str:
+    """Build a halt-report-friendly detail string for SDK/process failures."""
+
+    message = str(exc)
+    details = getattr(exc, "details", None)
+    if not isinstance(details, dict):
+        return message
+
+    classified_message = details.get("classified_message")
+    if isinstance(classified_message, str) and classified_message:
+        return classified_message
+
+    captured_stderr = details.get("captured_stderr")
+    if not isinstance(captured_stderr, str) or not captured_stderr.strip():
+        return message
+
+    stderr_summary = _summarize_sdk_stderr(captured_stderr)
+    if not stderr_summary:
+        return message
+
+    if "Check stderr output for details" in message or "Command failed with exit code" in message:
+        return f"Claude SDK subprocess failed before producing output. Diagnostic stderr: {stderr_summary}"
+    return f"{message} | Diagnostic stderr: {stderr_summary}"
 
 
 def _build_validation_history_dicts(state: StoryState) -> list[dict[str, Any]]:
