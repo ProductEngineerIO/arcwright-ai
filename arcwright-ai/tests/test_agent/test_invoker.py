@@ -13,10 +13,12 @@ from claude_code_sdk._errors import ClaudeSDKError
 
 from arcwright_ai.agent.invoker import (
     InvocationResult,
+    _enrich_error_with_stderr,
     _make_tool_validator,
     _patch_sdk_parser,
     _suppress_bg_cancel_scope_errors,
     _ToolValidationStats,
+    _wrap_sdk_error,
     invoke_agent,
 )
 from arcwright_ai.agent.sandbox import validate_path
@@ -154,6 +156,49 @@ async def test_invoke_agent_failure_raises_agent_error(
     mock = MockSDKClient(error=ProcessError, error_message="Process crashed")
     with pytest.raises(AgentError, match="Process crashed"):
         await _invoke(mock, project_root, monkeypatch)
+
+
+def test_wrap_sdk_error_classifies_billing_failures() -> None:
+    """Anthropic low-credit API responses should surface as a billing error."""
+    from claude_code_sdk._errors import ProcessError
+
+    error = ProcessError(
+        "Command failed with exit code 1",
+        exit_code=1,
+        stderr=(
+            '{"type":"error","error":{"type":"invalid_request_error",'
+            '"message":"Your credit balance is too low to access the Anthropic API."}}'
+        ),
+    )
+
+    wrapped = _wrap_sdk_error(error)
+
+    assert "Claude API billing error" in str(wrapped)
+    assert wrapped.details is not None
+    assert wrapped.details["failure_category"] == "billing_error"
+
+
+def test_enrich_error_with_stderr_reclassifies_placeholder_process_failure(tmp_path: Path) -> None:
+    """Captured stderr should upgrade placeholder subprocess crashes into explicit auth errors."""
+    stderr_path = tmp_path / "sdk-stderr.log"
+    stderr_path.write_text(
+        "2026-03-20T02:17:00.841Z [ERROR] API error: invalid_api_key Authentication error: invalid API key",
+        encoding="utf-8",
+    )
+    exc = AgentError(
+        (
+            "Unexpected error during agent invocation: Command failed with exit code 1\n"
+            "Error output: Check stderr output for details"
+        ),
+        details={"exit_code": 1},
+    )
+
+    _enrich_error_with_stderr(exc, str(stderr_path))
+
+    assert "Claude API authentication error" in str(exc)
+    assert exc.details is not None
+    assert exc.details["failure_category"] == "auth_error"
+    assert "captured_stderr" in exc.details
 
 
 async def test_invoke_agent_malformed_response_raises_agent_error(

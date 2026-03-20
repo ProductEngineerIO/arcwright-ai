@@ -398,7 +398,7 @@ class HaltController:
             Exit code aligned with the D6 taxonomy:
             1 (validation), 2 (agent/budget), 3 (config), 4 (SCM), 5 (internal).
         """
-        if isinstance(exception, (AgentBudgetError, AgentTimeoutError, SandboxViolation)):
+        if isinstance(exception, AgentBudgetError | AgentTimeoutError | SandboxViolation):
             return EXIT_AGENT
         if isinstance(exception, AgentError):
             return EXIT_AGENT
@@ -407,7 +407,7 @@ class HaltController:
             return EXIT_SCM
         if isinstance(exception, ValidationError):
             return EXIT_VALIDATION
-        if isinstance(exception, (ConfigError, ContextError, ProjectError)):
+        if isinstance(exception, ConfigError | ContextError | ProjectError):
             return EXIT_CONFIG
         if isinstance(exception, ArcwrightError):
             return EXIT_INTERNAL
@@ -478,7 +478,7 @@ class HaltController:
             return "SCM error"
         if isinstance(exception, ValidationError):
             return "validation exhaustion"
-        if isinstance(exception, (ConfigError, ContextError, ProjectError)):
+        if isinstance(exception, ConfigError | ContextError | ProjectError):
             return "config/context error"
         return "internal error"
 
@@ -547,7 +547,7 @@ class HaltController:
             )
         if isinstance(exception, AgentError):
             return (
-                "Agent invocation failed. Check API key validity, network connectivity, "
+                "Agent invocation failed. Check API key validity, available API credits, network connectivity, "
                 "and the agent invocation logs for details."
             )
         if isinstance(exception, ScmError):
@@ -557,7 +557,7 @@ class HaltController:
             )
         if isinstance(exception, ValidationError):
             return "Review the validation failures and address the identified issues."
-        if isinstance(exception, (ConfigError, ContextError, ProjectError)):
+        if isinstance(exception, ConfigError | ContextError | ProjectError):
             return (
                 "Configuration or context error. Verify pyproject.toml settings, "
                 "BMAD artifact paths, and that arcwright-ai init has been run."
@@ -584,7 +584,7 @@ class HaltController:
             )
         if HaltController._retry_history_has_sdk_failure(story_state) or not story_state.retry_history:
             return (
-                "Agent invocation failed before validation completed. Check API key validity, "
+                "Agent invocation failed before validation completed. Check API key validity, available API credits, "
                 "model access (especially review model), network connectivity, and SDK stderr logs."
             )
         last = story_state.retry_history[-1]
