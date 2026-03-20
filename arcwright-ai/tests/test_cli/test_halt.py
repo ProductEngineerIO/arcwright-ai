@@ -1442,3 +1442,268 @@ class TestPlatformGuidanceConsistency:
         fix = str(captured.get("suggested_fix", ""))
         assert "Claude platform" in fix or "Claude Platform" in fix
         assert "api key" in fix.lower() or "ANTHROPIC_API_KEY" in fix
+
+
+# ---------------------------------------------------------------------------
+# Story 13.3 — Local runtime/configuration failure guidance (AC: #1, #2, #3, #4)
+# ---------------------------------------------------------------------------
+
+
+def _make_agent_error_with_local_classification(
+    category_str: str,
+    *,
+    captured_stderr: str | None = None,
+) -> AgentError:
+    """Return an AgentError whose details carry a classified local-runtime failure."""
+    from arcwright_ai.core.errors import CLAUDE_ERROR_REGISTRY, ClaudeErrorCategory
+
+    category = ClaudeErrorCategory(category_str)
+    cls = CLAUDE_ERROR_REGISTRY[category]
+    details: dict[str, object] = {"classification": cls, "failure_category": category_str}
+    if captured_stderr is not None:
+        details["captured_stderr"] = captured_stderr
+    return AgentError(cls.summary, details=details)
+
+
+class TestLocalRuntimeSuggestedFix:
+    """_suggested_fix_for_exception returns local-setup guidance for cli_missing/local_config/managed_settings.
+
+    AC #1: failure is labeled as a local Claude setup issue (not billing / platform).
+    AC #2: relevant path/filename from captured stderr is included when known.
+    AC #3: detailed stderr context available in halt artifacts (not exposed in terminal summary).
+    """
+
+    def test_cli_missing_error_labels_as_local_setup(self) -> None:
+        """cli_missing_error suggested fix labels failure as a local Claude setup issue (AC#1)."""
+        exc = _make_agent_error_with_local_classification("cli_missing_error")
+        fix = HaltController._suggested_fix_for_exception(exc)
+        assert (
+            "local Claude setup" in fix.lower() or "local Claude" in fix
+        ), "Fix must state this is a local Claude setup issue"
+        assert (
+            "Claude platform" not in fix and "billing" not in fix.lower()
+        ), "Fix must NOT reference Claude platform/account issues"
+
+    def test_cli_missing_error_mentions_install(self) -> None:
+        """cli_missing_error fix mentions installing the Claude CLI (AC#1)."""
+        exc = _make_agent_error_with_local_classification("cli_missing_error")
+        fix = HaltController._suggested_fix_for_exception(exc)
+        assert "install" in fix.lower() or "claude" in fix.lower(), "Fix must mention claude CLI installation"
+
+    def test_managed_settings_error_labels_as_local_setup(self) -> None:
+        """managed_settings_error fix labels failure as local setup issue (AC#1)."""
+        exc = _make_agent_error_with_local_classification("managed_settings_error")
+        fix = HaltController._suggested_fix_for_exception(exc)
+        assert (
+            "local Claude setup" in fix.lower() or "local Claude" in fix
+        ), "Fix must state this is a local Claude setup issue"
+        assert "Claude platform" not in fix, "Fix must NOT reference Claude platform/account issues"
+
+    def test_managed_settings_error_includes_path_hint_from_stderr(self) -> None:
+        """managed_settings_error fix includes path hint when captured stderr contains a path (AC#2)."""
+        exc = _make_agent_error_with_local_classification(
+            "managed_settings_error",
+            captured_stderr="Error loading /home/user/.claude/remote-settings.json: invalid JSON",
+        )
+        fix = HaltController._suggested_fix_for_exception(exc)
+        assert (
+            "/home/user/.claude/remote-settings.json" in fix
+        ), "Fix must include the concrete path from captured_stderr when available"
+
+    def test_local_config_error_labels_as_local_setup(self) -> None:
+        """local_config_error fix labels failure as local setup issue (AC#1)."""
+        exc = _make_agent_error_with_local_classification("local_config_error")
+        fix = HaltController._suggested_fix_for_exception(exc)
+        assert (
+            "local Claude setup" in fix.lower() or "local Claude" in fix
+        ), "Fix must state this is a local Claude setup issue"
+        assert "billing" not in fix.lower(), "Fix must NOT mention billing"
+
+    def test_local_fix_does_not_expose_secrets(self) -> None:
+        """Local setup guidance must never include raw API key values (AC#4)."""
+        from arcwright_ai.core.errors import CLAUDE_ERROR_REGISTRY, ClaudeErrorCategory
+
+        cls = CLAUDE_ERROR_REGISTRY[ClaudeErrorCategory.LOCAL_CONFIG_ERROR]
+        exc = AgentError(
+            cls.summary,
+            details={
+                "classification": cls,
+                "failure_category": "local_config_error",
+                "captured_stderr": "ANTHROPIC_API_KEY=sk-ant-secret999 not accepted",
+            },
+        )
+        fix = HaltController._suggested_fix_for_exception(exc)
+        assert "sk-ant-secret999" not in fix, "Raw API key must not appear in suggested fix"
+
+    def test_non_local_agent_error_does_not_get_local_guidance(self) -> None:
+        """AgentError without a local classification must not emit local guidance."""
+        exc = AgentError("SDK crash", details={"error_category": "sdk"})
+        fix = HaltController._suggested_fix_for_exception(exc)
+        assert "local Claude setup" not in fix.lower()
+        assert "local Claude" not in fix
+
+
+class TestLocalRuntimeTerminalOutput:
+    """handle_halt() emits local-setup guidance in terminal output (AC#1, #2, #3)."""
+
+    async def test_cli_missing_terminal_output_says_local_setup(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """cli_missing_error halt output explicitly says local Claude setup issue (AC#1)."""
+        exc = _make_agent_error_with_local_classification("cli_missing_error")
+        controller = _make_halt_controller(tmp_path)
+        monkeypatch.setattr("arcwright_ai.cli.halt.write_halt_report", AsyncMock(return_value=tmp_path / "s.md"))
+        monkeypatch.setattr("arcwright_ai.cli.halt.update_run_status", AsyncMock())
+        monkeypatch.setattr("arcwright_ai.cli.halt.append_entry", AsyncMock())
+
+        await controller.handle_halt(
+            story_id=StoryId("13-3-cli-missing-test"),
+            exception=exc,
+            accumulated_budget=_make_budget(),
+            completed_stories=[],
+            last_completed=None,
+        )
+
+        output = capsys.readouterr().err
+        assert (
+            "local Claude setup" in output.lower() or "local Claude" in output
+        ), "Terminal output must explicitly say this is a local Claude setup issue"
+        assert "Claude platform" not in output, "Terminal output must NOT claim this is a Claude platform/account issue"
+
+    async def test_managed_settings_terminal_output_includes_path_hint(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """managed_settings halt output includes the specific file path when known (AC#2)."""
+        exc = _make_agent_error_with_local_classification(
+            "managed_settings_error",
+            captured_stderr="Failed to parse /home/user/.claude/remote-settings.json",
+        )
+        controller = _make_halt_controller(tmp_path)
+        monkeypatch.setattr("arcwright_ai.cli.halt.write_halt_report", AsyncMock(return_value=tmp_path / "s.md"))
+        monkeypatch.setattr("arcwright_ai.cli.halt.update_run_status", AsyncMock())
+        monkeypatch.setattr("arcwright_ai.cli.halt.append_entry", AsyncMock())
+
+        await controller.handle_halt(
+            story_id=StoryId("13-3-managed-settings-test"),
+            exception=exc,
+            accumulated_budget=_make_budget(),
+            completed_stories=[],
+            last_completed=None,
+        )
+
+        output = capsys.readouterr().err
+        assert (
+            "/home/user/.claude/remote-settings.json" in output
+        ), "Terminal output must include the path from captured stderr (AC#2)"
+
+    async def test_local_config_terminal_output_does_not_expose_secrets(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Local setup halt output must never include raw credential values (AC#4)."""
+        from arcwright_ai.core.errors import CLAUDE_ERROR_REGISTRY, ClaudeErrorCategory
+
+        cls = CLAUDE_ERROR_REGISTRY[ClaudeErrorCategory.LOCAL_CONFIG_ERROR]
+        exc = AgentError(
+            cls.summary,
+            details={
+                "classification": cls,
+                "failure_category": "local_config_error",
+                "captured_stderr": "ANTHROPIC_API_KEY=sk-ant-abc123xyz not set",
+            },
+        )
+        controller = _make_halt_controller(tmp_path)
+        monkeypatch.setattr("arcwright_ai.cli.halt.write_halt_report", AsyncMock(return_value=tmp_path / "s.md"))
+        monkeypatch.setattr("arcwright_ai.cli.halt.update_run_status", AsyncMock())
+        monkeypatch.setattr("arcwright_ai.cli.halt.append_entry", AsyncMock())
+
+        await controller.handle_halt(
+            story_id=StoryId("13-3-local-config-test"),
+            exception=exc,
+            accumulated_budget=_make_budget(),
+            completed_stories=[],
+            last_completed=None,
+        )
+
+        output = capsys.readouterr().err
+        assert "sk-ant-abc123xyz" not in output, "Raw API key must not appear in terminal output"
+
+
+class TestLocalRuntimeGuidanceConsistency:
+    """Local setup guidance is consistent across terminal output and halt reports (AC#3)."""
+
+    async def test_cli_missing_guidance_in_halt_report_suggested_fix(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """cli_missing_error suggested_fix passed to write_halt_report contains local guidance (AC#3)."""
+        exc = _make_agent_error_with_local_classification("cli_missing_error")
+        controller = _make_halt_controller(tmp_path)
+
+        captured: dict[str, object] = {}
+
+        async def _mock_write(*args: object, **kwargs: object) -> Path:
+            captured.update(kwargs)
+            return tmp_path / "s.md"
+
+        monkeypatch.setattr("arcwright_ai.cli.halt.write_halt_report", _mock_write)
+        monkeypatch.setattr("arcwright_ai.cli.halt.update_run_status", AsyncMock())
+        monkeypatch.setattr("arcwright_ai.cli.halt.append_entry", AsyncMock())
+
+        await controller.handle_halt(
+            story_id=StoryId("13-3-cli-missing-test"),
+            exception=exc,
+            accumulated_budget=_make_budget(),
+            completed_stories=[],
+            last_completed=None,
+        )
+
+        fix = str(captured.get("suggested_fix", ""))
+        assert (
+            "local Claude setup" in fix.lower() or "local Claude" in fix
+        ), "Halt report suggested_fix must contain local setup guidance"
+        assert "Claude platform" not in fix, "Halt report must NOT reference platform/account issues"
+
+    async def test_managed_settings_guidance_in_halt_report_includes_path(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """managed_settings suggested_fix in halt report includes path hint when available (AC#2, #3)."""
+        exc = _make_agent_error_with_local_classification(
+            "managed_settings_error",
+            captured_stderr="Error: /tmp/test-settings.json is not valid JSON",
+        )
+        controller = _make_halt_controller(tmp_path)
+
+        captured: dict[str, object] = {}
+
+        async def _mock_write(*args: object, **kwargs: object) -> Path:
+            captured.update(kwargs)
+            return tmp_path / "s.md"
+
+        monkeypatch.setattr("arcwright_ai.cli.halt.write_halt_report", _mock_write)
+        monkeypatch.setattr("arcwright_ai.cli.halt.update_run_status", AsyncMock())
+        monkeypatch.setattr("arcwright_ai.cli.halt.append_entry", AsyncMock())
+
+        await controller.handle_halt(
+            story_id=StoryId("13-3-managed-path-test"),
+            exception=exc,
+            accumulated_budget=_make_budget(),
+            completed_stories=[],
+            last_completed=None,
+        )
+
+        fix = str(captured.get("suggested_fix", ""))
+        assert (
+            "/tmp/test-settings.json" in fix
+        ), "Halt report suggested_fix must include path from captured_stderr when available"

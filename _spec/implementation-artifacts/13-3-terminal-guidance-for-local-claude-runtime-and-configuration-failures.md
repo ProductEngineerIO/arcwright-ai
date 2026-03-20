@@ -1,6 +1,6 @@
 # Story 13.3: Terminal Guidance for Local Claude Runtime and Configuration Failures
 
-Status: ready-for-dev
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -41,19 +41,19 @@ So that I can distinguish missing CLI/configuration problems from Claude platfor
 
 ## Tasks / Subtasks
 
-- [ ] Task 1: Add local runtime/configuration classifications (AC: #1)
-  - [ ] 1.1: Classify missing binary, managed settings problems, and startup/config parse failures separately from platform-account failures.
-  - [ ] 1.2: Preserve concise diagnostic context such as relevant filenames or paths.
+- [x] Task 1: Add local runtime/configuration classifications (AC: #1)
+  - [x] 1.1: Classify missing binary, managed settings problems, and startup/config parse failures separately from platform-account failures.
+  - [x] 1.2: Preserve concise diagnostic context such as relevant filenames or paths.
 
-- [ ] Task 2: Render local troubleshooting guidance (AC: #2, #3)
-  - [ ] 2.1: Add terminal guidance for local Claude installation and configuration failures.
-  - [ ] 2.2: Keep detailed stderr-derived context in halt reports and logs.
+- [x] Task 2: Render local troubleshooting guidance (AC: #2, #3)
+  - [x] 2.1: Add terminal guidance for local Claude installation and configuration failures.
+  - [x] 2.2: Keep detailed stderr-derived context in halt reports and logs.
 
-- [ ] Task 3: Add regression coverage and run quality gates (AC: #4)
-  - [ ] 3.1: Add tests for missing CLI, broken managed settings, and generic startup/config failures.
-  - [ ] 3.2: Run `ruff check src/ tests/`.
-  - [ ] 3.3: Run `mypy --strict src/`.
-  - [ ] 3.4: Run `pytest`.
+- [x] Task 3: Add regression coverage and run quality gates (AC: #4)
+  - [x] 3.1: Add tests for missing CLI, broken managed settings, and generic startup/config failures.
+  - [x] 3.2: Run `ruff check src/ tests/`.
+  - [x] 3.3: Run `mypy --strict src/`.
+  - [x] 3.4: Run `pytest`.
 
 ## Dev Notes
 
@@ -76,14 +76,30 @@ So that I can distinguish missing CLI/configuration problems from Claude platfor
 
 ### Agent Model Used
 
-GPT-5.4
+Claude Sonnet 4.6
 
 ### Completion Notes
 
-- Story created to cover local Claude setup/runtime error UX separately from Claude platform failures.
+- Added `_LOCAL_RUNTIME_CATEGORIES` frozenset (`CLI_MISSING_ERROR`, `LOCAL_CONFIG_ERROR`, `MANAGED_SETTINGS_ERROR`) and `_PATH_HINT_RE` regex to `halt.py`, following the same module-level constant pattern used for `_PLATFORM_ACCOUNT_CATEGORIES` in Story 13.2.
+- Added three static methods to `HaltController`:
+  - `_extract_local_classification()` — mirrors `_extract_platform_classification()` but checks `_LOCAL_RUNTIME_CATEGORIES`.
+  - `_extract_local_diagnostic_hint()` — scans `details["captured_stderr"]` for a plausible file path using `_PATH_HINT_RE`, returning it for use as a concise "Inspect: <path>" note in guidance output (AC #2).
+  - `_format_local_guidance()` — formats operator guidance that explicitly labels the failure as a local Claude setup issue (AC #1), includes optional `diagnostic_hint` path (AC #2), and lists ordered remediation steps.
+- Updated `_suggested_fix_for_exception()` to check for local classification after the existing platform check; generates structured "Local Claude Setup Issue" output with optional path hint.
+- Updated `_suggested_fix_for_graph_state()` to add an `elif category in _LOCAL_RUNTIME_CATEGORIES` branch after the existing platform branch.
+- Updated `handle_halt()` to check `_extract_local_classification()` when no platform classification is found, passing `diagnostic_hint` to `_format_local_guidance()` for the `operator_guidance` passed to `_emit_halt_summary()`.
+- Updated `handle_graph_halt()` to add an `elif _graph_category in _LOCAL_RUNTIME_CATEGORIES` branch in the `failure_category` dispatch block.
+- Added 12 regression tests in `tests/test_cli/test_halt.py` covering: `cli_missing_error`, `managed_settings_error`, and `local_config_error` cases for suggested fix content, terminal output, and halt-report consistency. Path-hint extraction and secret-safe rendering verified.
+- All quality gates pass: `ruff check` clean, `mypy --strict` clean (43 files), 1080 pytest tests passing with zero regressions.
 
 ### File List
 
+- `arcwright-ai/src/arcwright_ai/cli/halt.py`
+- `arcwright-ai/tests/test_cli/test_halt.py`
 - `_spec/implementation-artifacts/13-3-terminal-guidance-for-local-claude-runtime-and-configuration-failures.md`
 - `_spec/implementation-artifacts/sprint-status.yaml`
-- `_spec/planning-artifacts/epics.md`
+
+## Change Log
+
+- 2026-03-20: Implemented local Claude runtime/configuration terminal guidance. Added `_LOCAL_RUNTIME_CATEGORIES`, `_extract_local_classification()`, `_extract_local_diagnostic_hint()`, and `_format_local_guidance()` to `HaltController`. Wired into both `handle_halt()` and `handle_graph_halt()`. Added 12 regression tests. All quality gates passing (ruff clean, mypy clean, 1080 pytest tests passing).
+- 2026-03-20: Code review completed with no HIGH/MEDIUM/LOW findings; targeted validation rerun passed (`pytest -q tests/test_cli/test_halt.py -k "LocalRuntime or local_"`, `ruff check src/arcwright_ai/cli/halt.py tests/test_cli/test_halt.py`, `mypy --strict src/arcwright_ai/cli/halt.py`). Story moved to `done`.
