@@ -1707,3 +1707,301 @@ class TestLocalRuntimeGuidanceConsistency:
         assert (
             "/tmp/test-settings.json" in fix
         ), "Halt report suggested_fix must include path from captured_stderr when available"
+
+
+# ---------------------------------------------------------------------------
+# Story 13.4 — Transient provider failure guidance (AC: #1, #2, #3, #4)
+# ---------------------------------------------------------------------------
+
+
+def _make_agent_error_with_transient_classification(category_str: str) -> AgentError:
+    """Return an AgentError whose details carry a classified transient/SDK failure."""
+    from arcwright_ai.core.errors import CLAUDE_ERROR_REGISTRY, ClaudeErrorCategory
+
+    category = ClaudeErrorCategory(category_str)
+    cls = CLAUDE_ERROR_REGISTRY[category]
+    return AgentError(
+        cls.summary,
+        details={"classification": cls, "failure_category": category_str},
+    )
+
+
+class TestTransientSuggestedFix:
+    """_suggested_fix_for_exception returns transient guidance for rate_limit/network/timeout/unknown.
+
+    AC #1: Retryable failures (rate-limit, network, timeout) are identified as transient.
+    AC #2: Rate-limit → wait and retry; timeout/network → retry after checking connectivity.
+    AC #3: Retryability exposed as structured metadata (implicit — retryable flag in registry).
+    """
+
+    def test_rate_limit_error_labeled_as_transient(self) -> None:
+        """rate_limit_error suggested fix identifies it as a transient/retryable issue (AC#1)."""
+        exc = _make_agent_error_with_transient_classification("rate_limit_error")
+        fix = HaltController._suggested_fix_for_exception(exc)
+        assert (
+            "transient" in fix.lower() or "retryable" in fix.lower()
+        ), "Rate-limit fix must label the failure as transient/retryable"
+        assert (
+            "Claude platform" not in fix and "local Claude" not in fix.lower()
+        ), "Rate-limit fix must NOT reference platform-account or local setup issues"
+
+    def test_rate_limit_error_instructs_wait_and_retry(self) -> None:
+        """rate_limit_error fix instructs the user to wait and retry (AC#2)."""
+        exc = _make_agent_error_with_transient_classification("rate_limit_error")
+        fix = HaltController._suggested_fix_for_exception(exc)
+        assert "wait" in fix.lower() or "retry" in fix.lower(), "Rate-limit fix must mention waiting or retrying"
+
+    def test_network_error_labeled_as_transient(self) -> None:
+        """network_error suggested fix identifies it as a transient/retryable issue (AC#1)."""
+        exc = _make_agent_error_with_transient_classification("network_error")
+        fix = HaltController._suggested_fix_for_exception(exc)
+        assert (
+            "transient" in fix.lower() or "retryable" in fix.lower()
+        ), "Network fix must label the failure as transient/retryable"
+
+    def test_network_error_instructs_connectivity_check(self) -> None:
+        """network_error fix instructs the user to retry after checking connectivity (AC#2)."""
+        exc = _make_agent_error_with_transient_classification("network_error")
+        fix = HaltController._suggested_fix_for_exception(exc)
+        assert (
+            "connect" in fix.lower() or "network" in fix.lower() or "retry" in fix.lower()
+        ), "Network fix must mention connectivity or retry"
+
+    def test_timeout_error_labeled_as_transient(self) -> None:
+        """timeout_error suggested fix identifies it as a transient/retryable issue (AC#1)."""
+        exc = _make_agent_error_with_transient_classification("timeout_error")
+        fix = HaltController._suggested_fix_for_exception(exc)
+        assert (
+            "transient" in fix.lower() or "retryable" in fix.lower()
+        ), "Timeout fix must label the failure as transient/retryable"
+
+    def test_timeout_error_instructs_retry_after_connectivity(self) -> None:
+        """timeout_error fix instructs the user to retry after checking connectivity (AC#2)."""
+        exc = _make_agent_error_with_transient_classification("timeout_error")
+        fix = HaltController._suggested_fix_for_exception(exc)
+        assert "retry" in fix.lower() or "timeout" in fix.lower(), "Timeout fix must mention retrying or timeout"
+
+    def test_unknown_sdk_error_rendered_as_fallback(self) -> None:
+        """unknown_sdk_error is rendered as an unrecognised SDK error, not as transient (AC#4)."""
+        exc = _make_agent_error_with_transient_classification("unknown_sdk_error")
+        fix = HaltController._suggested_fix_for_exception(exc)
+        assert (
+            "unrecognised" in fix.lower() or "unknown" in fix.lower() or "sdk" in fix.lower()
+        ), "Unknown SDK fix must reference unrecognised/unknown/SDK"
+        assert (
+            "Claude platform" not in fix and "local Claude" not in fix.lower()
+        ), "Unknown SDK fix must NOT reference platform-account or local setup issues"
+
+    def test_non_transient_agent_error_uses_generic_fix(self) -> None:
+        """AgentError without a transient classification gets the existing generic message."""
+        exc = AgentError("SDK crash", details={"error_category": "sdk"})
+        fix = HaltController._suggested_fix_for_exception(exc)
+        assert "Agent invocation failed" in fix
+        assert "transient" not in fix.lower()
+
+
+class TestTransientTerminalOutput:
+    """handle_halt() emits transient guidance in terminal output (AC#1, AC#2)."""
+
+    async def test_rate_limit_terminal_output_says_transient(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """rate_limit_error halt output identifies it as a transient/retryable Claude issue (AC#1)."""
+        exc = _make_agent_error_with_transient_classification("rate_limit_error")
+        controller = _make_halt_controller(tmp_path)
+        monkeypatch.setattr("arcwright_ai.cli.halt.write_halt_report", AsyncMock(return_value=tmp_path / "s.md"))
+        monkeypatch.setattr("arcwright_ai.cli.halt.update_run_status", AsyncMock())
+        monkeypatch.setattr("arcwright_ai.cli.halt.append_entry", AsyncMock())
+
+        await controller.handle_halt(
+            story_id=StoryId("13-4-rate-limit-test"),
+            exception=exc,
+            accumulated_budget=_make_budget(),
+            completed_stories=[],
+            last_completed=None,
+        )
+
+        output = capsys.readouterr().err
+        assert (
+            "transient" in output.lower() or "retryable" in output.lower()
+        ), "Terminal output must label rate_limit_error as transient/retryable"
+        assert "Claude platform" not in output, "Terminal output must NOT claim this is a Claude platform/account issue"
+
+    async def test_network_error_terminal_output_says_transient(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """network_error halt output identifies it as a transient/retryable provider issue (AC#1)."""
+        exc = _make_agent_error_with_transient_classification("network_error")
+        controller = _make_halt_controller(tmp_path)
+        monkeypatch.setattr("arcwright_ai.cli.halt.write_halt_report", AsyncMock(return_value=tmp_path / "s.md"))
+        monkeypatch.setattr("arcwright_ai.cli.halt.update_run_status", AsyncMock())
+        monkeypatch.setattr("arcwright_ai.cli.halt.append_entry", AsyncMock())
+
+        await controller.handle_halt(
+            story_id=StoryId("13-4-network-test"),
+            exception=exc,
+            accumulated_budget=_make_budget(),
+            completed_stories=[],
+            last_completed=None,
+        )
+
+        output = capsys.readouterr().err
+        assert (
+            "transient" in output.lower() or "retryable" in output.lower()
+        ), "Terminal output must label network_error as transient/retryable"
+
+    async def test_timeout_error_terminal_output_says_transient(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """timeout_error halt output identifies it as a transient/retryable provider issue (AC#1)."""
+        exc = _make_agent_error_with_transient_classification("timeout_error")
+        controller = _make_halt_controller(tmp_path)
+        monkeypatch.setattr("arcwright_ai.cli.halt.write_halt_report", AsyncMock(return_value=tmp_path / "s.md"))
+        monkeypatch.setattr("arcwright_ai.cli.halt.update_run_status", AsyncMock())
+        monkeypatch.setattr("arcwright_ai.cli.halt.append_entry", AsyncMock())
+
+        await controller.handle_halt(
+            story_id=StoryId("13-4-timeout-test"),
+            exception=exc,
+            accumulated_budget=_make_budget(),
+            completed_stories=[],
+            last_completed=None,
+        )
+
+        output = capsys.readouterr().err
+        assert (
+            "transient" in output.lower() or "retryable" in output.lower()
+        ), "Terminal output must label timeout_error as transient/retryable"
+
+    async def test_unknown_sdk_error_terminal_output_rendered(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """unknown_sdk_error halt output renders the unrecognised SDK fallback message (AC#4)."""
+        exc = _make_agent_error_with_transient_classification("unknown_sdk_error")
+        controller = _make_halt_controller(tmp_path)
+        monkeypatch.setattr("arcwright_ai.cli.halt.write_halt_report", AsyncMock(return_value=tmp_path / "s.md"))
+        monkeypatch.setattr("arcwright_ai.cli.halt.update_run_status", AsyncMock())
+        monkeypatch.setattr("arcwright_ai.cli.halt.append_entry", AsyncMock())
+
+        await controller.handle_halt(
+            story_id=StoryId("13-4-unknown-sdk-test"),
+            exception=exc,
+            accumulated_budget=_make_budget(),
+            completed_stories=[],
+            last_completed=None,
+        )
+
+        output = capsys.readouterr().err
+        assert (
+            "unrecognised" in output.lower() or "unknown" in output.lower() or "sdk" in output.lower()
+        ), "Terminal output must render the unknown SDK error fallback"
+        assert (
+            "Claude platform" not in output
+        ), "Unknown SDK output must NOT claim this is a Claude platform/account issue"
+        assert "local Claude" not in output.lower(), "Unknown SDK output must NOT claim this is a local setup issue"
+
+    async def test_transient_errors_do_not_include_local_platform_language(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Transient error terminal output keeps local config and platform-account advice out (AC#2 scope)."""
+        exc = _make_agent_error_with_transient_classification("rate_limit_error")
+        controller = _make_halt_controller(tmp_path)
+        monkeypatch.setattr("arcwright_ai.cli.halt.write_halt_report", AsyncMock(return_value=tmp_path / "s.md"))
+        monkeypatch.setattr("arcwright_ai.cli.halt.update_run_status", AsyncMock())
+        monkeypatch.setattr("arcwright_ai.cli.halt.append_entry", AsyncMock())
+
+        await controller.handle_halt(
+            story_id=StoryId("13-4-scope-test"),
+            exception=exc,
+            accumulated_budget=_make_budget(),
+            completed_stories=[],
+            last_completed=None,
+        )
+
+        output = capsys.readouterr().err
+        assert "Claude platform" not in output, "Transient output must NOT reference Claude platform/account"
+        assert "local Claude" not in output.lower(), "Transient output must NOT reference local Claude setup"
+
+
+class TestTransientGuidanceConsistency:
+    """Transient guidance is consistent across terminal output and halt reports (AC#3)."""
+
+    async def test_rate_limit_guidance_in_halt_report_suggested_fix(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """rate_limit_error suggested_fix in write_halt_report contains transient guidance (AC#3)."""
+        exc = _make_agent_error_with_transient_classification("rate_limit_error")
+        controller = _make_halt_controller(tmp_path)
+
+        captured: dict[str, object] = {}
+
+        async def _mock_write(*args: object, **kwargs: object) -> Path:
+            captured.update(kwargs)
+            return tmp_path / "s.md"
+
+        monkeypatch.setattr("arcwright_ai.cli.halt.write_halt_report", _mock_write)
+        monkeypatch.setattr("arcwright_ai.cli.halt.update_run_status", AsyncMock())
+        monkeypatch.setattr("arcwright_ai.cli.halt.append_entry", AsyncMock())
+
+        await controller.handle_halt(
+            story_id=StoryId("13-4-rate-limit-report-test"),
+            exception=exc,
+            accumulated_budget=_make_budget(),
+            completed_stories=[],
+            last_completed=None,
+        )
+
+        fix = str(captured.get("suggested_fix", ""))
+        assert (
+            "transient" in fix.lower() or "retryable" in fix.lower()
+        ), "Halt report suggested_fix must contain transient guidance for rate_limit_error"
+
+    async def test_unknown_sdk_guidance_in_halt_report_suggested_fix(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """unknown_sdk_error suggested_fix in write_halt_report renders the fallback (AC#3, #4)."""
+        exc = _make_agent_error_with_transient_classification("unknown_sdk_error")
+        controller = _make_halt_controller(tmp_path)
+
+        captured: dict[str, object] = {}
+
+        async def _mock_write(*args: object, **kwargs: object) -> Path:
+            captured.update(kwargs)
+            return tmp_path / "s.md"
+
+        monkeypatch.setattr("arcwright_ai.cli.halt.write_halt_report", _mock_write)
+        monkeypatch.setattr("arcwright_ai.cli.halt.update_run_status", AsyncMock())
+        monkeypatch.setattr("arcwright_ai.cli.halt.append_entry", AsyncMock())
+
+        await controller.handle_halt(
+            story_id=StoryId("13-4-unknown-sdk-report-test"),
+            exception=exc,
+            accumulated_budget=_make_budget(),
+            completed_stories=[],
+            last_completed=None,
+        )
+
+        fix = str(captured.get("suggested_fix", ""))
+        assert (
+            "unrecognised" in fix.lower() or "unknown" in fix.lower() or "sdk" in fix.lower()
+        ), "Halt report suggested_fix must render the unknown-SDK fallback"
+        assert "Claude platform" not in fix, "Unknown SDK halt report must NOT reference platform/account issues"
