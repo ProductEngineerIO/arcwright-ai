@@ -178,7 +178,7 @@ Use `arcwright dispatch --epic <EPIC> --resume` to resume after fixing the root 
 
 ## Credential Safety
 
-All operator-facing output — terminal, halt reports, run summaries, and logs — passes through
-the centralised credential redaction layer (`redact_secrets`) before display.  API keys, bearer
-tokens, and `api_key = ...` values are replaced with `[REDACTED]` before they can appear in any
-artifact.
+All operator-facing guidance artifacts — terminal output, halt reports, and run summaries —
+pass through the centralised credential redaction layer (`redact_secrets`) before display.
+API keys, bearer tokens, and `api_key = ...` values are replaced with `[REDACTED]` before they
+can appear in these artifacts.
