@@ -33,7 +33,7 @@ from arcwright_ai.core.errors import (
     ClaudeErrorCategory,
     render_claude_guidance,
 )
-from arcwright_ai.core.exceptions import ContextError, ScmError, ValidationError
+from arcwright_ai.core.exceptions import BranchError, ContextError, ScmError, ValidationError, WorktreeError
 from arcwright_ai.core.io import write_text_async
 from arcwright_ai.core.lifecycle import TaskState
 from arcwright_ai.core.types import BudgetState, ProvenanceEntry, StoryCost, calculate_invocation_cost
@@ -75,6 +75,18 @@ logger = logging.getLogger(__name__)
 
 SCM_COMMIT_ERROR_PREFIX = "Commit SCM error:"
 SCM_CLEANUP_ERROR_PREFIX = "Worktree cleanup error:"
+
+
+def _get_scm_error_prefix(agent_output: object) -> str | None:
+    """Return the SCM error prefix when agent_output encodes an SCM halt message."""
+
+    if not isinstance(agent_output, str):
+        return None
+    if agent_output.startswith(SCM_COMMIT_ERROR_PREFIX):
+        return SCM_COMMIT_ERROR_PREFIX
+    if agent_output.startswith(SCM_CLEANUP_ERROR_PREFIX):
+        return SCM_CLEANUP_ERROR_PREFIX
+    return None
 
 
 async def _escalate_after_scm_failure(
@@ -1506,13 +1518,16 @@ async def commit_node(state: StoryState) -> StoryState:
                 "scm.commit.error",
                 extra={"data": {"story": story_slug, "error": exc.message, "details": exc.details}},
             )
-            halted_detail = f"{SCM_COMMIT_ERROR_PREFIX} {exc.message}"
-            return await _escalate_after_scm_failure(
-                state,
-                story_slug=story_slug,
-                run_id=run_id,
-                detail=halted_detail,
-            )
+            if isinstance(exc, BranchError):
+                commit_hash = None
+            else:
+                halted_detail = f"{SCM_COMMIT_ERROR_PREFIX} {exc.message}"
+                return await _escalate_after_scm_failure(
+                    state,
+                    story_slug=story_slug,
+                    run_id=run_id,
+                    detail=halted_detail,
+                )
 
         # Push branch and open PR after successful commit (AC: #8, best-effort)
         pr_url: str | None = None
@@ -1738,13 +1753,14 @@ async def commit_node(state: StoryState) -> StoryState:
                 "scm.worktree.remove.error",
                 extra={"data": {"story": story_slug, "error": exc.message, "details": exc.details}},
             )
-            halted_detail = f"{SCM_CLEANUP_ERROR_PREFIX} {exc.message}"
-            return await _escalate_after_scm_failure(
-                state,
-                story_slug=story_slug,
-                run_id=run_id,
-                detail=halted_detail,
-            )
+            if not isinstance(exc, WorktreeError):
+                halted_detail = f"{SCM_CLEANUP_ERROR_PREFIX} {exc.message}"
+                return await _escalate_after_scm_failure(
+                    state,
+                    story_slug=story_slug,
+                    run_id=run_id,
+                    detail=halted_detail,
+                )
 
     # Update story status in run.yaml after critical SCM operations succeed.
     try:
@@ -1815,10 +1831,7 @@ def _derive_halt_reason(state: StoryState) -> str:
     if _is_budget_exceeded(state.budget):
         return "budget_exceeded"
     if not state.retry_history:
-        if state.agent_output and (
-            state.agent_output.startswith(SCM_COMMIT_ERROR_PREFIX)
-            or state.agent_output.startswith(SCM_CLEANUP_ERROR_PREFIX)
-        ):
+        if _get_scm_error_prefix(state.agent_output) is not None:
             return "scm_error"
         return "agent_sdk_error"
     last = state.retry_history[-1]
@@ -1952,12 +1965,13 @@ def _derive_suggested_fix(state: StoryState) -> str:
             "Consider increasing `limits.cost_per_run` or `limits.tokens_per_story` in pyproject.toml."
         )
     if not state.retry_history:
-        if state.agent_output and state.agent_output.startswith(SCM_COMMIT_ERROR_PREFIX):
+        scm_prefix = _get_scm_error_prefix(state.agent_output)
+        if scm_prefix == SCM_COMMIT_ERROR_PREFIX:
             return (
                 "Git commit/staging failed after validation passed. Review the preserved worktree, "
                 "fix the repository or filesystem issue reported in the halt report, and rerun the story."
             )
-        if state.agent_output and state.agent_output.startswith(SCM_CLEANUP_ERROR_PREFIX):
+        if scm_prefix == SCM_CLEANUP_ERROR_PREFIX:
             return (
                 "Worktree cleanup failed after the story completed. Inspect the preserved worktree, "
                 "remove or repair the blocking files, and rerun once cleanup succeeds."
