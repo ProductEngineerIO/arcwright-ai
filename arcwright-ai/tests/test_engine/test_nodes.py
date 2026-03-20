@@ -50,6 +50,7 @@ from arcwright_ai.engine.nodes import (
 )
 from arcwright_ai.engine.state import StoryState
 from arcwright_ai.output.provenance import append_entry, write_entries
+from arcwright_ai.output.run_manager import RunStatusValue
 from arcwright_ai.scm.git import GitResult
 from arcwright_ai.scm.pr import MergeOutcome
 from arcwright_ai.validation.pipeline import PipelineOutcome, PipelineResult
@@ -1634,6 +1635,56 @@ async def test_commit_node_continues_when_update_story_status_raises(
     assert result.status == TaskState.SUCCESS
 
 
+@pytest.mark.asyncio
+async def test_commit_node_escalates_when_commit_story_raises_scm_error(
+    make_story_state: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """commit_node halts the story when the commit step fails."""
+    mock_update_story = AsyncMock()
+    mock_update_run = AsyncMock()
+    monkeypatch.setattr("arcwright_ai.engine.nodes.update_story_status", mock_update_story)
+    monkeypatch.setattr("arcwright_ai.engine.nodes.update_run_status", mock_update_run)
+    monkeypatch.setattr(
+        "arcwright_ai.engine.nodes.commit_story",
+        AsyncMock(side_effect=ScmError("git add failed", details={"path": ".env 2.example"})),
+    )
+
+    worktree_path = Path("/project/.arcwright-ai/worktrees/2-1-state-models")
+    state = make_story_state.model_copy(update={"status": TaskState.SUCCESS, "worktree_path": worktree_path})
+    result = await commit_node(state)
+
+    assert result.status == TaskState.ESCALATED
+    assert result.agent_output == "Commit SCM error: git add failed"
+    assert mock_update_story.call_args[1]["status"] == "halted"
+    assert mock_update_run.call_args[1]["status"] == RunStatusValue.HALTED
+
+
+@pytest.mark.asyncio
+async def test_commit_node_escalates_when_worktree_cleanup_raises_scm_error(
+    make_story_state: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """commit_node halts the story when worktree cleanup fails."""
+    mock_update_story = AsyncMock()
+    mock_update_run = AsyncMock()
+    monkeypatch.setattr("arcwright_ai.engine.nodes.update_story_status", mock_update_story)
+    monkeypatch.setattr("arcwright_ai.engine.nodes.update_run_status", mock_update_run)
+    monkeypatch.setattr(
+        "arcwright_ai.engine.nodes.remove_worktree",
+        AsyncMock(side_effect=ScmError("git worktree remove failed")),
+    )
+
+    worktree_path = Path("/project/.arcwright-ai/worktrees/2-1-state-models")
+    state = make_story_state.model_copy(update={"status": TaskState.SUCCESS, "worktree_path": worktree_path})
+    result = await commit_node(state)
+
+    assert result.status == TaskState.ESCALATED
+    assert result.agent_output == "Worktree cleanup error: git worktree remove failed"
+    assert mock_update_story.call_args[1]["status"] == "halted"
+    assert mock_update_run.call_args[1]["status"] == RunStatusValue.HALTED
+
+
 # ---------------------------------------------------------------------------
 # Task 12: finalize_node tests (AC: #10h-m)
 # ---------------------------------------------------------------------------
@@ -1736,6 +1787,31 @@ async def test_finalize_node_escalated_with_empty_retry_history_uses_agent_sdk_e
     assert mock_halt.call_count == 1
     call_kwargs = mock_halt.call_args[1]
     assert call_kwargs["halt_reason"] == "agent_sdk_error"
+
+
+@pytest.mark.asyncio
+async def test_finalize_node_escalated_with_scm_error_uses_scm_halt_reason(
+    make_story_state: StoryState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """finalize_node emits scm_error when commit stage SCM fails after validation."""
+    mock_halt = AsyncMock()
+    monkeypatch.setattr("arcwright_ai.engine.nodes.write_halt_report", mock_halt)
+
+    state = make_story_state.model_copy(
+        update={
+            "status": TaskState.ESCALATED,
+            "retry_history": [],
+            "retry_count": 0,
+            "agent_output": "Commit SCM error: git add failed",
+        }
+    )
+    await finalize_node(state)
+
+    assert mock_halt.call_count == 1
+    call_kwargs = mock_halt.call_args[1]
+    assert call_kwargs["halt_reason"] == "scm_error"
+    assert "Git commit/staging failed after validation passed" in call_kwargs["suggested_fix"]
     assert call_kwargs["validation_history"] == []
 
 
