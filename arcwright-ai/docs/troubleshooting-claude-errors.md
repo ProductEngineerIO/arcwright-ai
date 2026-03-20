@@ -57,7 +57,7 @@ story code defects.  Arcwright AI cannot resolve them; you must act on the Claud
 
 **Actions (Claude platform):**
 1. Check which models your API key is authorised for.
-2. Choose a model your account can use in `arcwright config`.
+2. Update your Arcwright AI configuration (for example, in `.arcwright-ai/config.yaml` or the `arcwright-ai` section of `pyproject.toml`) to use a model your account can access.
 3. Upgrade your Anthropic plan if the model requires a higher tier.
 
 ---
