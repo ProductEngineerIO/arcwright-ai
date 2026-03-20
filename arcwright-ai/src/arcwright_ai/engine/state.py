@@ -45,6 +45,11 @@ class StoryState(BaseModel):
             in prior agent dispatches. Injected into the next retry prompt.
         merge_outcome: Structured merge result from commit_node. Read by dispatch
             loop to decide epic continuation. ``None`` until commit_node runs.
+        failure_category: Taxonomy error code from ``core.errors.ClaudeErrorCategory``
+            when ``agent_dispatch_node`` catches a classified SDK failure.
+            ``None`` for all other terminal states.  Used by downstream surfaces
+            (``nodes._derive_suggested_fix``, ``halt._suggested_fix_for_graph_state``)
+            to render platform-account guidance without re-raising the original exception.
         retry_history: Accumulated validation results across retry attempts.
         retry_count: Number of retry attempts so far.
         budget: Token/cost consumption tracker.
@@ -62,6 +67,7 @@ class StoryState(BaseModel):
     base_ref: str | None = None
     pr_url: str | None = None
     merge_outcome: str | None = None
+    failure_category: str | None = None
     status: TaskState = TaskState.QUEUED
     context_bundle: ContextBundle | None = None
     agent_output: str | None = None

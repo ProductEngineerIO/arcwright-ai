@@ -1,6 +1,6 @@
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.8.6
+    rev: v0.15.6
     hooks:
       - id: ruff
         args: [--fix]
@@ -9,5 +9,15 @@ repos:
     rev: v1.15.0
     hooks:
       - id: mypy
-        additional_dependencies: [pydantic>=2.7, typer>=0.12]
-        args: [--strict]
+        files: ^src/
+        additional_dependencies:
+          [
+            pydantic>=2.7,
+            typer>=0.12,
+            pyyaml,
+            types-PyYAML,
+            python-dotenv,
+            langgraph,
+            claude-code-sdk,
+          ]
+        args: [--strict, --config-file=pyproject.toml]
