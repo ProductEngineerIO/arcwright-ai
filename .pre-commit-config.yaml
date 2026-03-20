@@ -1,0 +1,26 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.6
+    hooks:
+      - id: ruff
+        files: ^arcwright-ai/
+        args: [--fix, --config=arcwright-ai/pyproject.toml]
+      - id: ruff-format
+        files: ^arcwright-ai/
+        args: [--config=arcwright-ai/pyproject.toml]
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.15.0
+    hooks:
+      - id: mypy
+        files: ^arcwright-ai/src/
+        additional_dependencies:
+          [
+            pydantic>=2.7,
+            typer>=0.12,
+            pyyaml,
+            types-PyYAML,
+            python-dotenv,
+            claude-code-sdk,
+          ]
+        args: [--strict, --config-file=arcwright-ai/pyproject.toml]
