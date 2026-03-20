@@ -31,6 +31,12 @@ from arcwright_ai.core.constants import (
     VALIDATION_FILENAME,
     WORKTREE_DIR_TEMPLATE,
 )
+from arcwright_ai.core.errors import (
+    CLAUDE_ERROR_REGISTRY,
+    ClaudeErrorCategory,
+    ClaudeErrorClassification,
+    classify_claude_error,
+)
 from arcwright_ai.core.events import EventEmitter, NoOpEmitter
 from arcwright_ai.core.exceptions import (
     AgentBudgetError,
@@ -61,9 +67,9 @@ from arcwright_ai.core.types import (
 )
 
 __all__: list[str] = [
-    # constants
     "AGENT_OUTPUT_FILENAME",
     "BRANCH_PREFIX",
+    "CLAUDE_ERROR_REGISTRY",
     "COMMIT_MESSAGE_TEMPLATE",
     "CONTEXT_BUNDLE_FILENAME",
     "DIR_ARCWRIGHT",
@@ -89,38 +95,35 @@ __all__: list[str] = [
     "VALIDATION_FILENAME",
     "VALID_TRANSITIONS",
     "WORKTREE_DIR_TEMPLATE",
-    # exceptions
     "AgentBudgetError",
     "AgentError",
     "AgentTimeoutError",
     "ArcwrightError",
-    # types
     "ArcwrightModel",
     "ArtifactRef",
     "BranchError",
     "BudgetState",
+    "ClaudeErrorCategory",
+    "ClaudeErrorClassification",
     "ConfigError",
     "ContextBundle",
     "ContextError",
     "EpicId",
-    # events
     "EventEmitter",
     "NoOpEmitter",
     "ProjectError",
     "ProvenanceEntry",
-    # config
     "RunConfig",
     "RunError",
     "RunId",
     "SandboxViolation",
     "ScmError",
     "StoryId",
-    # lifecycle
     "TaskState",
     "ValidationError",
     "WorktreeError",
+    "classify_claude_error",
     "load_config",
-    # io
     "load_yaml",
     "read_text_async",
     "save_yaml",

@@ -173,9 +173,28 @@ def test_wrap_sdk_error_classifies_billing_failures() -> None:
 
     wrapped = _wrap_sdk_error(error)
 
-    assert "Claude API billing error" in str(wrapped)
+    assert "insufficient credit balance" in str(wrapped)
     assert wrapped.details is not None
     assert wrapped.details["failure_category"] == "billing_error"
+
+
+def test_wrap_sdk_error_sets_unknown_category_and_redacts_stderr_tokens() -> None:
+    """Unknown failures still carry taxonomy metadata and safe summaries."""
+    from claude_code_sdk._errors import ProcessError
+
+    error = ProcessError(
+        "Command failed with exit code 1",
+        exit_code=1,
+        stderr="fatal: token Bearer abc.def.ghi leaked",
+    )
+
+    wrapped = _wrap_sdk_error(error)
+
+    assert wrapped.details is not None
+    assert wrapped.details["failure_category"] == "unknown_sdk_error"
+    assert wrapped.details["classified_message"] == wrapped.details["classification"].summary
+    assert "Bearer" not in str(wrapped)
+    assert "abc.def.ghi" not in str(wrapped)
 
 
 def test_enrich_error_with_stderr_reclassifies_placeholder_process_failure(tmp_path: Path) -> None:
@@ -195,7 +214,7 @@ def test_enrich_error_with_stderr_reclassifies_placeholder_process_failure(tmp_p
 
     _enrich_error_with_stderr(exc, str(stderr_path))
 
-    assert "Claude API authentication error" in str(exc)
+    assert "API key was rejected" in str(exc)
     assert exc.details is not None
     assert exc.details["failure_category"] == "auth_error"
     assert "captured_stderr" in exc.details

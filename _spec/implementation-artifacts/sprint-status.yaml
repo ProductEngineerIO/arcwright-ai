@@ -38,7 +38,7 @@ project: arcwright-ai
 project_key: NOKEY
 tracking_system: file-system
 story_location: _spec/implementation-artifacts
-last_updated: 2026-03-19
+last_updated: 2026-03-20
 
 
 development_status:
@@ -147,3 +147,11 @@ development_status:
   12-2-rewrite-merge-pull-request-with-ci-wait: done
   12-3-commit-node-mergeoutcome-integration: done
   12-4-dispatch-loop-halt-on-merge-failure: done
+
+  # Epic 13: Operator-Facing Claude Error Guidance & Terminal UX (5 stories, 21 pts)
+  epic-13: in-progress
+  13-1-structured-claude-error-taxonomy-and-remediation-contract: done
+  13-2-terminal-guidance-for-claude-platform-account-and-access-failures: ready-for-dev
+  13-3-terminal-guidance-for-local-claude-runtime-and-configuration-failures: ready-for-dev
+  13-4-terminal-guidance-for-transient-provider-failures-and-retryable-conditions: ready-for-dev
+  13-5-shared-error-rendering-redaction-and-troubleshooting-documentation: ready-for-dev
