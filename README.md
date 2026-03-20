@@ -420,7 +420,57 @@ The BMAD framework is installed *into* a project, not built alongside it. It shi
 
 ### Re-applying after a BMAD update
 
-A BMAD framework update (via `npx bmad-method@<version> install` or equivalent) will overwrite `workflow.md` with the stock original. Re-apply the Step 9 git diff audit manually after each upgrade — the current working state of the file is always in `_bmad/` and serves as the live reference.
+A BMAD framework update (via `npx bmad-method@<version> install` or equivalent) will overwrite `workflow.md` with the stock original. After each upgrade, open `_bmad/bmm/workflows/4-implementation/dev-story/workflow.md`, find Step 9, and replace the stock file-list confirmation line with the git diff audit block below.
+
+**Stock Step 9 line to replace:**
+
+```xml
+<action>Confirm File List includes every changed file</action>
+```
+
+**Replace with this git diff reconciliation audit** (paste immediately after the `<action>Run the full regression suite …</action>` line inside Step 9):
+
+<details>
+<summary>Click to expand the full replacement block</summary>
+
+```xml
+    <!-- GIT DIFF AUDIT: Reconcile actual changed files against Dev Agent Record File List -->
+    <action>Run: git diff --name-only HEAD to get all files changed since the last commit</action>
+    <action>Also run: git status --short to surface any untracked or unstaged files relevant to this story</action>
+    <action>Extract the current File List from Dev Agent Record → File List section of the story file</action>
+    <action>Compare the two lists:
+      - Files in git diff output but NOT in File List  → Missing entries (must be added before review)
+      - Files in File List but NOT in git diff output  → Phantom entries (verify intent or remove)
+      - Files appearing in both                        → Confirmed ✅
+    </action>
+    <action>Output a reconciliation table: filename | in-git-diff | in-file-list | status</action>
+
+    <check if="any files appear in git diff but are absent from the File List">
+      <output>⚠️  FILE LIST DISCREPANCY — Missing Entries
+        The following changed files are NOT recorded in Dev Agent Record → File List:
+        {{missing_files}}
+        You MUST add these entries before the story can move to review.
+      </output>
+      <action>Update Dev Agent Record → File List to include all missing files (repo-root-relative paths)</action>
+      <action>Re-save the story file after updating the File List</action>
+    </check>
+
+    <check if="any files appear in the File List but are absent from git diff output">
+      <output>⚠️  FILE LIST DISCREPANCY — Phantom Entries
+        The following files are listed in Dev Agent Record → File List but show no git changes:
+        {{phantom_files}}
+        Confirm these files were intentionally included (e.g. deletions tracked separately) or remove them.
+      </output>
+    </check>
+
+    <check if="git diff output and File List match exactly">
+      <output>✅ Git diff audit passed — all changed files are accounted for in the File List</output>
+    </check>
+
+    <action if="File List was updated during audit">Re-save the story file before proceeding</action>
+```
+
+</details>
 
 **Symptom of missing customization:** Dev agent File Lists stop matching `git diff` output after a BMAD update. See the troubleshooting entry in [arcwright-ai/README.md](arcwright-ai/README.md#dev-agent-file-list-is-consistently-incomplete-or-doesnt-match-git-diff-output-after-a-bmad-update).
 
