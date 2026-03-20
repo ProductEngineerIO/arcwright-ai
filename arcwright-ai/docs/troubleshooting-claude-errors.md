@@ -167,12 +167,12 @@ backoff automatically for retryable conditions.
 
 ## Reading Halt Reports
 
-When Arcwright AI halts, it writes a `HALT_REPORT.md` to the run directory under
-`.arcwright/runs/<run-id>/`.  The `## Suggested Fix` section contains the same structured
+When Arcwright AI halts, it writes a `halt-report.md` to the run directory under
+`.arcwright-ai/runs/<run-id>/`.  The `## Suggested Fix` section contains the same structured
 guidance as the terminal output, rendered by the shared `render_claude_guidance` function for
 consistency across all surfaces.
 
-Use `arcwright dispatch --epic <EPIC> --resume` to resume after fixing the root cause.
+Use `arcwright-ai dispatch --epic <EPIC> --resume` to resume after fixing the root cause.
 
 ---
 
