@@ -14,6 +14,11 @@ from arcwright_ai.validation.pipeline import (
     PipelineResult,
     run_validation_pipeline,
 )
+from arcwright_ai.validation.quality_gate import (
+    QualityFeedback,
+    QualityGateResult,
+    ToolResult,
+)
 from arcwright_ai.validation.v3_reflexion import (
     ACResult,
     ReflexionFeedback,
@@ -552,3 +557,133 @@ async def test_run_validation_pipeline_cost_is_zero_on_v6_short_circuit(
 
     assert result.tokens_used == 0
     assert result.cost == Decimal("0")
+
+
+# ---------------------------------------------------------------------------
+# Test 6.6/6.7 — Quality Gate integration with the pipeline
+# ---------------------------------------------------------------------------
+
+WORKTREE_PATH = Path("/project/.arcwright-ai/worktrees/10-12-story")
+
+
+@pytest.fixture
+def mock_quality_gate_pass(monkeypatch: pytest.MonkeyPatch) -> QualityGateResult:
+    """Monkeypatch run_quality_gate to return a passing result."""
+    feedback = QualityFeedback(
+        passed=True,
+        auto_fix_summary=[],
+        tool_results=[
+            ToolResult(tool_name="ruff check", passed=True, exit_code=0),
+            ToolResult(tool_name="mypy --strict", passed=True, exit_code=0),
+            ToolResult(tool_name="pytest", passed=True, exit_code=0),
+        ],
+    )
+    qg_result = QualityGateResult(passed=True, feedback=feedback)
+
+    async def _mock_qg(project_root: Path, worktree_path: Path, *, timeout: int = 300) -> QualityGateResult:
+        return qg_result
+
+    monkeypatch.setattr("arcwright_ai.validation.pipeline.run_quality_gate", _mock_qg)
+    return qg_result
+
+
+@pytest.fixture
+def mock_quality_gate_fail(monkeypatch: pytest.MonkeyPatch) -> QualityGateResult:
+    """Monkeypatch run_quality_gate to return a failing result."""
+    feedback = QualityFeedback(
+        passed=False,
+        auto_fix_summary=[],
+        tool_results=[
+            ToolResult(tool_name="ruff check", passed=True, exit_code=0),
+            ToolResult(
+                tool_name="mypy --strict",
+                passed=False,
+                exit_code=1,
+                stderr="error: Missing return statement  [return]",
+            ),
+            ToolResult(tool_name="pytest", passed=True, exit_code=0),
+        ],
+    )
+    qg_result = QualityGateResult(passed=False, feedback=feedback)
+
+    async def _mock_qg(project_root: Path, worktree_path: Path, *, timeout: int = 300) -> QualityGateResult:
+        return qg_result
+
+    monkeypatch.setattr("arcwright_ai.validation.pipeline.run_quality_gate", _mock_qg)
+    return qg_result
+
+
+async def test_pipeline_quality_gate_pass_returns_pass(
+    mock_v6_pass: V6ValidationResult,
+    mock_v3_pass: V3ReflexionResult,
+    mock_quality_gate_pass: QualityGateResult,
+) -> None:
+    """V6 pass → V3 pass → QG pass ⟹ PipelineOutcome.PASS with quality_feedback populated."""
+    result = await run_validation_pipeline(
+        "agent output",
+        STORY_PATH,
+        PROJECT_ROOT,
+        model=_MODEL,
+        cwd=_CWD,
+        sandbox=_SANDBOX,  # type: ignore[arg-type]
+        api_key="sk-test-not-real",
+        worktree_path=WORKTREE_PATH,
+    )
+
+    assert result.outcome == PipelineOutcome.PASS
+    assert result.quality_feedback is not None
+    assert result.quality_feedback.passed is True
+    assert len(result.quality_feedback.tool_results) == 3
+    assert all(r.passed for r in result.quality_feedback.tool_results)
+
+
+async def test_pipeline_quality_gate_fail_returns_fail_quality(
+    mock_v6_pass: V6ValidationResult,
+    mock_v3_pass: V3ReflexionResult,
+    mock_quality_gate_fail: QualityGateResult,
+) -> None:
+    """V6 pass → V3 pass → QG fail ⟹ PipelineOutcome.FAIL_QUALITY with quality_feedback."""
+    result = await run_validation_pipeline(
+        "agent output",
+        STORY_PATH,
+        PROJECT_ROOT,
+        model=_MODEL,
+        cwd=_CWD,
+        sandbox=_SANDBOX,  # type: ignore[arg-type]
+        api_key="sk-test-not-real",
+        worktree_path=WORKTREE_PATH,
+    )
+
+    assert result.outcome == PipelineOutcome.FAIL_QUALITY
+    assert result.quality_feedback is not None
+    assert result.quality_feedback.passed is False
+    failing = [r for r in result.quality_feedback.tool_results if not r.passed]
+    assert len(failing) == 1
+    assert failing[0].tool_name == "mypy --strict"
+
+
+async def test_pipeline_no_worktree_path_skips_quality_gate(
+    mock_v6_pass: V6ValidationResult,
+    mock_v3_pass: V3ReflexionResult,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When worktree_path is None, quality gate is not invoked and result is PASS."""
+
+    async def _qg_must_not_be_called(*args: object, **kwargs: object) -> None:
+        raise AssertionError("Quality gate must not be called when worktree_path is None")
+
+    monkeypatch.setattr("arcwright_ai.validation.pipeline.run_quality_gate", _qg_must_not_be_called)
+
+    result = await run_validation_pipeline(
+        "agent output",
+        STORY_PATH,
+        PROJECT_ROOT,
+        model=_MODEL,
+        cwd=_CWD,
+        sandbox=_SANDBOX,  # type: ignore[arg-type]
+        api_key="sk-test-not-real",
+        worktree_path=None,
+    )
+
+    assert result.outcome == PipelineOutcome.PASS
+    assert result.quality_feedback is None

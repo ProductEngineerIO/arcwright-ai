@@ -54,6 +54,7 @@ from arcwright_ai.output.run_manager import RunStatusValue
 from arcwright_ai.scm.git import GitResult
 from arcwright_ai.scm.pr import MergeOutcome
 from arcwright_ai.validation.pipeline import PipelineOutcome, PipelineResult
+from arcwright_ai.validation.quality_gate import QualityFeedback, ToolResult
 from arcwright_ai.validation.v3_reflexion import (
     ACResult,
     ReflexionFeedback,
@@ -3661,3 +3662,112 @@ async def test_commit_node_remove_worktree_delete_branch_false_when_merge_error(
         project_root=state.project_root,
         delete_branch=False,
     )
+
+
+# ---------------------------------------------------------------------------
+# Test 6.8/6.9/6.11 — validate_node FAIL_QUALITY routing (Story 10.12)
+# ---------------------------------------------------------------------------
+
+
+def _make_fail_quality_result() -> PipelineResult:
+    """Create a FAIL_QUALITY PipelineResult with quality_feedback for test fixtures."""
+    v6 = V6ValidationResult(
+        passed=True,
+        results=[V6CheckResult(check_name="file_existence", passed=True)],
+    )
+    quality_feedback = QualityFeedback(
+        passed=False,
+        auto_fix_summary=[],
+        tool_results=[
+            ToolResult(tool_name="ruff check", passed=True, exit_code=0),
+            ToolResult(
+                tool_name="mypy --strict",
+                passed=False,
+                exit_code=1,
+                stderr="error: Missing return statement  [return]",
+            ),
+            ToolResult(tool_name="pytest", passed=True, exit_code=0),
+        ],
+    )
+    return PipelineResult(
+        passed=False,
+        outcome=PipelineOutcome.FAIL_QUALITY,
+        v6_result=v6,
+        quality_feedback=quality_feedback,
+        tokens_used=0,
+        cost=Decimal("0"),
+    )
+
+
+@pytest.fixture
+def mock_pipeline_fail_quality(monkeypatch: pytest.MonkeyPatch) -> PipelineResult:
+    """Monkeypatch run_validation_pipeline to return FAIL_QUALITY result."""
+    result = _make_fail_quality_result()
+
+    async def _mock(*args: object, **kwargs: object) -> PipelineResult:
+        return result
+
+    monkeypatch.setattr("arcwright_ai.engine.nodes.run_validation_pipeline", _mock)
+    return result
+
+
+@pytest.mark.asyncio
+async def test_validate_node_quality_fail_within_retry_budget_transitions_to_retry(
+    validate_ready_state: StoryState,
+    mock_pipeline_fail_quality: PipelineResult,
+) -> None:
+    """FAIL_QUALITY with retry_count=0 and retry_budget=3 → RETRY, retry_count becomes 1."""
+    state = validate_ready_state.model_copy(update={"retry_count": 0})
+    result = await validate_node(state)
+    assert result.status == TaskState.RETRY
+    assert result.retry_count == 1
+
+
+@pytest.mark.asyncio
+async def test_validate_node_quality_fail_at_retry_limit_transitions_to_escalated(
+    validate_ready_state: StoryState,
+    mock_pipeline_fail_quality: PipelineResult,
+) -> None:
+    """FAIL_QUALITY with retry_count=3 and retry_budget=3 → ESCALATED, halt report written."""
+    state = validate_ready_state.model_copy(
+        update={
+            "retry_count": 3,
+            "config": make_run_config(retry_budget=3),
+        }
+    )
+    result = await validate_node(state)
+    assert result.status == TaskState.ESCALATED
+    assert result.retry_count == 4
+
+    halt_path = (
+        validate_ready_state.project_root
+        / DIR_ARCWRIGHT
+        / DIR_RUNS
+        / str(validate_ready_state.run_id)
+        / DIR_STORIES
+        / str(validate_ready_state.story_id)
+        / HALT_REPORT_FILENAME
+    )
+    assert halt_path.exists()
+    halt_text = halt_path.read_text(encoding="utf-8")
+    assert "- **Quality Gate**: mypy --strict (auto-fixes: 0)" in halt_text
+    assert "## Quality Gate Failures" in halt_text
+    assert "mypy --strict" in halt_text
+    assert "error: Missing return statement" in halt_text
+    assert "QG:" in halt_text
+
+
+@pytest.mark.asyncio
+async def test_validate_node_quality_fail_populates_validation_result(
+    validate_ready_state: StoryState,
+    mock_pipeline_fail_quality: PipelineResult,
+) -> None:
+    """FAIL_QUALITY validate_node populates validation_result with quality_feedback."""
+    result = await validate_node(validate_ready_state)
+    assert result.validation_result is not None
+    assert result.validation_result.outcome == PipelineOutcome.FAIL_QUALITY
+    assert result.validation_result.quality_feedback is not None
+    assert result.validation_result.quality_feedback.passed is False
+    failing = [r for r in result.validation_result.quality_feedback.tool_results if not r.passed]
+    assert len(failing) == 1
+    assert failing[0].tool_name == "mypy --strict"

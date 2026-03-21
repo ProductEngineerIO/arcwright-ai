@@ -134,6 +134,8 @@ development_status:
   10-9-cli-version-command: done
   10-10-redact-api-key-from-langsmith-traces-via-secretstr: done
   10-11-llm-extracted-agent-decisions-in-pr-body: done
+  10-12-quality-gate-automated-lint-format-type-check-and-test-validation: done
+  10-13-pr-creation-retry-with-backoff-for-github-api-lag: done
 
   # Epic 11: BMAD 6.1 Framework Upgrade (3 stories, 13 pts)
   epic-11: done

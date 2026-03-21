@@ -6,6 +6,7 @@ from pathlib import Path
 
 from arcwright_ai.agent.prompt import build_prompt
 from arcwright_ai.core.types import ContextBundle
+from arcwright_ai.validation.quality_gate import QualityFeedback, ToolResult
 from arcwright_ai.validation.v3_reflexion import ReflexionFeedback
 
 # ---------------------------------------------------------------------------
@@ -155,3 +156,74 @@ def test_build_prompt_includes_prior_sandbox_denial_section() -> None:
     assert "## Prior Sandbox Denial" in prompt
     assert "Write to '/abs/path/file.ts' was denied." in prompt
     assert "Correct this before making other changes." in prompt
+
+
+# ---------------------------------------------------------------------------
+# Test 6.10 — build_prompt quality_feedback injection (Story 10.12)
+# ---------------------------------------------------------------------------
+
+
+def _make_failed_quality_feedback() -> QualityFeedback:
+    """Build a failing QualityFeedback with a mypy failure."""
+    return QualityFeedback(
+        passed=False,
+        auto_fix_summary=[],
+        tool_results=[
+            ToolResult(tool_name="ruff check", passed=True, exit_code=0),
+            ToolResult(
+                tool_name="mypy --strict",
+                passed=False,
+                exit_code=1,
+                stdout="",
+                stderr="src/foo.py:10: error: Missing return statement  [return]",
+            ),
+            ToolResult(tool_name="pytest", passed=True, exit_code=0),
+        ],
+    )
+
+
+def test_build_prompt_quality_feedback_section_present_when_failed() -> None:
+    """build_prompt with failing quality_feedback includes ## Previous Quality Gate Feedback."""
+    bundle = _make_bundle(story_content="Story text.")
+    prompt = build_prompt(bundle, quality_feedback=_make_failed_quality_feedback())
+    assert "## Previous Quality Gate Feedback" in prompt
+
+
+def test_build_prompt_quality_feedback_includes_failing_tool_diagnostics() -> None:
+    """build_prompt quality_feedback section includes stderr/stdout for failing tools."""
+    bundle = _make_bundle(story_content="Story text.")
+    prompt = build_prompt(bundle, quality_feedback=_make_failed_quality_feedback())
+    assert "mypy --strict" in prompt
+    assert "Missing return statement" in prompt
+
+
+def test_build_prompt_quality_feedback_omits_passing_tools() -> None:
+    """build_prompt quality_feedback section does not include diagnostics for passing tools."""
+    bundle = _make_bundle(story_content="Story text.")
+    prompt = build_prompt(bundle, quality_feedback=_make_failed_quality_feedback())
+    # ruff check and pytest passed — their names should not appear in the section diagnostic block
+    # (they may appear briefly if listed as "passed", but no stderr/stdout injected)
+    assert "ruff check: passed" not in prompt or "## Previous Quality Gate Feedback" in prompt
+
+
+def test_build_prompt_quality_feedback_none_does_not_inject_section() -> None:
+    """build_prompt without quality_feedback does not include quality gate section."""
+    bundle = _make_bundle(story_content="Story text.")
+    prompt = build_prompt(bundle, quality_feedback=None)
+    assert "## Previous Quality Gate Feedback" not in prompt
+
+
+def test_build_prompt_quality_feedback_passed_does_not_inject_section() -> None:
+    """build_prompt with quality_feedback.passed=True does not inject the section."""
+    bundle = _make_bundle(story_content="Story text.")
+    feedback = QualityFeedback(
+        passed=True,
+        auto_fix_summary=[],
+        tool_results=[
+            ToolResult(tool_name="ruff check", passed=True, exit_code=0),
+            ToolResult(tool_name="mypy --strict", passed=True, exit_code=0),
+            ToolResult(tool_name="pytest", passed=True, exit_code=0),
+        ],
+    )
+    prompt = build_prompt(bundle, quality_feedback=feedback)
+    assert "## Previous Quality Gate Feedback" not in prompt
