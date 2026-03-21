@@ -1657,6 +1657,102 @@ So that I can understand the reasoning behind code changes — not just pipeline
 
 ---
 
+### Story 10.12: Quality Gate — Automated Lint, Format, Type-Check & Test Validation
+
+**Priority**: HIGH | **Points**: 5
+**Requirements**: NFR1 (reliability), NFR2 (correctness), NFR20 (security), Architecture (validation pipeline)
+**Dependencies**: Story 3.3 (validation pipeline), Story 3.4 (validate node and retry loop)
+
+**Description:**
+As a maintainer running Arcwright AI story execution,
+I want the validation pipeline to automatically run linting, formatting, type-checking, and tests against agent-generated code after LLM-based AC review,
+So that PRs never contain lint violations, formatting drift, type errors, or failing tests — and the agent gets actionable feedback to fix any issues it introduced.
+
+**Problem:** The current validation pipeline has two stages: V6 invariant checks (deterministic structural validation) and V3 reflexion (LLM-based acceptance criteria evaluation). Neither stage runs the project's actual quality toolchain (`ruff check`, `ruff format`, `mypy --strict`, `pytest`). The agent can produce code that passes all acceptance criteria but ships with lint violations, inconsistent formatting, type errors, or broken tests. These are only caught if the operator manually runs `hatch run check` after the PR is created.
+
+**Design:**
+- Add a **Quality Gate** stage to the validation pipeline that runs **after V3 reflexion** (LLM-based AC review). This ordering ensures V3 evaluates the agent's raw output first — if ACs aren't met, the pipeline retries immediately without wasting time on lint/test checks that would be invalidated by the agent's rewrite. The Quality Gate runs last because its auto-fix phase (formatting, import sorting) modifies files in the worktree; running it after V3 ensures the AC evaluation isn't performed on code that was subsequently altered.
+- The Quality Gate has two phases:
+  1. **Auto-fix phase**: Run `ruff check --fix` and `ruff format` in the agent's worktree. These are safe, deterministic, semantically-neutral transformations. Capture a summary of all auto-applied fixes.
+  2. **Check phase**: Run `ruff check` (remaining unfixable lint issues), `mypy --strict`, and `pytest` (full suite). Collect all diagnostic output.
+- If auto-fix made changes but the check phase passes → **PASS** (quality gate succeeded; auto-fix summary included as informational feedback so the agent is aware of what was auto-corrected on retry).
+- If the check phase finds remaining issues → **FAIL_QUALITY** (retryable). Diagnostic output from all failing tools is structured into a `QualityFeedback` payload and injected into the retry prompt alongside any V3 feedback, so the agent sees exactly what to fix.
+- `FAIL_QUALITY` is treated identically to `FAIL_V3` for routing: retryable up to `retry_budget`, then escalated.
+- The retry loop continues until all quality checks pass or retry budget is exhausted.
+- All subprocess invocations run inside the agent's worktree with a reasonable timeout to prevent hangs.
+
+**Pipeline ordering after this story:**
+```
+V6 (free, fast) → V3 (LLM, evaluates ACs) → Quality Gate (subprocess, lint/format/test)
+ fail → halt      fail → retry                fail → retry
+```
+
+**Acceptance Criteria:**
+
+**Given** the agent has written code to the worktree **When** `validate_node` runs the validation pipeline **Then** the Quality Gate executes after both V6 and V3 pass
+**Given** the Quality Gate auto-fix phase runs **When** `ruff check --fix` or `ruff format` modifies files in the worktree **Then** a structured summary of all auto-applied fixes (file path, rule ID, description) is captured and included as informational feedback in the `QualityFeedback` payload
+**Given** the auto-fix phase completes **When** the check phase runs `ruff check`, `mypy --strict`, and `pytest` **Then** all three tools execute against the full project in the worktree and their diagnostic output (stderr/stdout) is captured
+**Given** all three check-phase tools exit with code 0 **When** the Quality Gate result is evaluated **Then** the pipeline returns `PipelineOutcome.PASS` with the auto-fix summary available as informational feedback
+**Given** any check-phase tool exits with a non-zero code **When** the Quality Gate result is evaluated **Then** the pipeline returns `PipelineOutcome.FAIL_QUALITY` with a `QualityFeedback` payload containing: (a) the auto-fix summary, (b) per-tool diagnostic output for each failing tool, and (c) a structured instruction block telling the agent to fix the reported issues
+**Given** `PipelineOutcome.FAIL_QUALITY` is returned **When** `route_validation` evaluates the outcome **Then** it routes to `RETRY` if `retry_count < retry_budget`, or `ESCALATED` if retries are exhausted — identical to `FAIL_V3` routing
+**Given** a retry occurs after `FAIL_QUALITY` **When** `build_prompt` constructs the retry prompt **Then** a `## Previous Quality Gate Feedback` section is included with the auto-fix summary and all failing tool diagnostics, so the agent can see exactly what to fix
+**Given** a retry occurs after `FAIL_QUALITY` **When** the next attempt's Quality Gate runs **Then** auto-fix runs again on the new agent output (fresh worktree state per Story 10.5) and the full check suite re-executes
+**Given** a subprocess (`ruff`, `mypy`, or `pytest`) hangs or exceeds a configurable timeout **When** the Quality Gate evaluates the result **Then** the timed-out tool is treated as a failure with a diagnostic message indicating the timeout, and the pipeline returns `FAIL_QUALITY`
+**And** `PipelineOutcome` enum is extended with `FAIL_QUALITY = "fail_quality"`
+**And** `QualityFeedback` model is added alongside `ReflexionFeedback` with fields for auto-fix summary and per-tool diagnostics
+**And** `PipelineResult` is extended with a `quality_feedback` field
+**And** provenance entries record Quality Gate results (tools run, pass/fail per tool, auto-fix count)
+**And** `ruff check`, `mypy --strict`, and `pytest` all pass with zero regressions
+
+**Files touched (expected):**
+- `src/arcwright_ai/validation/quality_gate.py` — New module: auto-fix phase, check phase, `QualityFeedback` model, subprocess orchestration with timeout
+- `src/arcwright_ai/validation/pipeline.py` — Insert Quality Gate stage between V6 and V3; extend `PipelineOutcome` with `FAIL_QUALITY`; extend `PipelineResult` with `quality_feedback` field
+- `src/arcwright_ai/validation/__init__.py` — Export new types and functions
+- `src/arcwright_ai/engine/nodes.py` — `route_validation` handles `FAIL_QUALITY` as retryable; `validate_node` passes worktree path to Quality Gate
+- `src/arcwright_ai/agent/prompt.py` — `build_prompt` injects `QualityFeedback` into retry prompt as `## Previous Quality Gate Feedback`
+- `src/arcwright_ai/engine/state.py` — Add `quality_feedback` field to `StoryState` (or extend existing feedback mechanism)
+- `tests/test_validation/` — Quality Gate unit tests: auto-fix captures, check pass/fail, timeout handling, feedback structure
+- `tests/test_engine/` — Integration tests: retry routing for `FAIL_QUALITY`, feedback injection into prompt
+
+---
+
+### Story 10.13: PR Creation Retry with Backoff for GitHub API Lag
+
+**Priority**: MEDIUM | **Points**: 2
+**Requirements**: NFR1 (reliability), Architecture (SCM best-effort pattern)
+**Dependencies**: Story 10.4 (commit node resilience)
+
+**Description:**
+As a maintainer running Arcwright AI story execution,
+I want `open_pull_request` to retry with exponential backoff when `gh pr create` fails due to GitHub API indexing lag after a push,
+So that PRs are created automatically even when GitHub takes a few seconds to register the newly-pushed branch.
+
+**Problem:** After `push_branch()` pushes a story branch to origin, `open_pull_request()` calls `gh pr create` immediately. GitHub's API sometimes hasn't indexed the new branch yet (1–5s lag), causing failures like `"No commits between <base> and <head>"`, `"Head sha can't be blank"`, or `"Head ref must be a branch"`. The current code logs the error as `scm.pr.create.skipped` with reason `gh_error` and returns `None` — no retry. The branch and commit exist on GitHub, but the PR is never created, requiring manual intervention.
+
+**Design:**
+- Add retry logic inside `open_pull_request()` for transient `gh_error` failures
+- Use exponential backoff: 2s, 4s, 8s, 16s (max 4 retries, ~30s total wait)
+- Only retry when stderr matches known transient patterns: `"no commits between"`, `"can't be blank"`, `"must be a branch"`, `"not found"`
+- Do NOT retry permanent failures: auth errors, `"already exists"`, `"not a git repository"`
+- Log each retry as `scm.pr.create.retry` with attempt number, wait duration, and stderr
+- On final failure after all retries, log existing `scm.pr.create.skipped` with `manual_pr_url`
+
+**Acceptance Criteria:**
+
+**Given** `gh pr create` fails with a transient error (e.g. "No commits between") **When** retries are available **Then** the function waits with exponential backoff and retries the `gh pr create` command
+**Given** `gh pr create` succeeds on a retry attempt **When** the PR URL is returned **Then** a `scm.pr.create` log event is emitted with the PR URL (identical to first-attempt success)
+**Given** `gh pr create` fails on all retry attempts **When** the final attempt fails **Then** the function logs `scm.pr.create.skipped` with reason `gh_error` and `manual_pr_url`, and returns `None`
+**Given** `gh pr create` fails with a permanent error (e.g. "already exists", auth failure) **When** the error is classified **Then** no retry is attempted and the function returns immediately
+**And** a `scm.pr.create.retry` log event is emitted for each retry with `attempt`, `max_attempts`, `wait_seconds`, and `stderr`
+**And** the retry constants (`_PR_RETRY_MAX`, `_PR_RETRY_BASE_SECONDS`) are module-level in `scm/pr.py`
+**And** `ruff check`, `mypy --strict`, and `pytest` all pass with zero regressions
+
+**Files touched (expected):**
+- `src/arcwright_ai/scm/pr.py` — Add retry loop with backoff inside `open_pull_request()`, add `_is_transient_pr_error()` classifier, add retry constants
+- `tests/test_scm/test_pr.py` — Unit tests: transient retry succeeds, permanent error skips retry, all retries exhausted, backoff timing
+
+---
+
 ## Epic 11: BMAD 6.1 Framework Upgrade
 
 > **Value prop**: Developer upgrades the project's BMAD development infrastructure from v6.0.3 to v6.1.0, gaining the new skills-based architecture, Edge Case Hunter code review capability, critical bug fixes, and a 91% smaller framework footprint — without any disruption to the product's source code or test suite.

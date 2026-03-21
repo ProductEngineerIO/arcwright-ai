@@ -8,6 +8,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from arcwright_ai.core.types import ContextBundle
+    from arcwright_ai.validation.quality_gate import QualityFeedback
     from arcwright_ai.validation.v3_reflexion import ReflexionFeedback
 
 __all__: list[str] = ["build_prompt"]
@@ -17,6 +18,7 @@ def build_prompt(
     bundle: ContextBundle,
     *,
     feedback: ReflexionFeedback | None = None,
+    quality_feedback: QualityFeedback | None = None,
     working_directory: Path | None = None,
     sandbox_feedback: str | None = None,
 ) -> str:
@@ -29,11 +31,17 @@ def build_prompt(
     the feedback indicates failure, a ``## Previous Validation Feedback``
     section is appended with the failing criteria and suggested fixes.
 
+    When ``quality_feedback`` is provided and the gate failed, a
+    ``## Previous Quality Gate Feedback`` section is appended with the auto-fix
+    summary and per-tool diagnostics so the agent can see exactly what to fix.
+
     Args:
         bundle: The assembled context payload from the preflight node.
         feedback: Optional reflexion feedback from a previous validation
             attempt. Appended to the prompt only when feedback is not None
             and feedback.passed is False.
+        quality_feedback: Optional Quality Gate feedback from a previous
+            attempt. Appended to the prompt only when the gate failed.
         working_directory: Optional agent working directory used to anchor
             file edits.
         sandbox_feedback: Optional feedback describing a sandbox-denied write
@@ -97,5 +105,34 @@ def build_prompt(
             feedback_lines.append("")
         feedback_lines.append("**Fix all unmet criteria above before completing this story.**")
         parts.append("\n".join(feedback_lines))
+
+    if quality_feedback is not None and not quality_feedback.passed:
+        qf_lines: list[str] = ["## Previous Quality Gate Feedback", ""]
+
+        if quality_feedback.auto_fix_summary:
+            qf_lines.append("**Auto-fixes applied (informational):**")
+            for fix in quality_feedback.auto_fix_summary:
+                qf_lines.append(f"- `{fix.file_path}`: {fix.rule_id} ({fix.description})")
+            qf_lines.append("")
+
+        failing_tools = [r for r in quality_feedback.tool_results if not r.passed]
+        if failing_tools:
+            qf_lines.append("**Failing checks — fix these issues:**")
+            qf_lines.append("")
+            for tool in failing_tools:
+                if tool.timed_out:
+                    qf_lines.append(f"### {tool.tool_name} (timed out)")
+                    qf_lines.append("")
+                    qf_lines.append(f"```\n{tool.stderr}\n```")
+                else:
+                    qf_lines.append(f"### {tool.tool_name} (exit code {tool.exit_code})")
+                    qf_lines.append("")
+                    diagnostic = (tool.stdout or tool.stderr).strip()
+                    if diagnostic:
+                        qf_lines.append(f"```\n{diagnostic}\n```")
+                qf_lines.append("")
+
+        qf_lines.append("**Fix all failing checks above before completing this story.**")
+        parts.append("\n".join(qf_lines))
 
     return "\n\n".join(parts)

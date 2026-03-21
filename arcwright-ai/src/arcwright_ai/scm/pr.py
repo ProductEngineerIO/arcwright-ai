@@ -70,6 +70,13 @@ _ALTERNATIVES_COLLAPSE_THRESHOLD: int = 5
 _LARGE_BLOCK_LINE_THRESHOLD: int = 50
 
 # ---------------------------------------------------------------------------
+# PR creation retry constants (Story 10.13)
+# ---------------------------------------------------------------------------
+
+_PR_RETRY_MAX: int = 4
+_PR_RETRY_BASE_SECONDS: float = 2.0
+
+# ---------------------------------------------------------------------------
 # Internal data model
 # ---------------------------------------------------------------------------
 
@@ -692,6 +699,35 @@ async def _build_manual_pr_url(project_root: Path, branch_name: str) -> str:
     return f"https://github.com/<owner>/<repo>/pull/new/{branch_name}"
 
 
+def _is_transient_pr_error(stderr: str) -> bool:
+    """Return True if the gh pr create error is transient (worth retrying).
+
+    Transient errors are caused by GitHub API indexing lag — the branch was
+    pushed successfully but the GitHub API hasn't registered it yet.  These
+    resolve with a short wait and retry.
+
+    Permanent errors (auth failures, DNS issues, wrong repo) will not resolve
+    with retries and are returned as ``False``.
+    """
+    lower = stderr.lower()
+    permanent_patterns = (
+        "already exists",
+        "not a git repository",
+        "could not resolve",
+        "authentication",
+        "permission",
+    )
+    if any(p in lower for p in permanent_patterns):
+        return False
+    transient_patterns = (
+        "no commits between",
+        "can't be blank",
+        "must be a branch",
+        "not found",
+    )
+    return any(p in lower for p in transient_patterns)
+
+
 # ---------------------------------------------------------------------------
 # Public API — open_pull_request
 # ---------------------------------------------------------------------------
@@ -749,30 +785,45 @@ async def open_pull_request(
     title_part = parts[2] if len(parts) > 2 else story_slug
     pr_title = f"[arcwright-ai] {title_part.replace('-', ' ').title()}"
 
-    # Open PR with gh CLI (AC: #4)
+    # Open PR with gh CLI - with exponential-backoff retry for transient API lag (AC: #1-#6)
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "gh",
-            "pr",
-            "create",
-            "--base",
-            resolved_default_branch,
-            "--head",
-            branch_name,
-            "--title",
-            pr_title,
-            "--body",
-            pr_body,
-            cwd=str(project_root),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout_bytes, stderr_bytes = await proc.communicate()
-        stdout = stdout_bytes.decode("utf-8", errors="replace").strip()
-        stderr = stderr_bytes.decode("utf-8", errors="replace").strip()
+        for attempt in range(_PR_RETRY_MAX + 1):
+            proc = await asyncio.create_subprocess_exec(
+                "gh",
+                "pr",
+                "create",
+                "--base",
+                resolved_default_branch,
+                "--head",
+                branch_name,
+                "--title",
+                pr_title,
+                "--body",
+                pr_body,
+                cwd=str(project_root),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout_bytes, stderr_bytes = await proc.communicate()
+            stdout = stdout_bytes.decode("utf-8", errors="replace").strip()
+            stderr = stderr_bytes.decode("utf-8", errors="replace").strip()
 
-        if proc.returncode != 0:
-            # PR already exists is not a true error — just skip (AC: #10)
+            if proc.returncode == 0:
+                pr_url = stdout
+                logger.info(
+                    "scm.pr.create",
+                    extra={
+                        "data": {
+                            "story_slug": story_slug,
+                            "branch": branch_name,
+                            "pr_url": pr_url,
+                            "base": resolved_default_branch,
+                        }
+                    },
+                )
+                return pr_url
+
+            # PR already exists is not a true error — just skip
             if "already exists" in stderr.lower() or "already exists" in stdout.lower():
                 logger.warning(
                     "scm.pr.create.skipped",
@@ -783,7 +834,10 @@ async def open_pull_request(
                         }
                     },
                 )
-            else:
+                return None
+
+            # Permanent error — don't retry (AC: #4)
+            if not _is_transient_pr_error(stderr):
                 logger.warning(
                     "scm.pr.create.skipped",
                     extra={
@@ -796,21 +850,39 @@ async def open_pull_request(
                         }
                     },
                 )
-            return None
+                return None
 
-        pr_url = stdout
-        logger.info(
-            "scm.pr.create",
-            extra={
-                "data": {
-                    "story_slug": story_slug,
-                    "branch": branch_name,
-                    "pr_url": pr_url,
-                    "base": resolved_default_branch,
-                }
-            },
-        )
-        return pr_url
+            # Transient error — retry with backoff if budget allows (AC: #1, #5)
+            if attempt < _PR_RETRY_MAX:
+                wait = _PR_RETRY_BASE_SECONDS * (2**attempt)
+                logger.info(
+                    "scm.pr.create.retry",
+                    extra={
+                        "data": {
+                            "story_slug": story_slug,
+                            "attempt": attempt + 1,
+                            "max_attempts": _PR_RETRY_MAX,
+                            "wait_seconds": wait,
+                            "stderr": stderr,
+                        }
+                    },
+                )
+                await asyncio.sleep(wait)
+            else:
+                # All retries exhausted (AC: #3)
+                logger.warning(
+                    "scm.pr.create.skipped",
+                    extra={
+                        "data": {
+                            "story_slug": story_slug,
+                            "reason": "gh_error",
+                            "stderr": stderr,
+                            "returncode": proc.returncode,
+                            "manual_pr_url": manual_pr_url,
+                        }
+                    },
+                )
+                return None
 
     except Exception as exc:
         logger.warning(
@@ -825,6 +897,8 @@ async def open_pull_request(
             },
         )
         return None
+
+    return None  # pragma: no cover
 
 
 async def merge_pull_request(

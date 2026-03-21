@@ -59,6 +59,8 @@ from arcwright_ai.validation.v6_invariant import V6CheckResult, V6ValidationResu
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from arcwright_ai.validation.quality_gate import QualityFeedback
+
 __all__: list[str] = [
     "_derive_story_title",
     "agent_dispatch_node",
@@ -542,11 +544,15 @@ async def agent_dispatch_node(state: StoryState) -> StoryState:
 
     gen_spec = state.config.models.get(ModelRole.GENERATE)
     feedback = state.validation_result.feedback if state.validation_result is not None else None
+    quality_feedback: QualityFeedback | None = (
+        state.validation_result.quality_feedback if state.validation_result is not None else None
+    )
     # Use worktree_path as cwd if available; fall back to project_root for backward compat (AC: #2, #5, #6)
     agent_cwd = state.worktree_path if state.worktree_path is not None else state.project_root
     prompt = build_prompt(
         state.context_bundle,
         feedback=feedback,
+        quality_feedback=quality_feedback,
         working_directory=agent_cwd,
         sandbox_feedback=state.sandbox_feedback,
     )
@@ -954,6 +960,18 @@ def _generate_halt_report(
         "",
     ]
 
+    if last_result.quality_feedback is not None:
+        qf = last_result.quality_feedback
+        failing_tools = [tool.tool_name for tool in qf.tool_results if not tool.passed]
+        lines.insert(
+            len(lines) - 1,
+            (
+                "- **Quality Gate**: "
+                f"{', '.join(failing_tools) if failing_tools else 'all tools passed'} "
+                f"(auto-fixes: {len(qf.auto_fix_summary)})"
+            ),
+        )
+
     # Failing criteria
     if last_result.feedback is not None and last_result.feedback.unmet_criteria:
         lines.extend(["## Failing Acceptance Criteria", ""])
@@ -961,6 +979,30 @@ def _generate_halt_report(
             detail = last_result.feedback.feedback_per_criterion.get(ac_id, "")
             lines.append(f"- **AC {ac_id}**: {detail}")
         lines.append("")
+    elif last_result.outcome == PipelineOutcome.FAIL_QUALITY and last_result.quality_feedback is not None:
+        lines.extend(["## Quality Gate Failures", ""])
+        qf = last_result.quality_feedback
+        lines.append(f"- **Auto-fixes Applied**: {len(qf.auto_fix_summary)}")
+        lines.append("- **Tool Results**:")
+        for tool in qf.tool_results:
+            status = "PASS" if tool.passed else "FAIL"
+            lines.append(f"  - {tool.tool_name}: {status} (exit={tool.exit_code}, timed_out={tool.timed_out})")
+        lines.append("")
+
+        failing_tool_results = [tool for tool in qf.tool_results if not tool.passed]
+        if failing_tool_results:
+            lines.append("### Failing Tool Diagnostics")
+            lines.append("")
+            for tool in failing_tool_results:
+                lines.append(f"- **{tool.tool_name}**")
+                diagnostic = (tool.stderr or tool.stdout).strip()
+                if diagnostic:
+                    lines.append("```")
+                    lines.append(diagnostic)
+                    lines.append("```")
+                else:
+                    lines.append("  - No diagnostics emitted by tool.")
+            lines.append("")
     elif last_result.outcome == PipelineOutcome.FAIL_V6:
         lines.extend(["## V6 Invariant Failures", ""])
         for check in last_result.v6_result.failures:
@@ -980,6 +1022,16 @@ def _generate_halt_report(
         failure_summary = ""
         if result.outcome == PipelineOutcome.FAIL_V6:
             failure_summary = f"V6: {len(result.v6_result.failures)} checks failed"
+        elif result.outcome == PipelineOutcome.FAIL_QUALITY and result.quality_feedback is not None:
+            failing = [r.tool_name for r in result.quality_feedback.tool_results if not r.passed]
+            auto_fix_count = len(result.quality_feedback.auto_fix_summary)
+            tool_statuses = ", ".join(
+                f"{r.tool_name}={'pass' if r.passed else 'fail'}" for r in result.quality_feedback.tool_results
+            )
+            failure_summary = (
+                f"QG: {', '.join(failing) if failing else 'unknown'} "
+                f"(auto-fixes: {auto_fix_count}; tools: {tool_statuses or 'none'})"
+            )
         elif result.feedback is not None:
             failure_summary = f"V3: ACs {', '.join(result.feedback.unmet_criteria)}"
         lines.append(f"| {i} | {result.outcome.value} | {failure_summary} |")
@@ -1004,6 +1056,15 @@ def _generate_halt_report(
     if last_result.feedback is not None and last_result.feedback.feedback_per_criterion:
         for ac_id, detail in last_result.feedback.feedback_per_criterion.items():
             lines.append(f"- **AC {ac_id}**: {detail}")
+    elif last_result.outcome == PipelineOutcome.FAIL_QUALITY and last_result.quality_feedback is not None:
+        lines.append("Fix the failing Quality Gate tools and rerun this story.")
+        for tool in (r for r in last_result.quality_feedback.tool_results if not r.passed):
+            lines.append(f"- **{tool.tool_name}** (exit {tool.exit_code}, timed_out={tool.timed_out})")
+            diagnostic = (tool.stderr or tool.stdout).strip()
+            if diagnostic:
+                lines.append("```")
+                lines.append(diagnostic)
+                lines.append("```")
     elif last_result.outcome == PipelineOutcome.FAIL_V6:
         lines.append("Fix the V6 invariant rule violations listed above and re-run the story.")
     else:
@@ -1074,6 +1135,7 @@ async def validate_node(state: StoryState) -> StoryState:
             sandbox=validate_path,
             api_key=state.config.api.claude_api_key.get_secret_value(),
             attempt_number=state.retry_count + 1,
+            worktree_path=state.worktree_path,
         )
     except Exception as exc:
         # SDK or filesystem crash during validation — convert to ESCALATED so
@@ -1191,9 +1253,29 @@ async def validate_node(state: StoryState) -> StoryState:
                 v3_passed = sum(1 for ac in pipeline_result.v3_result.validation_result.ac_results if ac.passed)
                 v3_total = len(pipeline_result.v3_result.validation_result.ac_results)
                 v3_info = f", V3: {v3_passed}/{v3_total} ACs"
-            feedback_summary = f"All checks passed (V6: {v6_count} checks{v3_info})"
+            qg_info = ""
+            if pipeline_result.quality_feedback is not None:
+                auto_fix_count = len(pipeline_result.quality_feedback.auto_fix_summary)
+                qg_tools = ", ".join(
+                    f"{r.tool_name}={'pass' if r.passed else 'fail'}"
+                    for r in pipeline_result.quality_feedback.tool_results
+                )
+                qg_info = f", QG: passed (auto-fixes: {auto_fix_count}; tools: {qg_tools or 'none'})"
+            feedback_summary = f"All checks passed (V6: {v6_count} checks{v3_info}{qg_info})"
         elif pipeline_result.outcome == PipelineOutcome.FAIL_V6:
             feedback_summary = f"V6 invariant failures: {len(pipeline_result.v6_result.failures)}"
+        elif pipeline_result.outcome == PipelineOutcome.FAIL_QUALITY:
+            qf = pipeline_result.quality_feedback
+            if qf is not None:
+                failing = [r.tool_name for r in qf.tool_results if not r.passed]
+                auto_fix_count = len(qf.auto_fix_summary)
+                tool_statuses = ", ".join(f"{r.tool_name}={'pass' if r.passed else 'fail'}" for r in qf.tool_results)
+                feedback_summary = (
+                    f"Quality Gate failures: {', '.join(failing) if failing else 'unknown'} "
+                    f"(auto-fixes applied: {auto_fix_count}; tools: {tool_statuses or 'none'})"
+                )
+            else:
+                feedback_summary = "Quality Gate failed"
         else:
             unmet = pipeline_result.feedback.unmet_criteria if pipeline_result.feedback else []
             feedback_summary = f"V3 reflexion failures: ACs {', '.join(unmet)}" if unmet else "V3 validation failed"
@@ -1317,6 +1399,117 @@ async def validate_node(state: StoryState) -> StoryState:
                 "data": {
                     "story": str(state.story_id),
                     "reason": "v6_invariant_failure",
+                }
+            },
+        )
+        logger.info(
+            "engine.node.exit",
+            extra={
+                "data": {
+                    "node": "validate",
+                    "story": str(state.story_id),
+                    "status": str(updated.status),
+                }
+            },
+        )
+        return updated
+
+    # FAIL_QUALITY — same retry routing as FAIL_V3 (AC: #6)
+    if pipeline_result.outcome == PipelineOutcome.FAIL_QUALITY:
+        new_retry_count_qg = state.retry_count + 1
+        if state.retry_count >= state.config.limits.retry_budget:
+            # Retries exhausted → ESCALATED
+            halt_report_state_qg = state.model_copy(update={"retry_count": new_retry_count_qg})
+            halt_report_qg = _generate_halt_report(
+                halt_report_state_qg,
+                pipeline_result,
+                new_retry_history,
+                reason="max_retries_exhausted",
+            )
+            await write_text_async(checkpoint_dir / HALT_REPORT_FILENAME, halt_report_qg)
+
+            # Provenance: record escalation decision (best-effort)
+            try:
+                escalation_entry_qg = ProvenanceEntry(
+                    decision=(
+                        f"Escalation decision for attempt {new_retry_count_qg}: max_retries_exhausted (quality_gate)"
+                    ),
+                    alternatives=[],
+                    rationale="Validation escalated because retry budget was exhausted after Quality Gate failure.",
+                    ac_references=[],
+                    timestamp=datetime.now(tz=UTC).isoformat(),
+                )
+                await append_entry(checkpoint_dir / VALIDATION_FILENAME, escalation_entry_qg)
+            except Exception as exc:
+                logger.warning(
+                    "provenance.write_error",
+                    extra={
+                        "data": {
+                            "node": "validate",
+                            "story": str(state.story_id),
+                            "error": str(exc),
+                        }
+                    },
+                )
+
+            updated = state.model_copy(
+                update={
+                    "status": TaskState.ESCALATED,
+                    "validation_result": pipeline_result,
+                    "retry_history": new_retry_history,
+                    "retry_count": new_retry_count_qg,
+                    "budget": new_budget,
+                }
+            )
+            logger.info(
+                "validation.fail",
+                extra={
+                    "data": {
+                        "story": str(state.story_id),
+                        "outcome": "escalated",
+                        "retry_count": new_retry_count_qg,
+                    }
+                },
+            )
+            logger.info(
+                "run.halt",
+                extra={
+                    "data": {
+                        "story": str(state.story_id),
+                        "reason": "max_retries_exhausted",
+                        "retry_count": new_retry_count_qg,
+                    }
+                },
+            )
+            logger.info(
+                "engine.node.exit",
+                extra={
+                    "data": {
+                        "node": "validate",
+                        "story": str(state.story_id),
+                        "status": str(updated.status),
+                    }
+                },
+            )
+            return updated
+
+        # Retry available
+        updated = state.model_copy(
+            update={
+                "status": TaskState.RETRY,
+                "validation_result": pipeline_result,
+                "retry_history": new_retry_history,
+                "retry_count": new_retry_count_qg,
+                "budget": new_budget,
+            }
+        )
+        logger.info(
+            "validation.fail",
+            extra={
+                "data": {
+                    "story": str(state.story_id),
+                    "outcome": "retry",
+                    "retry_count": new_retry_count_qg,
                 }
             },
         )
