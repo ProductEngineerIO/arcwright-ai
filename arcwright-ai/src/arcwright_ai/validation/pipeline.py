@@ -8,6 +8,11 @@ from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from arcwright_ai.core.types import ArcwrightModel
+from arcwright_ai.validation.quality_gate import (
+    QualityFeedback,
+    QualityGateResult,
+    run_quality_gate,
+)
 from arcwright_ai.validation.v3_reflexion import (
     ReflexionFeedback,
     V3ReflexionResult,
@@ -35,18 +40,21 @@ logger = logging.getLogger(__name__)
 class PipelineOutcome(StrEnum):
     """Outcome of the validation pipeline routing.
 
-    Used by Story 3.4's validate node to determine the routing
-    decision: PASS → success, FAIL_V3 → retry, FAIL_V6 → escalated.
+    Used by validate node to determine the routing decision:
+    PASS → success, FAIL_V3 → retry, FAIL_V6 → escalated,
+    FAIL_QUALITY → retry (same budget as FAIL_V3).
 
     Attributes:
-        PASS: Both V6 and V3 validation passed.
+        PASS: V6, V3, and Quality Gate all passed.
         FAIL_V6: V6 invariant checks failed (immediate, no retry per D2).
         FAIL_V3: V3 reflexion failed (retryable per D2).
+        FAIL_QUALITY: Quality Gate (lint/format/type/test) failed (retryable).
     """
 
     PASS = "pass"
     FAIL_V6 = "fail_v6"
     FAIL_V3 = "fail_v3"
+    FAIL_QUALITY = "fail_quality"
 
 
 class PipelineResult(ArcwrightModel):
@@ -74,6 +82,7 @@ class PipelineResult(ArcwrightModel):
     v6_result: V6ValidationResult
     v3_result: V3ReflexionResult | None = None
     feedback: ReflexionFeedback | None = None
+    quality_feedback: QualityFeedback | None = None
     tokens_used: int = 0
     tokens_input: int = 0
     tokens_output: int = 0
@@ -90,13 +99,19 @@ async def run_validation_pipeline(
     sandbox: PathValidator,
     api_key: str,
     attempt_number: int = 1,
+    worktree_path: Path | None = None,
 ) -> PipelineResult:
-    """Run the full validation pipeline (V6 → V3) for a story's agent output.
+    """Run the full validation pipeline (V6 → V3 → Quality Gate) for a story's agent output.
 
     V6 invariant checks run first (cheap, deterministic, zero tokens).
     If V6 fails, V3 is short-circuited and the pipeline returns immediately
     with ``PipelineOutcome.FAIL_V6``. If V6 passes, V3 reflexion validation
     runs and the outcome is determined by V3's result.
+
+    When ``worktree_path`` is provided and V3 passes, the Quality Gate runs as
+    a third stage: ``ruff check --fix``, ``ruff format``, ``ruff check``,
+    ``mypy --strict``, and ``pytest`` are all executed inside the worktree.
+    If any check-phase tool fails, the pipeline returns ``FAIL_QUALITY``.
 
     Args:
         agent_output: The raw text output produced by the agent to validate.
@@ -107,6 +122,8 @@ async def run_validation_pipeline(
         sandbox: Path validation protocol instance used by V3 reflexion.
         api_key: Anthropic API key passed as ``ANTHROPIC_API_KEY`` to the SDK subprocess.
         attempt_number: Current attempt/retry number (1-based, default 1).
+        worktree_path: Optional path to the git worktree for Quality Gate execution.
+            When ``None`` the Quality Gate is skipped (backward-compatible default).
 
     Returns:
         A ``PipelineResult`` encoding the routing outcome, sub-results,
@@ -188,6 +205,48 @@ async def run_validation_pipeline(
 
     # Step 4: Determine final outcome
     if v3_result.validation_result.passed:
+        # Step 5 (NEW): Quality Gate — runs only when worktree_path is provided
+        if worktree_path is not None:
+            logger.info(
+                "validation.pipeline.quality_gate_start",
+                extra={"data": {"story": str(story_path), "worktree": str(worktree_path)}},
+            )
+            qg_result: QualityGateResult = await run_quality_gate(project_root, worktree_path)
+            logger.info(
+                "validation.pipeline.quality_gate_complete",
+                extra={
+                    "data": {
+                        "passed": qg_result.passed,
+                        "auto_fixes": len(qg_result.feedback.auto_fix_summary),
+                        "tool_results": [(r.tool_name, r.passed) for r in qg_result.feedback.tool_results],
+                    }
+                },
+            )
+            if not qg_result.passed:
+                logger.info(
+                    "validation.pipeline.complete",
+                    extra={
+                        "data": {
+                            "outcome": "fail_quality",
+                            "tokens_used": v3_result.tokens_used,
+                            "cost": str(v3_result.cost),
+                        }
+                    },
+                )
+                return PipelineResult(
+                    passed=False,
+                    outcome=PipelineOutcome.FAIL_QUALITY,
+                    v6_result=v6_result,
+                    v3_result=v3_result,
+                    feedback=None,
+                    quality_feedback=qg_result.feedback,
+                    tokens_used=v3_result.tokens_used,
+                    tokens_input=v3_result.tokens_input,
+                    tokens_output=v3_result.tokens_output,
+                    cost=v3_result.cost,
+                )
+
+        # Quality Gate passed (or skipped) — pipeline passes
         logger.info(
             "validation.pipeline.complete",
             extra={
@@ -198,12 +257,15 @@ async def run_validation_pipeline(
                 }
             },
         )
+        # qg_result is always defined when worktree_path is not None (gate passed, or we returned early)
+        quality_feedback: QualityFeedback | None = qg_result.feedback if worktree_path is not None else None
         return PipelineResult(
             passed=True,
             outcome=PipelineOutcome.PASS,
             v6_result=v6_result,
             v3_result=v3_result,
             feedback=None,
+            quality_feedback=quality_feedback,
             tokens_used=v3_result.tokens_used,
             tokens_input=v3_result.tokens_input,
             tokens_output=v3_result.tokens_output,

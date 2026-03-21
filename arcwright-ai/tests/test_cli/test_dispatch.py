@@ -313,6 +313,26 @@ def test_dispatch_story_end_to_end_with_mock_sdk(
         AsyncMock(return_value="main"),
     )
 
+    # Mock quality gate to prevent real subprocess calls in a tmp_path project
+    from arcwright_ai.validation.quality_gate import QualityFeedback, QualityGateResult, ToolResult
+
+    _qg_pass = QualityGateResult(
+        passed=True,
+        feedback=QualityFeedback(
+            passed=True,
+            auto_fix_summary=[],
+            tool_results=[
+                ToolResult(tool_name="ruff check", passed=True, exit_code=0),
+                ToolResult(tool_name="mypy --strict", passed=True, exit_code=0),
+                ToolResult(tool_name="pytest", passed=True, exit_code=0),
+            ],
+        ),
+    )
+    monkeypatch.setattr(
+        "arcwright_ai.validation.pipeline.run_quality_gate",
+        AsyncMock(return_value=_qg_pass),
+    )
+
     result = runner.invoke(app, ["dispatch", "--story", "2.1"], catch_exceptions=False)
 
     # Verify exit code

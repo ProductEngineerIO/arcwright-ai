@@ -11,10 +11,13 @@ import pytest
 from arcwright_ai.core.constants import STORY_COPY_FILENAME, VALIDATION_FILENAME
 from arcwright_ai.core.exceptions import ScmError
 from arcwright_ai.scm.pr import (
+    _PR_RETRY_BASE_SECONDS,
+    _PR_RETRY_MAX,
     MergeOutcome,
     _detect_default_branch,
     _extract_decisions,
     _extract_implementation_decisions,
+    _is_transient_pr_error,
     _render_pr_body,
     generate_pr_body,
     get_pull_request_merge_sha,
@@ -2005,3 +2008,322 @@ def test_extract_decisions_excludes_implementation_section() -> None:
     assert len(decisions) == 1
     assert decisions[0].title == "Low-level pipeline choice"
     assert not any(d.title == "Used Strategy pattern for dispatch" for d in decisions)
+
+
+# ---------------------------------------------------------------------------
+# Story 10.13 — _is_transient_pr_error unit tests (AC: #4)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "stderr",
+    [
+        "GraphQL: No commits between develop and arcwright-ai/my-story",
+        "Head sha can't be blank",
+        "Head ref must be a branch",
+        "Base ref must be a branch",
+        "Repository not found",
+        "HEAD not found",
+        "No commits between main and feature",
+    ],
+)
+def test_is_transient_pr_error_returns_true_for_transient_patterns(stderr: str) -> None:
+    """_is_transient_pr_error returns True for GitHub API indexing lag errors."""
+    assert _is_transient_pr_error(stderr) is True
+
+
+@pytest.mark.parametrize(
+    "stderr",
+    [
+        "a pull request for branch 'arcwright-ai/my-story' already exists",
+        "not a git repository",
+        "Could not resolve host: api.github.com",
+        "authentication failed",
+        "permission denied",
+        "Permission denied (publickey)",
+        "HTTP 401 Unauthorized: authentication required",
+    ],
+)
+def test_is_transient_pr_error_returns_false_for_permanent_patterns(stderr: str) -> None:
+    """_is_transient_pr_error returns False for permanent errors that won't resolve with retries."""
+    assert _is_transient_pr_error(stderr) is False
+
+
+# ---------------------------------------------------------------------------
+# Story 10.13 — open_pull_request retry tests (AC: #1, #2, #3, #5)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_open_pull_request_retries_on_transient_error_and_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """open_pull_request retries on transient error and returns PR URL on second attempt."""
+    from arcwright_ai.scm.git import GitResult
+
+    monkeypatch.setattr("arcwright_ai.scm.pr.shutil.which", lambda _: "/usr/local/bin/gh")
+    monkeypatch.setattr(
+        "arcwright_ai.scm.pr.git",
+        AsyncMock(return_value=GitResult(stdout="origin/main", stderr="", returncode=0)),
+    )
+
+    transient_stderr = b"No commits between develop and arcwright-ai/my-story"
+    pr_url = "https://github.com/owner/repo/pull/42"
+
+    mock_fail = MagicMock()
+    mock_fail.returncode = 1
+    mock_fail.communicate = AsyncMock(return_value=(b"", transient_stderr))
+
+    mock_success = MagicMock()
+    mock_success.returncode = 0
+    mock_success.communicate = AsyncMock(return_value=(pr_url.encode(), b""))
+
+    mock_exec = AsyncMock(side_effect=[mock_fail, mock_success])
+
+    with (
+        patch("arcwright_ai.scm.pr._detect_default_branch", AsyncMock(return_value="main")),
+        patch("arcwright_ai.scm.pr.asyncio.create_subprocess_exec", mock_exec),
+        patch("arcwright_ai.scm.pr.asyncio.sleep", AsyncMock()),
+    ):
+        result = await open_pull_request(
+            "arcwright-ai/my-story",
+            "10-13-pr-retry",
+            "PR body",
+            project_root=tmp_path,
+        )
+
+    assert result == pr_url
+    assert mock_exec.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_open_pull_request_returns_none_after_all_retries_exhausted(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Any,
+) -> None:
+    """open_pull_request returns None after all retry attempts are exhausted (AC: #3)."""
+    from arcwright_ai.scm.git import GitResult
+
+    monkeypatch.setattr("arcwright_ai.scm.pr.shutil.which", lambda _: "/usr/local/bin/gh")
+    monkeypatch.setattr(
+        "arcwright_ai.scm.pr.git",
+        AsyncMock(return_value=GitResult(stdout="origin/main", stderr="", returncode=0)),
+    )
+
+    transient_stderr = b"No commits between develop and arcwright-ai/my-story"
+
+    mock_fail = MagicMock()
+    mock_fail.returncode = 1
+    mock_fail.communicate = AsyncMock(return_value=(b"", transient_stderr))
+
+    mock_exec = AsyncMock(return_value=mock_fail)
+
+    with (
+        patch("arcwright_ai.scm.pr._detect_default_branch", AsyncMock(return_value="main")),
+        patch("arcwright_ai.scm.pr.asyncio.create_subprocess_exec", mock_exec),
+        patch("arcwright_ai.scm.pr.asyncio.sleep", AsyncMock()),
+        caplog.at_level(logging.WARNING, logger="arcwright_ai.scm.pr"),
+    ):
+        result = await open_pull_request(
+            "arcwright-ai/my-story",
+            "10-13-pr-retry",
+            "PR body",
+            project_root=tmp_path,
+        )
+
+    assert result is None
+    assert mock_exec.call_count == _PR_RETRY_MAX + 1
+    skipped = [r for r in caplog.records if r.message == "scm.pr.create.skipped"]
+    assert len(skipped) == 1
+    data = getattr(skipped[0], "data", {})
+    assert data["reason"] == "gh_error"
+    assert "manual_pr_url" in data
+
+
+@pytest.mark.asyncio
+async def test_open_pull_request_permanent_error_skips_retry(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """open_pull_request does not retry on permanent errors (AC: #4)."""
+    from arcwright_ai.scm.git import GitResult
+
+    monkeypatch.setattr("arcwright_ai.scm.pr.shutil.which", lambda _: "/usr/local/bin/gh")
+    monkeypatch.setattr(
+        "arcwright_ai.scm.pr.git",
+        AsyncMock(return_value=GitResult(stdout="origin/main", stderr="", returncode=0)),
+    )
+
+    mock_proc = MagicMock()
+    mock_proc.returncode = 1
+    mock_proc.communicate = AsyncMock(return_value=(b"", b"authentication failed"))
+
+    mock_exec = AsyncMock(return_value=mock_proc)
+    mock_sleep = AsyncMock()
+
+    with (
+        patch("arcwright_ai.scm.pr._detect_default_branch", AsyncMock(return_value="main")),
+        patch("arcwright_ai.scm.pr.asyncio.create_subprocess_exec", mock_exec),
+        patch("arcwright_ai.scm.pr.asyncio.sleep", mock_sleep),
+    ):
+        result = await open_pull_request(
+            "arcwright-ai/my-story",
+            "10-13-pr-retry",
+            "PR body",
+            project_root=tmp_path,
+        )
+
+    assert result is None
+    mock_exec.assert_called_once()
+    mock_sleep.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_open_pull_request_emits_retry_log_event_per_retry(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Any,
+) -> None:
+    """scm.pr.create.retry log event is emitted for each retry with correct fields (AC: #5)."""
+    from arcwright_ai.scm.git import GitResult
+
+    monkeypatch.setattr("arcwright_ai.scm.pr.shutil.which", lambda _: "/usr/local/bin/gh")
+    monkeypatch.setattr(
+        "arcwright_ai.scm.pr.git",
+        AsyncMock(return_value=GitResult(stdout="origin/main", stderr="", returncode=0)),
+    )
+
+    transient_stderr = "No commits between develop and arcwright-ai/my-story"
+    pr_url = "https://github.com/owner/repo/pull/42"
+
+    mock_fail = MagicMock()
+    mock_fail.returncode = 1
+    mock_fail.communicate = AsyncMock(return_value=(b"", transient_stderr.encode()))
+
+    mock_success = MagicMock()
+    mock_success.returncode = 0
+    mock_success.communicate = AsyncMock(return_value=(pr_url.encode(), b""))
+
+    # Fail twice, then succeed
+    mock_exec = AsyncMock(side_effect=[mock_fail, mock_fail, mock_success])
+
+    with (
+        patch("arcwright_ai.scm.pr._detect_default_branch", AsyncMock(return_value="main")),
+        patch("arcwright_ai.scm.pr.asyncio.create_subprocess_exec", mock_exec),
+        patch("arcwright_ai.scm.pr.asyncio.sleep", AsyncMock()),
+        caplog.at_level(logging.INFO, logger="arcwright_ai.scm.pr"),
+    ):
+        result = await open_pull_request(
+            "arcwright-ai/my-story",
+            "10-13-pr-retry",
+            "PR body",
+            project_root=tmp_path,
+        )
+
+    assert result == pr_url
+
+    retry_records = [r for r in caplog.records if r.message == "scm.pr.create.retry"]
+    assert len(retry_records) == 2
+
+    first_retry = getattr(retry_records[0], "data", {})
+    assert first_retry["attempt"] == 1
+    assert first_retry["max_attempts"] == _PR_RETRY_MAX
+    assert "wait_seconds" in first_retry
+    assert first_retry["stderr"] == transient_stderr
+
+    second_retry = getattr(retry_records[1], "data", {})
+    assert second_retry["attempt"] == 2
+
+
+@pytest.mark.asyncio
+async def test_open_pull_request_backoff_timing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """asyncio.sleep is called with exponential backoff values 2, 4, 8, 16 (AC: #5)."""
+    from arcwright_ai.scm.git import GitResult
+
+    monkeypatch.setattr("arcwright_ai.scm.pr.shutil.which", lambda _: "/usr/local/bin/gh")
+    monkeypatch.setattr(
+        "arcwright_ai.scm.pr.git",
+        AsyncMock(return_value=GitResult(stdout="origin/main", stderr="", returncode=0)),
+    )
+
+    transient_stderr = b"No commits between develop and arcwright-ai/my-story"
+
+    mock_fail = MagicMock()
+    mock_fail.returncode = 1
+    mock_fail.communicate = AsyncMock(return_value=(b"", transient_stderr))
+
+    mock_exec = AsyncMock(return_value=mock_fail)
+    sleep_calls: list[float] = []
+
+    async def _capture_sleep(seconds: float) -> None:
+        sleep_calls.append(seconds)
+
+    with (
+        patch("arcwright_ai.scm.pr._detect_default_branch", AsyncMock(return_value="main")),
+        patch("arcwright_ai.scm.pr.asyncio.create_subprocess_exec", mock_exec),
+        patch("arcwright_ai.scm.pr.asyncio.sleep", _capture_sleep),
+    ):
+        result = await open_pull_request(
+            "arcwright-ai/my-story",
+            "10-13-pr-retry",
+            "PR body",
+            project_root=tmp_path,
+        )
+
+    assert result is None
+    # 4 retries → sleep called 4 times with 2, 4, 8, 16 seconds
+    expected_waits = [_PR_RETRY_BASE_SECONDS * (2**i) for i in range(_PR_RETRY_MAX)]
+    assert sleep_calls == expected_waits
+
+
+@pytest.mark.asyncio
+async def test_open_pull_request_success_after_retry_logs_create_event(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Any,
+) -> None:
+    """scm.pr.create log event is emitted when PR is created on a retry attempt (AC: #2)."""
+    from arcwright_ai.scm.git import GitResult
+
+    monkeypatch.setattr("arcwright_ai.scm.pr.shutil.which", lambda _: "/usr/local/bin/gh")
+    monkeypatch.setattr(
+        "arcwright_ai.scm.pr.git",
+        AsyncMock(return_value=GitResult(stdout="origin/main", stderr="", returncode=0)),
+    )
+
+    pr_url = "https://github.com/owner/repo/pull/99"
+    transient_stderr = b"Head sha can't be blank"
+
+    mock_fail = MagicMock()
+    mock_fail.returncode = 1
+    mock_fail.communicate = AsyncMock(return_value=(b"", transient_stderr))
+
+    mock_success = MagicMock()
+    mock_success.returncode = 0
+    mock_success.communicate = AsyncMock(return_value=(pr_url.encode(), b""))
+
+    mock_exec = AsyncMock(side_effect=[mock_fail, mock_success])
+
+    with (
+        patch("arcwright_ai.scm.pr._detect_default_branch", AsyncMock(return_value="main")),
+        patch("arcwright_ai.scm.pr.asyncio.create_subprocess_exec", mock_exec),
+        patch("arcwright_ai.scm.pr.asyncio.sleep", AsyncMock()),
+        caplog.at_level(logging.INFO, logger="arcwright_ai.scm.pr"),
+    ):
+        result = await open_pull_request(
+            "arcwright-ai/my-story",
+            "10-13-pr-retry",
+            "PR body",
+            project_root=tmp_path,
+        )
+
+    assert result == pr_url
+    create_records = [r for r in caplog.records if r.message == "scm.pr.create"]
+    assert len(create_records) == 1
+    data = getattr(create_records[0], "data", {})
+    assert data["pr_url"] == pr_url
