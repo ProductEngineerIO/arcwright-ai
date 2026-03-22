@@ -9,9 +9,9 @@ Executes after both V6 invariant checks and V3 reflexion pass.  Two-phase:
       exit codes determine pass/fail, stdout/stderr are captured per-tool.
 
 Project type is auto-detected via ``detect_project_dir`` before any subprocess
-is launched.  Non-Python and unknown project types are skipped with
-``QualityGateResult.passed=True`` to avoid spurious failures against projects
-that do not use the Python toolchain.
+is launched.  Python projects run the ruff/mypy/pytest toolchain; Node.js
+projects run ``lint*`` and ``typecheck*`` scripts from ``package.json``.
+Unknown project types are skipped with ``QualityGateResult.passed=True``.
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import errno
+import json
 import logging
 import re
 from typing import TYPE_CHECKING
@@ -60,6 +61,8 @@ _RUFF_AUTOFIX_PATTERN: re.Pattern[str] = re.compile(
 _TIMEOUT_RUFF: int = 30
 _TIMEOUT_MYPY: int = 120
 _TIMEOUT_PYTEST: int = 300
+_TIMEOUT_NPM_INSTALL: int = 120
+_TIMEOUT_NODE_SCRIPT: int = 60
 
 # ---------------------------------------------------------------------------
 # Project type detection
@@ -72,6 +75,9 @@ _MANIFEST_PRIORITY: list[tuple[str, str]] = [
     ("package.json", "node"),
     ("go.mod", "go"),
 ]
+
+# Script-name prefixes that map to quality checks in Node.js projects.
+_NODE_QUALITY_PREFIXES: tuple[str, ...] = ("lint", "typecheck", "type-check")
 
 
 # ---------------------------------------------------------------------------
@@ -390,6 +396,116 @@ async def _run_checks(
     return results
 
 
+# ---------------------------------------------------------------------------
+# Node.js quality gate helpers
+# ---------------------------------------------------------------------------
+
+
+def _detect_node_quality_scripts(package_json_path: Path) -> list[tuple[str, str]]:
+    """Read ``package.json`` and return quality-relevant npm scripts.
+
+    Scans the ``scripts`` object for entries whose name matches one of
+    ``_NODE_QUALITY_PREFIXES`` (exact match or colon-prefixed variant like
+    ``lint:md``).  When an ``<prefix>:all`` variant exists for a given
+    prefix, only that variant is returned for the group to avoid redundant
+    runs.
+
+    Args:
+        package_json_path: Absolute path to the ``package.json`` file.
+
+    Returns:
+        A list of ``(tool_display_name, script_key)`` tuples, ordered by
+        prefix priority then alphabetically within each group.  Empty list
+        when the file cannot be read, parsed, or contains no matching scripts.
+    """
+    try:
+        data = json.loads(package_json_path.read_text("utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
+
+    scripts: dict[str, str] = data.get("scripts", {}) if isinstance(data, dict) else {}
+    if not scripts:
+        return []
+
+    # Group script names by their matching prefix.
+    groups: dict[str, list[str]] = {}
+    for name in sorted(scripts):
+        for prefix in _NODE_QUALITY_PREFIXES:
+            if name == prefix or name.startswith(f"{prefix}:"):
+                groups.setdefault(prefix, []).append(name)
+                break
+
+    # For each prefix group: prefer <prefix>:all if present.
+    result: list[tuple[str, str]] = []
+    for prefix in _NODE_QUALITY_PREFIXES:
+        script_names = groups.get(prefix, [])
+        if not script_names:
+            continue
+        all_variant = f"{prefix}:all"
+        if all_variant in script_names:
+            result.append((f"npm run {all_variant}", all_variant))
+        else:
+            for name in script_names:
+                result.append((f"npm run {name}", name))
+
+    return result
+
+
+async def _ensure_node_deps(cwd: Path, *, timeout: int) -> ToolResult | None:
+    """Install Node.js dependencies if ``node_modules/`` is absent.
+
+    Uses ``npm ci`` when ``package-lock.json`` exists (deterministic),
+    otherwise falls back to ``npm install``.
+
+    Args:
+        cwd: Directory containing ``package.json``.
+        timeout: Maximum seconds for the install command.
+
+    Returns:
+        A ``ToolResult`` from the install subprocess, or ``None`` when
+        ``node_modules/`` already exists (no install needed).
+    """
+    if (cwd / "node_modules").is_dir():
+        logger.info(
+            "quality_gate.node.deps_present",
+            extra={"data": {"cwd": str(cwd)}},
+        )
+        return None
+
+    cmd = ["npm", "ci"] if (cwd / "package-lock.json").is_file() else ["npm", "install"]
+    return await _run_subprocess(cmd, cwd=cwd, tool_name="npm install", timeout=timeout)
+
+
+async def _run_node_checks(
+    cwd: Path,
+    scripts: list[tuple[str, str]],
+    *,
+    timeout: int,
+) -> list[ToolResult]:
+    """Execute detected npm quality scripts sequentially.
+
+    Args:
+        cwd: Working directory (project root containing ``package.json``).
+        scripts: List of ``(tool_display_name, script_key)`` from
+            ``_detect_node_quality_scripts``.
+        timeout: Per-script timeout in seconds.
+
+    Returns:
+        List of ``ToolResult`` objects, one per script.
+    """
+    results: list[ToolResult] = []
+    for tool_name, script_key in scripts:
+        results.append(
+            await _run_subprocess(
+                ["npm", "run", script_key],
+                cwd=cwd,
+                tool_name=tool_name,
+                timeout=timeout,
+            )
+        )
+    return results
+
+
 def detect_project_dir(worktree_path: Path) -> tuple[str | None, Path]:
     """Determine the project type and working directory within a git worktree.
 
@@ -490,7 +606,7 @@ async def run_quality_gate(
         extra={"data": {"worktree": str(worktree_path), "project_type": project_type, "project_dir": str(project_dir)}},
     )
 
-    if project_type != "python":
+    if project_type not in ("python", "node"):
         skip_msg = (
             f"Quality Gate skipped: project type '{project_type or 'unknown'}' is not yet supported. "
             "Gate will pass automatically."
@@ -502,6 +618,46 @@ async def run_quality_gate(
         feedback = QualityFeedback(passed=True, skipped_reason=skip_msg)
         return QualityGateResult(passed=True, feedback=feedback)
 
+    # ---------- Node.js path ----------
+    if project_type == "node":
+        install_result = await _ensure_node_deps(project_dir, timeout=_TIMEOUT_NPM_INSTALL)
+        if install_result is not None and not install_result.passed:
+            logger.info(
+                "quality_gate.node.install_failed",
+                extra={"data": {"exit_code": install_result.exit_code}},
+            )
+            feedback = QualityFeedback(passed=False, tool_results=[install_result])
+            return QualityGateResult(passed=False, feedback=feedback)
+
+        scripts = _detect_node_quality_scripts(project_dir / "package.json")
+        if not scripts:
+            skip_msg = (
+                "Quality Gate skipped: no lint/typecheck scripts found in package.json. Gate will pass automatically."
+            )
+            logger.info(
+                "quality_gate.skipped",
+                extra={"data": {"project_type": "node", "reason": skip_msg}},
+            )
+            feedback = QualityFeedback(passed=True, skipped_reason=skip_msg)
+            return QualityGateResult(passed=True, feedback=feedback)
+
+        tool_results = await _run_node_checks(project_dir, scripts, timeout=_TIMEOUT_NODE_SCRIPT)
+        passed = all(r.passed for r in tool_results)
+
+        logger.info(
+            "quality_gate.complete",
+            extra={
+                "data": {
+                    "passed": passed,
+                    "tool_results": [(r.tool_name, r.passed, r.exit_code) for r in tool_results],
+                }
+            },
+        )
+
+        feedback = QualityFeedback(passed=passed, tool_results=tool_results)
+        return QualityGateResult(passed=passed, feedback=feedback)
+
+    # ---------- Python path ----------
     # Phase 1: Auto-fix (ruff check --fix + ruff format)
     auto_fix_summary, auto_fix_tool_results = await _run_auto_fix(project_dir, timeout=_TIMEOUT_RUFF)
 

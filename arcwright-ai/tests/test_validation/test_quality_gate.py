@@ -12,9 +12,12 @@ from arcwright_ai.validation.quality_gate import (
     QualityFeedback,
     QualityGateResult,
     ToolResult,
+    _detect_node_quality_scripts,  # type: ignore[reportPrivateUsage]
+    _ensure_node_deps,  # type: ignore[reportPrivateUsage]
     _parse_auto_fixes,  # type: ignore[reportPrivateUsage]
     _run_auto_fix,  # type: ignore[reportPrivateUsage]
     _run_checks,  # type: ignore[reportPrivateUsage]
+    _run_node_checks,  # type: ignore[reportPrivateUsage]
     _run_subprocess,  # type: ignore[reportPrivateUsage]
     detect_project_dir,
     run_quality_gate,
@@ -628,14 +631,16 @@ def test_detect_project_dir_priority_over_depth(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_quality_gate_skips_node_project(tmp_path: Path) -> None:
-    """4.8: node project skips gate — passed=True, skipped_reason set, no subprocesses."""
-    (tmp_path / "package.json").touch()
+async def test_run_quality_gate_skips_node_project_without_scripts(tmp_path: Path) -> None:
+    """4.8: node project with no quality scripts skips gate — passed=True, skipped_reason set."""
+    (tmp_path / "package.json").write_text('{"name": "test"}', encoding="utf-8")
+    # node_modules present so _ensure_node_deps is a no-op
+    (tmp_path / "node_modules").mkdir()
     result = await run_quality_gate(PROJECT_ROOT, tmp_path)
     assert result.passed is True
     assert result.feedback.passed is True
     assert result.feedback.skipped_reason is not None
-    assert "node" in result.feedback.skipped_reason
+    assert "no lint/typecheck scripts" in result.feedback.skipped_reason
     assert result.feedback.tool_results == []
 
 
@@ -703,9 +708,222 @@ def test_quality_feedback_skipped_reason_none_round_trip() -> None:
 
 def test_quality_feedback_skipped_reason_set_round_trip() -> None:
     """4.11b: skipped_reason with value round-trips correctly."""
-    msg = "Quality Gate skipped: project type 'node' is not yet supported. Gate will pass automatically."
+    msg = "Quality Gate skipped: no lint/typecheck scripts found in package.json. Gate will pass automatically."
     feedback = QualityFeedback(passed=True, skipped_reason=msg)
     dumped = feedback.model_dump(round_trip=True)
     restored = QualityFeedback.model_validate(dumped)
     assert restored.skipped_reason == msg
     assert restored.passed is True
+
+
+# ---------------------------------------------------------------------------
+# Test — _detect_node_quality_scripts
+# ---------------------------------------------------------------------------
+
+
+def test_detect_node_quality_scripts_missing_file(tmp_path: Path) -> None:
+    """Returns empty list when package.json does not exist."""
+    result = _detect_node_quality_scripts(tmp_path / "package.json")
+    assert result == []
+
+
+def test_detect_node_quality_scripts_empty_scripts(tmp_path: Path) -> None:
+    """Returns empty list when scripts object is empty."""
+    (tmp_path / "package.json").write_text('{"scripts": {}}', encoding="utf-8")
+    result = _detect_node_quality_scripts(tmp_path / "package.json")
+    assert result == []
+
+
+def test_detect_node_quality_scripts_no_matching_scripts(tmp_path: Path) -> None:
+    """Returns empty list when no scripts match quality prefixes."""
+    pkg = '{"scripts": {"build": "next build", "dev": "next dev", "start": "next start"}}'
+    (tmp_path / "package.json").write_text(pkg, encoding="utf-8")
+    result = _detect_node_quality_scripts(tmp_path / "package.json")
+    assert result == []
+
+
+def test_detect_node_quality_scripts_lint_and_typecheck(tmp_path: Path) -> None:
+    """Detects lint:md and typecheck scripts."""
+    pkg = '{"scripts": {"lint:md": "markdownlint", "typecheck": "tsc --noEmit", "build": "next"}}'
+    (tmp_path / "package.json").write_text(pkg, encoding="utf-8")
+    result = _detect_node_quality_scripts(tmp_path / "package.json")
+    assert ("npm run lint:md", "lint:md") in result
+    assert ("npm run typecheck", "typecheck") in result
+    assert len(result) == 2
+
+
+def test_detect_node_quality_scripts_all_variant_preferred(tmp_path: Path) -> None:
+    """typecheck:all is preferred over individual typecheck variants."""
+    pkg = (
+        '{"scripts": {"typecheck": "tsc", "typecheck:api": "tsc api",'
+        ' "typecheck:all": "npm run typecheck && npm run typecheck:api"}}'
+    )
+    (tmp_path / "package.json").write_text(pkg, encoding="utf-8")
+    result = _detect_node_quality_scripts(tmp_path / "package.json")
+    assert ("npm run typecheck:all", "typecheck:all") in result
+    assert len(result) == 1
+
+
+def test_detect_node_quality_scripts_multiple_lint_variants(tmp_path: Path) -> None:
+    """Multiple lint variants without :all returns all individually."""
+    pkg = '{"scripts": {"lint": "eslint", "lint:md": "markdownlint", "lint:css": "stylelint"}}'
+    (tmp_path / "package.json").write_text(pkg, encoding="utf-8")
+    result = _detect_node_quality_scripts(tmp_path / "package.json")
+    assert len(result) == 3
+    script_keys = [s[1] for s in result]
+    assert "lint" in script_keys
+    assert "lint:css" in script_keys
+    assert "lint:md" in script_keys
+
+
+def test_detect_node_quality_scripts_malformed_json(tmp_path: Path) -> None:
+    """Returns empty list for malformed JSON."""
+    (tmp_path / "package.json").write_text("not valid json", encoding="utf-8")
+    result = _detect_node_quality_scripts(tmp_path / "package.json")
+    assert result == []
+
+
+# ---------------------------------------------------------------------------
+# Test — _ensure_node_deps
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ensure_node_deps_already_present(tmp_path: Path) -> None:
+    """Returns None when node_modules directory already exists."""
+    (tmp_path / "node_modules").mkdir()
+    result = await _ensure_node_deps(tmp_path, timeout=10)
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_ensure_node_deps_runs_npm_ci(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Runs `npm ci` when package-lock.json exists and node_modules is absent."""
+    (tmp_path / "package-lock.json").touch()
+    captured_cmd: list[list[str]] = []
+
+    async def _mock_subprocess(cmd: list[str], *, cwd: Path, tool_name: str, timeout: int) -> ToolResult:
+        captured_cmd.append(cmd)
+        return ToolResult(tool_name=tool_name, passed=True, exit_code=0)
+
+    monkeypatch.setattr("arcwright_ai.validation.quality_gate._run_subprocess", _mock_subprocess)
+    result = await _ensure_node_deps(tmp_path, timeout=120)
+    assert result is not None
+    assert result.passed is True
+    assert captured_cmd[0] == ["npm", "ci"]
+
+
+@pytest.mark.asyncio
+async def test_ensure_node_deps_runs_npm_install(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Falls back to `npm install` when no package-lock.json."""
+    captured_cmd: list[list[str]] = []
+
+    async def _mock_subprocess(cmd: list[str], *, cwd: Path, tool_name: str, timeout: int) -> ToolResult:
+        captured_cmd.append(cmd)
+        return ToolResult(tool_name=tool_name, passed=True, exit_code=0)
+
+    monkeypatch.setattr("arcwright_ai.validation.quality_gate._run_subprocess", _mock_subprocess)
+    result = await _ensure_node_deps(tmp_path, timeout=120)
+    assert result is not None
+    assert captured_cmd[0] == ["npm", "install"]
+
+
+# ---------------------------------------------------------------------------
+# Test — _run_node_checks
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_node_checks_all_pass(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """All npm scripts passing returns all-pass ToolResults."""
+
+    async def _mock_subprocess(cmd: list[str], *, cwd: Path, tool_name: str, timeout: int) -> ToolResult:
+        return ToolResult(tool_name=tool_name, passed=True, exit_code=0)
+
+    monkeypatch.setattr("arcwright_ai.validation.quality_gate._run_subprocess", _mock_subprocess)
+    scripts = [("npm run lint:md", "lint:md"), ("npm run typecheck", "typecheck")]
+    results = await _run_node_checks(tmp_path, scripts, timeout=60)
+    assert len(results) == 2
+    assert all(r.passed for r in results)
+
+
+@pytest.mark.asyncio
+async def test_run_node_checks_some_fail(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Failing npm scripts produce ToolResults with passed=False."""
+    call_count = 0
+
+    async def _mock_subprocess(cmd: list[str], *, cwd: Path, tool_name: str, timeout: int) -> ToolResult:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 2:
+            return ToolResult(tool_name=tool_name, passed=False, exit_code=1, stderr="Type error")
+        return ToolResult(tool_name=tool_name, passed=True, exit_code=0)
+
+    monkeypatch.setattr("arcwright_ai.validation.quality_gate._run_subprocess", _mock_subprocess)
+    scripts = [("npm run lint:md", "lint:md"), ("npm run typecheck", "typecheck")]
+    results = await _run_node_checks(tmp_path, scripts, timeout=60)
+    assert len(results) == 2
+    assert results[0].passed is True
+    assert results[1].passed is False
+
+
+# ---------------------------------------------------------------------------
+# Test — run_quality_gate Node.js integration
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_quality_gate_node_runs_checks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Node project with quality scripts runs them and reports pass."""
+    pkg = '{"scripts": {"lint:md": "markdownlint .", "typecheck": "tsc --noEmit"}}'
+    (tmp_path / "package.json").write_text(pkg, encoding="utf-8")
+    (tmp_path / "node_modules").mkdir()
+
+    async def _mock_subprocess(cmd: list[str], *, cwd: Path, tool_name: str, timeout: int) -> ToolResult:
+        return ToolResult(tool_name=tool_name, passed=True, exit_code=0)
+
+    monkeypatch.setattr("arcwright_ai.validation.quality_gate._run_subprocess", _mock_subprocess)
+    result = await run_quality_gate(PROJECT_ROOT, tmp_path)
+    assert result.passed is True
+    assert result.feedback.skipped_reason is None
+    assert len(result.feedback.tool_results) == 2
+    tool_names = [r.tool_name for r in result.feedback.tool_results]
+    assert "npm run lint:md" in tool_names
+    assert "npm run typecheck" in tool_names
+
+
+@pytest.mark.asyncio
+async def test_run_quality_gate_node_fails_on_check_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Node quality gate fails when a script fails."""
+    pkg = '{"scripts": {"lint:md": "markdownlint .", "typecheck": "tsc --noEmit"}}'
+    (tmp_path / "package.json").write_text(pkg, encoding="utf-8")
+    (tmp_path / "node_modules").mkdir()
+
+    async def _mock_subprocess(cmd: list[str], *, cwd: Path, tool_name: str, timeout: int) -> ToolResult:
+        if "typecheck" in cmd:
+            return ToolResult(tool_name=tool_name, passed=False, exit_code=1, stderr="TS2322: Type error")
+        return ToolResult(tool_name=tool_name, passed=True, exit_code=0)
+
+    monkeypatch.setattr("arcwright_ai.validation.quality_gate._run_subprocess", _mock_subprocess)
+    result = await run_quality_gate(PROJECT_ROOT, tmp_path)
+    assert result.passed is False
+    assert result.feedback.passed is False
+    failing = [r.tool_name for r in result.feedback.tool_results if not r.passed]
+    assert "npm run typecheck" in failing
+
+
+@pytest.mark.asyncio
+async def test_run_quality_gate_node_install_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Gate fails immediately when npm install fails."""
+    pkg = '{"scripts": {"typecheck": "tsc --noEmit"}}'
+    (tmp_path / "package.json").write_text(pkg, encoding="utf-8")
+    # No node_modules → triggers install
+
+    async def _mock_subprocess(cmd: list[str], *, cwd: Path, tool_name: str, timeout: int) -> ToolResult:
+        return ToolResult(tool_name=tool_name, passed=False, exit_code=1, stderr="npm ERR!")
+
+    monkeypatch.setattr("arcwright_ai.validation.quality_gate._run_subprocess", _mock_subprocess)
+    result = await run_quality_gate(PROJECT_ROOT, tmp_path)
+    assert result.passed is False
+    assert len(result.feedback.tool_results) == 1
+    assert result.feedback.tool_results[0].tool_name == "npm install"
