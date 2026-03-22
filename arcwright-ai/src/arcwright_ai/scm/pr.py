@@ -686,16 +686,21 @@ def _parse_github_owner_repo(remote_url: str) -> tuple[str, str] | None:
     return None
 
 
-async def _build_manual_pr_url(project_root: Path, branch_name: str) -> str:
-    """Build manual PR URL including owner/repo when it can be resolved."""
+async def _resolve_origin_owner_repo(project_root: Path) -> tuple[str, str] | None:
+    """Resolve ``origin`` as ``(owner, repo)`` for GitHub remotes when possible."""
     try:
         result = await git("remote", "get-url", "origin", cwd=project_root)
-        parsed = _parse_github_owner_repo(result.stdout.strip())
-        if parsed is not None:
-            owner, repo = parsed
-            return f"https://github.com/{owner}/{repo}/pull/new/{branch_name}"
+        return _parse_github_owner_repo(result.stdout.strip())
     except Exception:
         pass
+    return None
+
+
+def _build_manual_pr_url(owner_repo: tuple[str, str] | None, branch_name: str) -> str:
+    """Build a manual PR URL from a resolved ``(owner, repo)`` tuple."""
+    if owner_repo is not None:
+        owner, repo = owner_repo
+        return f"https://github.com/{owner}/{repo}/pull/new/{branch_name}"
     return f"https://github.com/<owner>/<repo>/pull/new/{branch_name}"
 
 
@@ -759,7 +764,8 @@ async def open_pull_request(
     Returns:
         PR URL string on success, or ``None`` on any failure.
     """
-    manual_pr_url = await _build_manual_pr_url(project_root, branch_name)
+    origin_owner_repo = await _resolve_origin_owner_repo(project_root)
+    manual_pr_url = _build_manual_pr_url(origin_owner_repo, branch_name)
 
     # Check gh CLI availability (AC: #5)
     if shutil.which("gh") is None:
@@ -788,18 +794,35 @@ async def open_pull_request(
     # Open PR with gh CLI - with exponential-backoff retry for transient API lag (AC: #1-#6)
     try:
         for attempt in range(_PR_RETRY_MAX + 1):
-            proc = await asyncio.create_subprocess_exec(
+            pr_create_args: list[str] = [
                 "gh",
                 "pr",
                 "create",
                 "--base",
                 resolved_default_branch,
-                "--head",
-                branch_name,
-                "--title",
-                pr_title,
-                "--body",
-                pr_body,
+            ]
+
+            # Explicit repository/head avoids ambiguity in fork+upstream setups.
+            if origin_owner_repo is not None:
+                owner, repo = origin_owner_repo
+                pr_create_args.extend(["-R", f"{owner}/{repo}"])
+                pr_head = f"{owner}:{branch_name}"
+            else:
+                pr_head = branch_name
+
+            pr_create_args.extend(
+                [
+                    "--head",
+                    pr_head,
+                    "--title",
+                    pr_title,
+                    "--body",
+                    pr_body,
+                ]
+            )
+
+            proc = await asyncio.create_subprocess_exec(
+                *pr_create_args,
                 cwd=str(project_root),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
