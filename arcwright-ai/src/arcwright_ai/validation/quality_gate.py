@@ -8,8 +8,10 @@ Executes after both V6 invariant checks and V3 reflexion pass.  Two-phase:
   Phase 2 (check): ``ruff check``, ``mypy --strict``, ``pytest`` — diagnostic,
       exit codes determine pass/fail, stdout/stderr are captured per-tool.
 
-All subprocesses run inside ``worktree_path / "arcwright-ai"`` because that
-directory owns ``pyproject.toml``, ``src/``, and ``tests/``.
+Project type is auto-detected via ``detect_project_dir`` before any subprocess
+is launched.  Non-Python and unknown project types are skipped with
+``QualityGateResult.passed=True`` to avoid spurious failures against projects
+that do not use the Python toolchain.
 """
 
 from __future__ import annotations
@@ -33,6 +35,7 @@ __all__: list[str] = [
     "QualityFeedback",
     "QualityGateResult",
     "ToolResult",
+    "detect_project_dir",
     "run_quality_gate",
 ]
 
@@ -57,6 +60,18 @@ _RUFF_AUTOFIX_PATTERN: re.Pattern[str] = re.compile(
 _TIMEOUT_RUFF: int = 30
 _TIMEOUT_MYPY: int = 120
 _TIMEOUT_PYTEST: int = 300
+
+# ---------------------------------------------------------------------------
+# Project type detection
+# ---------------------------------------------------------------------------
+
+# Ordered list of (manifest_filename, project_type).  Earlier entries take
+# priority over later ones regardless of search depth.
+_MANIFEST_PRIORITY: list[tuple[str, str]] = [
+    ("pyproject.toml", "python"),
+    ("package.json", "node"),
+    ("go.mod", "go"),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -110,11 +125,16 @@ class QualityFeedback(ArcwrightModel):
             empty when no issues were auto-fixable).
         tool_results: Per-tool results from the check phase (ruff check,
             mypy --strict, pytest).
+        skipped_reason: When set, the gate was bypassed because the detected
+            project type is not yet supported by the Python toolchain.  A
+            non-``None`` value means no subprocesses were launched and the
+            gate passed automatically.  ``None`` means the gate ran normally.
     """
 
     passed: bool
     auto_fix_summary: list[AutoFixEntry] = Field(default_factory=list)
     tool_results: list[ToolResult] = Field(default_factory=list)
+    skipped_reason: str | None = None
 
 
 class QualityGateResult(ArcwrightModel):
@@ -370,6 +390,54 @@ async def _run_checks(
     return results
 
 
+def detect_project_dir(worktree_path: Path) -> tuple[str | None, Path]:
+    """Determine the project type and working directory within a git worktree.
+
+    Searches for manifest files in ``_MANIFEST_PRIORITY`` order, checking the
+    worktree root (depth 0) before immediate subdirectories (depth 1).  A
+    higher-priority manifest type always wins over a lower-priority one, even
+    when the higher-priority manifest is found at depth 1 and a lower-priority
+    manifest exists at depth 0.
+
+    Args:
+        worktree_path: Root directory of the git worktree to inspect.
+
+    Returns:
+        A ``(project_type, project_dir)`` tuple.  ``project_type`` is one of
+        ``"python"``, ``"node"``, ``"go"``, or ``None`` when no supported
+        manifest is found.  ``project_dir`` is the directory that contains the
+        manifest file; when no manifest exists it equals ``worktree_path``.
+
+    Emits:
+        A ``quality_gate.project_type_detected`` log event with
+        ``project_type`` and ``project_dir`` fields.
+    """
+    for filename, project_type in _MANIFEST_PRIORITY:
+        # Depth 0 — check directly under worktree root
+        if (worktree_path / filename).is_file():
+            logger.info(
+                "quality_gate.project_type_detected",
+                extra={"data": {"project_type": project_type, "project_dir": str(worktree_path)}},
+            )
+            return (project_type, worktree_path)
+
+        # Depth 1 — check immediate subdirectories only
+        for child in worktree_path.iterdir():
+            if child.is_dir() and (child / filename).is_file():
+                logger.info(
+                    "quality_gate.project_type_detected",
+                    extra={"data": {"project_type": project_type, "project_dir": str(child)}},
+                )
+                return (project_type, child)
+
+    # No recognised manifest found
+    logger.info(
+        "quality_gate.project_type_detected",
+        extra={"data": {"project_type": None, "project_dir": str(worktree_path)}},
+    )
+    return (None, worktree_path)
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -383,8 +451,14 @@ async def run_quality_gate(
 ) -> QualityGateResult:
     """Orchestrate the Quality Gate: auto-fix phase then check phase.
 
-    Runs inside the ``worktree_path / "arcwright-ai"`` subdirectory, which
-    owns ``pyproject.toml``, ``src/``, and ``tests/``.
+    Detects the project type via ``detect_project_dir`` before doing any
+    work.  Non-Python and unknown project types are skipped immediately;
+    ``QualityGateResult.passed=True`` is returned with ``skipped_reason`` set
+    in the feedback so callers can observe the bypass without misreading it as
+    a quality failure.
+
+    For Python projects, runs inside the directory that contains
+    ``pyproject.toml`` (resolved by ``detect_project_dir``).
 
     Phase 1 (auto-fix) runs ``ruff check --fix`` and ``ruff format`` to
     eliminate trivially fixable issues before evaluation.  Phase 2 (check)
@@ -395,8 +469,9 @@ async def run_quality_gate(
         project_root: Root of the main repository checkout.  Retained for
             future extensibility; subprocess execution uses ``worktree_path``.
         worktree_path: Root of the isolated git worktree created by
-            ``preflight_node``.  The ``arcwright-ai/`` subdirectory is used
-            as ``cwd`` for all subprocess calls.
+            ``preflight_node``.  ``detect_project_dir`` locates the
+            ``pyproject.toml`` within this tree and uses its parent as
+            ``cwd`` for all subprocess calls.
         timeout: Maximum seconds allowed for the ``pytest`` run (the longest
             tool).  ``ruff`` tools use ``_TIMEOUT_RUFF`` and ``mypy`` uses
             ``_TIMEOUT_MYPY`` regardless of this parameter.
@@ -404,15 +479,28 @@ async def run_quality_gate(
     Returns:
         A ``QualityGateResult`` with ``passed=True`` when all check-phase
         tools exit with code 0, along with a ``QualityFeedback`` payload
-        that includes the auto-fix summary and per-tool diagnostics.
+        that includes the auto-fix summary and per-tool diagnostics.  When
+        the project type is not Python the result is also ``passed=True`` but
+        ``feedback.skipped_reason`` is populated.
     """
-    # The project directory inside the worktree contains pyproject.toml, src/, tests/
-    project_dir = worktree_path / "arcwright-ai"
+    project_type, project_dir = detect_project_dir(worktree_path)
 
     logger.info(
         "quality_gate.start",
-        extra={"data": {"worktree": str(worktree_path), "project_dir": str(project_dir)}},
+        extra={"data": {"worktree": str(worktree_path), "project_type": project_type, "project_dir": str(project_dir)}},
     )
+
+    if project_type != "python":
+        skip_msg = (
+            f"Quality Gate skipped: project type '{project_type or 'unknown'}' is not yet supported. "
+            "Gate will pass automatically."
+        )
+        logger.info(
+            "quality_gate.skipped",
+            extra={"data": {"project_type": project_type, "reason": skip_msg}},
+        )
+        feedback = QualityFeedback(passed=True, skipped_reason=skip_msg)
+        return QualityGateResult(passed=True, feedback=feedback)
 
     # Phase 1: Auto-fix (ruff check --fix + ruff format)
     auto_fix_summary, auto_fix_tool_results = await _run_auto_fix(project_dir, timeout=_TIMEOUT_RUFF)

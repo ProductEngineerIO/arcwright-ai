@@ -199,6 +199,14 @@ Claude Sonnet 4.6
 
 - Root cause: `_detect_default_branch` also calls `asyncio.create_subprocess_exec` (for `gh repo view`) — patching the module-level `asyncio.create_subprocess_exec` in retry tests consumed mock `side_effect` items. Fixed by patching `_detect_default_branch` directly in the 6 new retry tests.
 
+### Review Reconciliation (2026-03-21)
+
+- Code-review run was executed from a branch with active Story 10.14 work (`feature/error-handling`), so Story 10.13 files were not present in the current `git diff`.
+- Historical implementation evidence is preserved in commit `f04e5e5` (`Add Quality Gate and PR creation retry`), which touches both 10.13 implementation files:
+    - `arcwright-ai/src/arcwright_ai/scm/pr.py`
+    - `arcwright-ai/tests/test_scm/test_pr.py`
+- Post-review verification re-ran focused Story 10.13 tests and passed: 20 passed, 0 failed (`tests/test_scm/test_pr.py` retry/classifier subset).
+
 ### Completion Notes List
 
 - Added `_PR_RETRY_MAX: int = 4` and `_PR_RETRY_BASE_SECONDS: float = 2.0` module-level constants in `scm/pr.py`.
@@ -212,7 +220,9 @@ Claude Sonnet 4.6
 
 - arcwright-ai/src/arcwright_ai/scm/pr.py
 - arcwright-ai/tests/test_scm/test_pr.py
+- _spec/implementation-artifacts/10-13-pr-creation-retry-with-backoff-for-github-api-lag.md
 
 ## Change Log
 
 - 2026-03-20: Story 10.13 — Added exponential-backoff retry to `open_pull_request()` for GitHub API indexing lag. Added `_is_transient_pr_error`, `_PR_RETRY_MAX`, `_PR_RETRY_BASE_SECONDS`. 9 new tests; 1175/1175 suite pass.
+- 2026-03-21: Code review reconciliation — documented branch-context discrepancy, linked historical commit evidence (`f04e5e5`), and recorded focused retry/classifier test verification (20 passed).
