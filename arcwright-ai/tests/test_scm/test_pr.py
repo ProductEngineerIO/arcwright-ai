@@ -896,6 +896,56 @@ async def test_open_pull_request_passes_default_branch(
     assert captured_base == ["develop"]
 
 
+@pytest.mark.asyncio
+async def test_open_pull_request_uses_explicit_repo_and_owner_head_for_github_origin(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """open_pull_request passes -R owner/repo and --head owner:branch when origin is GitHub."""
+    from arcwright_ai.scm.git import GitResult
+
+    monkeypatch.setattr("arcwright_ai.scm.pr.shutil.which", lambda _: "/usr/local/bin/gh")
+
+    async def _mock_git(*args: str, **kwargs: object) -> GitResult:
+        if args[:3] == ("remote", "get-url", "origin"):
+            return GitResult(stdout="https://github.com/owner/repo.git", stderr="", returncode=0)
+        return GitResult(stdout="origin/main", stderr="", returncode=0)
+
+    monkeypatch.setattr("arcwright_ai.scm.pr.git", AsyncMock(side_effect=_mock_git))
+
+    pr_url = "https://github.com/owner/repo/pull/101"
+    mock_proc = MagicMock()
+    mock_proc.returncode = 0
+    mock_proc.communicate = AsyncMock(return_value=(pr_url.encode(), b""))
+
+    captured_args: list[tuple[str, ...]] = []
+
+    async def _mock_exec(*args: str, **kwargs: object) -> MagicMock:
+        captured_args.append(args)
+        return mock_proc
+
+    with (
+        patch("arcwright_ai.scm.pr._detect_default_branch", AsyncMock(return_value="develop")),
+        patch("arcwright_ai.scm.pr.asyncio.create_subprocess_exec", _mock_exec),
+    ):
+        result = await open_pull_request(
+            "arcwright-ai/my-story",
+            "9-1-story",
+            "PR body",
+            project_root=tmp_path,
+        )
+
+    assert result == pr_url
+    assert captured_args, "create_subprocess_exec was not called"
+    args_list = list(captured_args[0])
+    assert "-R" in args_list
+    repo_idx = args_list.index("-R")
+    assert args_list[repo_idx + 1] == "owner/repo"
+    assert "--head" in args_list
+    head_idx = args_list.index("--head")
+    assert args_list[head_idx + 1] == "owner:arcwright-ai/my-story"
+
+
 # ---------------------------------------------------------------------------
 # Story 9.3 — merge_pull_request unit tests (AC: #15)
 # ---------------------------------------------------------------------------
