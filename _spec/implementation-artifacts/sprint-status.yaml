@@ -38,7 +38,7 @@ project: arcwright-ai
 project_key: NOKEY
 tracking_system: file-system
 story_location: _spec/implementation-artifacts
-last_updated: 2026-03-20
+last_updated: 2026-03-21
 
 
 development_status:
@@ -136,6 +136,7 @@ development_status:
   10-11-llm-extracted-agent-decisions-in-pr-body: done
   10-12-quality-gate-automated-lint-format-type-check-and-test-validation: done
   10-13-pr-creation-retry-with-backoff-for-github-api-lag: done
+  10-14-quality-gate-project-type-auto-detection: done
 
   # Epic 11: BMAD 6.1 Framework Upgrade (3 stories, 13 pts)
   epic-11: done

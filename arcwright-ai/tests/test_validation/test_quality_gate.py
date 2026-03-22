@@ -16,6 +16,7 @@ from arcwright_ai.validation.quality_gate import (
     _run_auto_fix,  # type: ignore[reportPrivateUsage]
     _run_checks,  # type: ignore[reportPrivateUsage]
     _run_subprocess,  # type: ignore[reportPrivateUsage]
+    detect_project_dir,
     run_quality_gate,
 )
 
@@ -365,8 +366,19 @@ def mock_checks_mypy_fail(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("arcwright_ai.validation.quality_gate._run_checks", _checks)
 
 
+@pytest.fixture
+def mock_detect_python_project(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Monkeypatch detect_project_dir to return python project at arcwright-ai subdir."""
+
+    def _detect(worktree_path: Path) -> tuple[str | None, Path]:
+        return ("python", worktree_path / "arcwright-ai")
+
+    monkeypatch.setattr("arcwright_ai.validation.quality_gate.detect_project_dir", _detect)
+
+
 @pytest.mark.asyncio
 async def test_run_quality_gate_full_pass(
+    mock_detect_python_project: None,
     mock_auto_fix_no_changes: None,
     mock_checks_all_pass: None,
 ) -> None:
@@ -382,6 +394,7 @@ async def test_run_quality_gate_full_pass(
 @pytest.mark.asyncio
 async def test_run_quality_gate_auto_fix_only(
     monkeypatch: pytest.MonkeyPatch,
+    mock_detect_python_project: None,
     mock_checks_all_pass: None,
 ) -> None:
     """run_quality_gate captures auto-fix summary even when checks all pass."""
@@ -398,6 +411,7 @@ async def test_run_quality_gate_auto_fix_only(
 
 @pytest.mark.asyncio
 async def test_run_quality_gate_check_failure(
+    mock_detect_python_project: None,
     mock_auto_fix_no_changes: None,
     mock_checks_mypy_fail: None,
 ) -> None:
@@ -412,8 +426,13 @@ async def test_run_quality_gate_check_failure(
 
 @pytest.mark.asyncio
 async def test_run_quality_gate_uses_arcwright_ai_subdir(monkeypatch: pytest.MonkeyPatch) -> None:
-    """run_quality_gate executes tools inside worktree/arcwright-ai subdir."""
+    """run_quality_gate passes detect_project_dir result as cwd to tools."""
     captured_cwd: list[Path] = []
+
+    def _detect(worktree_path: Path) -> tuple[str | None, Path]:
+        return ("python", worktree_path / "arcwright-ai")
+
+    monkeypatch.setattr("arcwright_ai.validation.quality_gate.detect_project_dir", _detect)
 
     async def _auto_fix(cwd: Path, *, timeout: int) -> tuple[list[AutoFixEntry], list[ToolResult]]:
         captured_cwd.append(cwd)
@@ -445,6 +464,7 @@ async def test_run_quality_gate_uses_arcwright_ai_subdir(monkeypatch: pytest.Mon
 @pytest.mark.asyncio
 async def test_run_quality_gate_fails_when_auto_fix_tool_fails(
     monkeypatch: pytest.MonkeyPatch,
+    mock_detect_python_project: None,
     mock_checks_all_pass: None,
 ) -> None:
     """Failed auto-fix tools must force FAIL_QUALITY even if check-phase tools pass."""
@@ -534,3 +554,158 @@ def test_tool_result_timed_out_round_trip() -> None:
     assert restored.timed_out is True
     assert restored.passed is False
     assert "timed out" in restored.stderr
+
+
+# ---------------------------------------------------------------------------
+# Test 10.14 — detect_project_dir
+# ---------------------------------------------------------------------------
+
+
+def test_detect_project_dir_pyproject_at_root(tmp_path: Path) -> None:
+    """4.1: pyproject.toml at worktree root returns (python, worktree_path)."""
+    (tmp_path / "pyproject.toml").touch()
+    project_type, project_dir = detect_project_dir(tmp_path)
+    assert project_type == "python"
+    assert project_dir == tmp_path
+
+
+def test_detect_project_dir_pyproject_one_level_deep(tmp_path: Path) -> None:
+    """4.2: pyproject.toml one level deep returns (python, worktree_path/subdir)."""
+    subdir = tmp_path / "myapp"
+    subdir.mkdir()
+    (subdir / "pyproject.toml").touch()
+    project_type, project_dir = detect_project_dir(tmp_path)
+    assert project_type == "python"
+    assert project_dir == subdir
+
+
+def test_detect_project_dir_package_json_at_root(tmp_path: Path) -> None:
+    """4.3: package.json at root (no pyproject.toml) returns (node, worktree_path)."""
+    (tmp_path / "package.json").touch()
+    project_type, project_dir = detect_project_dir(tmp_path)
+    assert project_type == "node"
+    assert project_dir == tmp_path
+
+
+def test_detect_project_dir_go_mod_at_root(tmp_path: Path) -> None:
+    """4.4: go.mod at root (no higher-priority manifests) returns (go, worktree_path)."""
+    (tmp_path / "go.mod").touch()
+    project_type, project_dir = detect_project_dir(tmp_path)
+    assert project_type == "go"
+    assert project_dir == tmp_path
+
+
+def test_detect_project_dir_no_manifest(tmp_path: Path) -> None:
+    """4.5: no manifest at any depth returns (None, worktree_path)."""
+    project_type, project_dir = detect_project_dir(tmp_path)
+    assert project_type is None
+    assert project_dir == tmp_path
+
+
+def test_detect_project_dir_polyglot_python_wins(tmp_path: Path) -> None:
+    """4.6: both pyproject.toml and package.json at root — python wins."""
+    (tmp_path / "pyproject.toml").touch()
+    (tmp_path / "package.json").touch()
+    project_type, project_dir = detect_project_dir(tmp_path)
+    assert project_type == "python"
+    assert project_dir == tmp_path
+
+
+def test_detect_project_dir_priority_over_depth(tmp_path: Path) -> None:
+    """4.7: package.json at root + pyproject.toml one level deep — python still wins."""
+    (tmp_path / "package.json").touch()
+    subdir = tmp_path / "app"
+    subdir.mkdir()
+    (subdir / "pyproject.toml").touch()
+    project_type, project_dir = detect_project_dir(tmp_path)
+    assert project_type == "python"
+    assert project_dir == subdir
+
+
+# ---------------------------------------------------------------------------
+# Test 10.14 — run_quality_gate auto-detection integration
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_quality_gate_skips_node_project(tmp_path: Path) -> None:
+    """4.8: node project skips gate — passed=True, skipped_reason set, no subprocesses."""
+    (tmp_path / "package.json").touch()
+    result = await run_quality_gate(PROJECT_ROOT, tmp_path)
+    assert result.passed is True
+    assert result.feedback.passed is True
+    assert result.feedback.skipped_reason is not None
+    assert "node" in result.feedback.skipped_reason
+    assert result.feedback.tool_results == []
+
+
+@pytest.mark.asyncio
+async def test_run_quality_gate_skips_unknown_project(tmp_path: Path) -> None:
+    """4.9: unknown project (no manifest) skips gate — passed=True, skipped_reason set."""
+    result = await run_quality_gate(PROJECT_ROOT, tmp_path)
+    assert result.passed is True
+    assert result.feedback.passed is True
+    assert result.feedback.skipped_reason is not None
+    assert "unknown" in result.feedback.skipped_reason
+    assert result.feedback.tool_results == []
+
+
+@pytest.mark.asyncio
+async def test_run_quality_gate_uses_detected_project_dir_at_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """4.10: python project at worktree root — subprocesses use worktree_path as cwd."""
+    (tmp_path / "pyproject.toml").touch()
+    captured_cwd: list[Path] = []
+
+    async def _auto_fix(cwd: Path, *, timeout: int) -> tuple[list[AutoFixEntry], list[ToolResult]]:
+        captured_cwd.append(cwd)
+        return [], []
+
+    async def _checks(
+        cwd: Path,
+        *,
+        timeout_ruff: int,
+        timeout_mypy: int,
+        timeout_pytest: int,
+    ) -> list[ToolResult]:
+        captured_cwd.append(cwd)
+        return [
+            ToolResult(tool_name="ruff check", passed=True, exit_code=0),
+            ToolResult(tool_name="mypy --strict", passed=True, exit_code=0),
+            ToolResult(tool_name="pytest", passed=True, exit_code=0),
+        ]
+
+    monkeypatch.setattr("arcwright_ai.validation.quality_gate._run_auto_fix", _auto_fix)
+    monkeypatch.setattr("arcwright_ai.validation.quality_gate._run_checks", _checks)
+
+    await run_quality_gate(PROJECT_ROOT, tmp_path)
+
+    # cwd must be tmp_path itself, not tmp_path / "arcwright-ai"
+    assert len(captured_cwd) == 2
+    assert all(cwd == tmp_path for cwd in captured_cwd)
+
+
+# ---------------------------------------------------------------------------
+# Test 10.14 — QualityFeedback.skipped_reason serialization
+# ---------------------------------------------------------------------------
+
+
+def test_quality_feedback_skipped_reason_none_round_trip() -> None:
+    """4.11a: skipped_reason=None serializes cleanly and round-trips."""
+    feedback = QualityFeedback(passed=True)
+    assert feedback.skipped_reason is None
+    dumped = feedback.model_dump(round_trip=True)
+    restored = QualityFeedback.model_validate(dumped)
+    assert restored.skipped_reason is None
+
+
+def test_quality_feedback_skipped_reason_set_round_trip() -> None:
+    """4.11b: skipped_reason with value round-trips correctly."""
+    msg = "Quality Gate skipped: project type 'node' is not yet supported. Gate will pass automatically."
+    feedback = QualityFeedback(passed=True, skipped_reason=msg)
+    dumped = feedback.model_dump(round_trip=True)
+    restored = QualityFeedback.model_validate(dumped)
+    assert restored.skipped_reason == msg
+    assert restored.passed is True
