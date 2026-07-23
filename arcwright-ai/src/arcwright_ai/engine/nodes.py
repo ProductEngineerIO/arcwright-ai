@@ -170,11 +170,14 @@ async def preflight_node(state: StoryState) -> StoryState:
 
     Invokes the context injector to build a ContextBundle from the story's
     BMAD artifacts, stores the bundle in state, serialises it to the run
-    directory as a provenance checkpoint, and transitions status from
-    QUEUED → PREFLIGHT → RUNNING.
+    directory as a provenance checkpoint, and transitions status to RUNNING.
+
+    On the initial attempt the incoming status is QUEUED.  On a retry the
+    incoming status is RETRY — the graph routes ``validate →(retry)→ preflight``
+    so that context and worktree are rebuilt before the next ``agent_dispatch``.
 
     Args:
-        state: Current story execution state (expected status: QUEUED).
+        state: Current story execution state (expected status: QUEUED or RETRY).
 
     Returns:
         Updated state with context_bundle populated and status set to RUNNING.
@@ -184,7 +187,7 @@ async def preflight_node(state: StoryState) -> StoryState:
     """
     logger.info("engine.node.enter", extra={"data": {"node": "preflight", "story": str(state.story_id)}})
 
-    # Transition: QUEUED → PREFLIGHT
+    # Transition: QUEUED → PREFLIGHT (initial) or RETRY → PREFLIGHT (retry)
     state = state.model_copy(update={"status": TaskState.PREFLIGHT})
 
     checkpoint_dir: Path = (
@@ -402,9 +405,12 @@ async def budget_check_node(state: StoryState) -> StoryState:
     breached) and transitions to ESCALATED so the graph routes to
     ``finalize_node``.
 
-    If the incoming state is RETRY (from a validation retry cycle),
-    transitions back to RUNNING so the agent can be re-invoked.
-    Otherwise passes state through unchanged.
+    Passes state through unchanged when budgets are not exceeded.  In the
+    built graph, ``budget_check`` always receives status RUNNING on the retry
+    path because ``preflight_node`` re-executes first (converting RETRY →
+    RUNNING) before ``budget_check`` is reached.  The node itself does not
+    assume a specific incoming status and passes any non-exceeded status
+    through unchanged.
 
     The routing decision (ok vs exceeded) is made by ``route_budget_check``.
 
@@ -418,8 +424,8 @@ async def budget_check_node(state: StoryState) -> StoryState:
         state: Current story execution state.
 
     Returns:
-        Updated state with status ESCALATED on budget exceeded, RUNNING on
-        retry transition, or unchanged otherwise.
+        Updated state with status ESCALATED on budget exceeded, or unchanged
+        otherwise.
     """
     logger.info("engine.node.enter", extra={"data": {"node": "budget_check", "story": str(state.story_id)}})
     if route_budget_check(state) == "exceeded":
@@ -453,13 +459,6 @@ async def budget_check_node(state: StoryState) -> StoryState:
             )
 
         updated = state.model_copy(update={"status": TaskState.ESCALATED})
-        logger.info(
-            "engine.node.exit",
-            extra={"data": {"node": "budget_check", "story": str(state.story_id), "status": str(updated.status)}},
-        )
-        return updated
-    if state.status == TaskState.RETRY:
-        updated = state.model_copy(update={"status": TaskState.RUNNING})
         logger.info(
             "engine.node.exit",
             extra={"data": {"node": "budget_check", "story": str(state.story_id), "status": str(updated.status)}},
