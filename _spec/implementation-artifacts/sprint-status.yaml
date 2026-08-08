@@ -41,6 +41,7 @@ story_location: _spec/implementation-artifacts
 last_updated: 2026-08-08
 
 
+
 development_status:
   # Epic 1: Project Foundation & Configuration (5 stories, 26 pts)
   epic-1: done
@@ -138,6 +139,7 @@ development_status:
   10-13-pr-creation-retry-with-backoff-for-github-api-lag: done
   10-14-quality-gate-project-type-auto-detection: done
   10-15-run-cost-in-pr-body: done
+  10-16-mark-story-done-in-sprint-status-before-pr-creation: done
 
   # Epic 11: BMAD 6.1 Framework Upgrade (3 stories, 13 pts)
   epic-11: done

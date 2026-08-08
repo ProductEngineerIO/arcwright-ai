@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
@@ -163,6 +163,61 @@ def _derive_story_title(story_id: str) -> str:
     parts = story_id.split("-", 2)
     name_part = parts[2] if len(parts) > 2 else story_id
     return name_part.replace("-", " ").title()
+
+
+async def _update_sprint_status_done(
+    story_slug: str,
+    project_root: Path,
+    artifacts_path: str,
+) -> None:
+    """Update sprint-status.yaml to mark the story as done.
+
+    Uses regex-based text substitution to preserve YAML comments.  Best-effort:
+    logs warnings on failure but never raises, so PR creation is never blocked.
+
+    Args:
+        story_slug: Story identifier (e.g. "10-16-mark-story-done-...").
+        project_root: Absolute path to the project root.
+        artifacts_path: Relative path to the artifacts directory (e.g. "_spec").
+    """
+    sprint_status_path = project_root / artifacts_path / "implementation-artifacts" / "sprint-status.yaml"
+    try:
+        if not sprint_status_path.exists():
+            logger.warning(
+                "scm.sprint_status.not_found",
+                extra={"data": {"story": story_slug, "path": str(sprint_status_path)}},
+            )
+            return
+
+        content = await asyncio.to_thread(sprint_status_path.read_text, encoding="utf-8")
+
+        escaped = re.escape(story_slug)
+        slug_pattern = rf"(?m)^(\s+{escaped}:\s*)\S+"
+
+        if not re.search(slug_pattern, content):
+            logger.debug(
+                "scm.sprint_status.key_not_found",
+                extra={"data": {"story": story_slug, "path": str(sprint_status_path)}},
+            )
+            return
+
+        updated = re.sub(slug_pattern, r"\g<1>done", content)
+        updated = re.sub(
+            r"(?m)^(last_updated:\s*)\S+",
+            rf"\g<1>{date.today().isoformat()}",
+            updated,
+        )
+
+        await write_text_async(sprint_status_path, updated)
+        logger.info(
+            "scm.sprint_status.updated",
+            extra={"data": {"story": story_slug, "path": str(sprint_status_path)}},
+        )
+    except Exception as exc:
+        logger.warning(
+            "scm.sprint_status.update_error",
+            extra={"data": {"story": story_slug, "error": str(exc)}},
+        )
 
 
 async def preflight_node(state: StoryState) -> StoryState:
@@ -1813,6 +1868,9 @@ async def commit_node(state: StoryState) -> StoryState:
                             )
                         }
                     )
+
+                # Mark story done in sprint-status before PR creation (AC: #1, best-effort)
+                await _update_sprint_status_done(story_slug, project_root, state.config.methodology.artifacts_path)
 
                 # Generate PR body and open PR (AC: #3, #4)
                 try:
