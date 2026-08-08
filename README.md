@@ -313,7 +313,7 @@ Arcwright AI uses a two-tier configuration model with environment variable overr
 
 ```yaml
 model:
-  version: "claude-sonnet-4-20250514"
+  version: "claude-sonnet-4-6"
 limits:
   tokens_per_story: 100000
   cost_per_run: 50.00

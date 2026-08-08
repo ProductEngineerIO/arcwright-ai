@@ -77,7 +77,7 @@ _DEFAULT_CONFIG_YAML: str = """# Arcwright AI Project Configuration
 # If "review" is not configured, it falls back to the "generate" model.
 models:
   generate:
-    version: "claude-sonnet-4-20250514"
+    version: "claude-sonnet-4-6"
   # Uncomment to use a different model for code review:
   # review:
   #   version: "claude-opus-4-5"
@@ -118,8 +118,8 @@ ARCWRIGHT_API_CLAUDE_API_KEY=""
 # ==========================================================================
 # Model configuration (override config.yaml values)
 # ==========================================================================
-# ARCWRIGHT_AI_MODEL_GENERATE_VERSION="claude-sonnet-4-20250514"
-# ARCWRIGHT_AI_MODEL_REVIEW_VERSION="claude-sonnet-4-20250514"
+# ARCWRIGHT_AI_MODEL_GENERATE_VERSION="claude-sonnet-4-6"
+# ARCWRIGHT_AI_MODEL_REVIEW_VERSION="claude-sonnet-4-6"
 # ARCWRIGHT_AI_MODEL_GENERATE_PRICING_INPUT_RATE="3.00"
 # ARCWRIGHT_AI_MODEL_GENERATE_PRICING_OUTPUT_RATE="15.00"
 # ARCWRIGHT_AI_MODEL_REVIEW_PRICING_INPUT_RATE="3.00"

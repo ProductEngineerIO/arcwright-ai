@@ -117,7 +117,7 @@ class ModelSpec(ArcwrightModel):
 
     model_config = ConfigDict(frozen=True, extra="ignore", str_strip_whitespace=True)
 
-    version: str = "claude-sonnet-4-20250514"
+    version: str = "claude-sonnet-4-6"
     pricing: ModelPricing = Field(default_factory=ModelPricing)
 
 
@@ -281,7 +281,7 @@ class RunConfig(ArcwrightModel):
 
     api: ApiConfig
     models: ModelRegistry = Field(
-        default_factory=lambda: ModelRegistry(roles={"generate": ModelSpec(version="claude-sonnet-4-20250514")})
+        default_factory=lambda: ModelRegistry(roles={"generate": ModelSpec(version="claude-sonnet-4-6")})
     )
     limits: LimitsConfig = Field(default_factory=LimitsConfig)
     methodology: MethodologyConfig = Field(default_factory=MethodologyConfig)
