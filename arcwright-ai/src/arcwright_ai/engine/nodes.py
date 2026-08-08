@@ -1816,7 +1816,12 @@ async def commit_node(state: StoryState) -> StoryState:
 
                 # Generate PR body and open PR (AC: #3, #4)
                 try:
-                    pr_body = await generate_pr_body(run_id, story_slug, project_root=project_root)
+                    pr_body = await generate_pr_body(
+                        run_id,
+                        story_slug,
+                        project_root=project_root,
+                        story_cost=state.budget.per_story.get(story_slug),
+                    )
                     pr_url = await open_pull_request(
                         branch_name,
                         story_slug,

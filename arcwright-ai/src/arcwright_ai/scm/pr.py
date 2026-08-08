@@ -24,6 +24,8 @@ from arcwright_ai.scm.git import git
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from arcwright_ai.core.types import StoryCost
+
 __all__: list[str] = [
     "MergeOutcome",
     "generate_pr_body",
@@ -471,6 +473,7 @@ def _render_pr_body(
     validation_table: str,
     decisions: list[_Decision],
     impl_decisions: list[_Decision] | None = None,
+    story_cost: StoryCost | None = None,
 ) -> str:
     """Assemble the final PR body markdown string.
 
@@ -486,6 +489,9 @@ def _render_pr_body(
             ``## Agent Decisions`` in the provenance file).
         impl_decisions: List of LLM-extracted implementation decisions (from
             ``## Implementation Decisions``), or ``None`` to omit.
+        story_cost: Optional cumulative cost/token data for the story run.
+            When non-None and cost > 0, a cost metadata line is rendered
+            immediately after the ``---`` separator.
 
     Returns:
         GitHub-flavoured markdown PR description string.
@@ -497,6 +503,19 @@ def _render_pr_body(
     parts.append("")
     parts.append("---")
     parts.append("")
+
+    # Cost metadata line (AC: #1, #3, #4)
+    if story_cost is not None and story_cost.cost > 0:
+        cost_str = f"${story_cost.cost:.4f}"
+        tokens_in = f"{story_cost.tokens_input:,}"
+        tokens_out = f"{story_cost.tokens_output:,}"
+        invocations = story_cost.invocations
+        parts.append(
+            f"> 💰 **Run Cost:** {cost_str} | "
+            f"**Tokens:** {tokens_in} in / {tokens_out} out | "
+            f"**Invocations:** {invocations}"
+        )
+        parts.append("")
 
     # Acceptance Criteria section (omitted when ac_items is None)
     if ac_items is not None and ac_items:
@@ -540,7 +559,13 @@ def _render_pr_body(
 # ---------------------------------------------------------------------------
 
 
-async def generate_pr_body(run_id: str, story_slug: str, *, project_root: Path) -> str:
+async def generate_pr_body(
+    run_id: str,
+    story_slug: str,
+    *,
+    project_root: Path,
+    story_cost: StoryCost | None = None,
+) -> str:
     """Generate a pull request body with embedded decision provenance.
 
     Reads the provenance file and optional story copy from the D3↔D5 contract
@@ -553,6 +578,9 @@ async def generate_pr_body(run_id: str, story_slug: str, *, project_root: Path) 
         story_slug: The story slug matching the run directory entry
             (e.g. ``"6-4-pr-body-generator"``).
         project_root: Absolute path to the repository root.
+        story_cost: Optional cumulative cost/token data for the story run.
+            When non-None and cost > 0, a cost metadata line is rendered
+            in the PR body.
 
     Returns:
         A GitHub-flavoured markdown string ready for use as a PR description.
@@ -569,7 +597,9 @@ async def generate_pr_body(run_id: str, story_slug: str, *, project_root: Path) 
     decisions = _extract_decisions(provenance_content)
     impl_decisions = _extract_implementation_decisions(provenance_content)
 
-    body = _render_pr_body(title, ac_items, validation_table, decisions, impl_decisions=impl_decisions or None)
+    body = _render_pr_body(
+        title, ac_items, validation_table, decisions, impl_decisions=impl_decisions or None, story_cost=story_cost
+    )
 
     decision_count = len(decisions)
     impl_decision_count = len(impl_decisions)

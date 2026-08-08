@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -10,6 +11,7 @@ import pytest
 
 from arcwright_ai.core.constants import STORY_COPY_FILENAME, VALIDATION_FILENAME
 from arcwright_ai.core.exceptions import ScmError
+from arcwright_ai.core.types import StoryCost
 from arcwright_ai.scm.pr import (
     _PR_RETRY_BASE_SECONDS,
     _PR_RETRY_MAX,
@@ -2377,3 +2379,160 @@ async def test_open_pull_request_success_after_retry_logs_create_event(
     assert len(create_records) == 1
     data = getattr(create_records[0], "data", {})
     assert data["pr_url"] == pr_url
+
+
+# ---------------------------------------------------------------------------
+# Story 10.15 - Run cost in PR body (Tasks 3.1-3.5)
+# ---------------------------------------------------------------------------
+
+
+def test_render_pr_body_includes_cost_line_when_cost_present() -> None:
+    """_render_pr_body includes the cost metadata blockquote when story_cost is non-None and cost > 0."""
+    cost = StoryCost(
+        tokens_input=45_231,
+        tokens_output=8_102,
+        cost=Decimal("0.1234"),
+        invocations=2,
+    )
+    body = _render_pr_body(
+        title=_SLUG,
+        ac_items=None,
+        validation_table="",
+        decisions=[],
+        story_cost=cost,
+    )
+
+    assert "> 💰 **Run Cost:** $0.1234" in body
+    assert "**Tokens:** 45,231 in / 8,102 out" in body
+    assert "**Invocations:** 2" in body
+
+
+def test_render_pr_body_cost_line_format_four_decimal_places() -> None:
+    """Cost is formatted with exactly four decimal places."""
+    cost = StoryCost(
+        tokens_input=1_000,
+        tokens_output=500,
+        cost=Decimal("0.05"),
+        invocations=1,
+    )
+    body = _render_pr_body(
+        title=_SLUG,
+        ac_items=None,
+        validation_table="",
+        decisions=[],
+        story_cost=cost,
+    )
+
+    assert "$0.0500" in body
+
+
+def test_render_pr_body_omits_cost_line_when_story_cost_is_none() -> None:
+    """_render_pr_body emits no cost line when story_cost is None."""
+    body = _render_pr_body(
+        title=_SLUG,
+        ac_items=None,
+        validation_table="",
+        decisions=[],
+        story_cost=None,
+    )
+
+    assert "Run Cost" not in body
+    assert "💰" not in body
+
+
+def test_render_pr_body_omits_cost_line_when_cost_is_zero() -> None:
+    """_render_pr_body emits no cost line when StoryCost is the zero default (AC: #3)."""
+    cost = StoryCost()  # zero-value default
+    body = _render_pr_body(
+        title=_SLUG,
+        ac_items=None,
+        validation_table="",
+        decisions=[],
+        story_cost=cost,
+    )
+
+    assert "Run Cost" not in body
+    assert "💰" not in body
+
+
+def test_render_pr_body_multi_invocation_shows_invocation_count() -> None:
+    """Cumulative cost across multiple invocations shows the correct invocation count (AC: #2)."""
+    cost = StoryCost(
+        tokens_input=120_000,
+        tokens_output=30_000,
+        cost=Decimal("0.9876"),
+        invocations=3,
+    )
+    body = _render_pr_body(
+        title=_SLUG,
+        ac_items=None,
+        validation_table="",
+        decisions=[],
+        story_cost=cost,
+    )
+
+    assert "**Invocations:** 3" in body
+    assert "120,000 in / 30,000 out" in body
+
+
+def test_render_pr_body_cost_line_position_before_acceptance_criteria() -> None:
+    """Cost line appears after '---' separator and before '### Acceptance Criteria'."""
+    cost = StoryCost(
+        tokens_input=1_000,
+        tokens_output=500,
+        cost=Decimal("0.05"),
+        invocations=1,
+    )
+    body = _render_pr_body(
+        title=_SLUG,
+        ac_items=["AC-1"],
+        validation_table="",
+        decisions=[],
+        story_cost=cost,
+    )
+
+    separator_pos = body.index("---")
+    cost_pos = body.index("💰")
+    ac_pos = body.index("### Acceptance Criteria")
+
+    assert separator_pos < cost_pos < ac_pos
+
+
+@pytest.mark.asyncio
+async def test_generate_pr_body_accepts_story_cost_kwarg(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """generate_pr_body accepts story_cost keyword argument without error (regression: AC #5)."""
+    monkeypatch.setattr(
+        "arcwright_ai.scm.pr.read_text_async",
+        _make_mock_read(_PROVENANCE_MINIMAL, _STORY_CONTENT),
+    )
+    cost = StoryCost(
+        tokens_input=5_000,
+        tokens_output=1_200,
+        cost=Decimal("0.0300"),
+        invocations=1,
+    )
+
+    body = await generate_pr_body(_RUN_ID, _SLUG, project_root=tmp_path, story_cost=cost)
+
+    assert "Run Cost" in body
+    assert "## Story:" in body
+
+
+@pytest.mark.asyncio
+async def test_generate_pr_body_without_story_cost_still_works(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """generate_pr_body works without story_cost (keyword arg is optional — AC #5 regression)."""
+    monkeypatch.setattr(
+        "arcwright_ai.scm.pr.read_text_async",
+        _make_mock_read(_PROVENANCE_MINIMAL, _STORY_CONTENT),
+    )
+
+    body = await generate_pr_body(_RUN_ID, _SLUG, project_root=tmp_path)
+
+    assert "## Story:" in body
+    assert "Run Cost" not in body
