@@ -165,6 +165,29 @@ def _derive_story_title(story_id: str) -> str:
     return name_part.replace("-", " ").title()
 
 
+_EPIC_PREFIX_LEN: int = 5
+
+
+def _build_resume_command(epic_id: str) -> str:
+    """Build the CLI resume command string for display in halt reports.
+
+    Mirrors ``HaltController._build_resume_command()`` in ``cli/halt.py``.
+    There is no standalone ``arcwright-ai resume`` subcommand — resuming a
+    halted epic is done via ``dispatch --epic EPIC-N --resume``.
+
+    Args:
+        epic_id: Raw epic identifier (e.g. "7", "epic-7", or "EPIC-7").
+
+    Returns:
+        Formatted resume command string, e.g.
+        ``"arcwright-ai dispatch --epic EPIC-7 --resume"``.
+    """
+    epic_part = epic_id
+    if epic_part.lower().startswith("epic-"):
+        epic_part = epic_part[_EPIC_PREFIX_LEN:]
+    return f"arcwright-ai dispatch --epic EPIC-{epic_part} --resume"
+
+
 async def _update_sprint_status_done(
     story_slug: str,
     repo_root: Path,
@@ -338,7 +361,7 @@ async def preflight_node(state: StoryState) -> StoryState:
                 "## Resume Command",
                 "",
                 "```bash",
-                f"arcwright-ai resume {state.run_id}",
+                _build_resume_command(str(state.epic_id)),
                 "```",
                 "",
             ]
@@ -1134,7 +1157,7 @@ def _generate_halt_report(
             "## Resume Command",
             "",
             "```bash",
-            f"arcwright-ai resume {state.run_id}",
+            _build_resume_command(str(state.epic_id)),
             "```",
             "",
         ]

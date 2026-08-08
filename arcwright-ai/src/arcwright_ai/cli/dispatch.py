@@ -849,14 +849,25 @@ async def _dispatch_epic_async(epic_spec: str, *, skip_confirm: bool = False, re
                         "status": final_status or TaskState.ESCALATED,
                         "budget": accumulated_budget,
                     }
-                    # Propagate merge_outcome from graph result (Story 12.4 / D10).
-                    _merge_out = (
-                        result.get("merge_outcome")
-                        if isinstance(result, dict)
-                        else getattr(result, "merge_outcome", None)
-                    )
-                    if _merge_out is not None:
-                        update_fields["merge_outcome"] = _merge_out
+                    if isinstance(result, dict):
+                        # LangGraph may return a plain dict of state channels
+                        # instead of a StoryState instance. Merge every relevant
+                        # field the graph actually returned (not just
+                        # merge_outcome) so retry_history, agent_output,
+                        # worktree_path, and failure_category survive.
+                        # Previously only status/budget/merge_outcome were
+                        # propagated, so HaltController saw an empty
+                        # retry_history on escalation and misclassified
+                        # validation-exhaustion halts as "SDK error".
+                        valid_fields = set(type(initial_state).model_fields)
+                        for key, value in result.items():
+                            if key in valid_fields and key not in ("status", "budget"):
+                                update_fields[key] = value
+                    else:
+                        # Propagate merge_outcome from graph result (Story 12.4 / D10).
+                        _merge_out = getattr(result, "merge_outcome", None)
+                        if _merge_out is not None:
+                            update_fields["merge_outcome"] = _merge_out
                     final_story_state = initial_state.model_copy(update=update_fields)
                 project_state.stories[idx] = final_story_state
 
