@@ -171,31 +171,145 @@ async def test_update_sprint_status_io_error_logs_warning_no_propagation(
     assert "scm.sprint_status.update_error" in caplog.text
 
 
-# ---------------------------------------------------------------------------
-# Integration test: commit_node calls _update_sprint_status_done on push success
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
-async def test_commit_node_calls_update_sprint_status_when_push_succeeded(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """commit_node awaits _update_sprint_status_done inside the push_succeeded guard."""
-    slug = "10-16-mark-story-done"
-    state = StoryState(
+async def test_update_sprint_status_targets_worktree_not_project_root(tmp_path: Path) -> None:
+    """Regression test (Story 10.18): only the repo_root passed in is updated.
+
+    _update_sprint_status_done() is agnostic to whether its repo_root argument is a
+    project root or a worktree root — it updates whatever directory it is given.
+    This proves that when called with a worktree path, the project root's own copy
+    of sprint-status.yaml (a completely separate directory) is left untouched.
+    """
+    slug = "10-16-mark-story-done-in-sprint-status-before-pr-creation"
+    project_root = tmp_path / "project"
+    worktree_dir = tmp_path / "worktree"
+    project_root.mkdir()
+    worktree_dir.mkdir()
+
+    content = _make_sprint_status(target_slug=slug, target_status="in-progress")
+    project_sprint_file = _write_sprint_status(project_root, content)
+    worktree_sprint_file = _write_sprint_status(worktree_dir, content)
+
+    await _update_sprint_status_done(slug, worktree_dir, "_spec")
+
+    assert f"{slug}: done" in worktree_sprint_file.read_text(encoding="utf-8")
+    assert f"{slug}: in-progress" in project_sprint_file.read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Integration test: commit_node calls _update_sprint_status_done before commit_story()
+# ---------------------------------------------------------------------------
+
+
+def _make_commit_node_state(tmp_path: Path, slug: str, project_root: Path, worktree_path: Path) -> StoryState:
+    return StoryState(
         story_id=StoryId(slug),
         epic_id=EpicId("epic-10"),
         run_id=RunId("20260808-120000-a7f3"),
         story_path=tmp_path / "_spec" / f"{slug}.md",
-        project_root=tmp_path,
+        project_root=project_root,
         status=TaskState.SUCCESS,
-        worktree_path=tmp_path,
+        worktree_path=worktree_path,
         config=_make_run_config(),
     )
 
+
+def _patch_commit_node_collaborators(monkeypatch: pytest.MonkeyPatch, *, push_succeeded: bool) -> AsyncMock:
+    """Patch all of commit_node's collaborators and return the sprint-status mock."""
     mock_update = AsyncMock()
     monkeypatch.setattr("arcwright_ai.engine.nodes._update_sprint_status_done", mock_update)
     monkeypatch.setattr("arcwright_ai.engine.nodes.commit_story", AsyncMock(return_value="abc1234"))
+    monkeypatch.setattr("arcwright_ai.engine.nodes.push_branch", AsyncMock(return_value=push_succeeded))
+    monkeypatch.setattr("arcwright_ai.engine.nodes.generate_pr_body", AsyncMock(return_value="body"))
+    monkeypatch.setattr("arcwright_ai.engine.nodes.open_pull_request", AsyncMock(return_value=None))
+    monkeypatch.setattr("arcwright_ai.engine.nodes.remove_worktree", AsyncMock())
+    monkeypatch.setattr("arcwright_ai.engine.nodes.delete_remote_branch", AsyncMock(return_value=True))
+    monkeypatch.setattr("arcwright_ai.engine.nodes.update_story_status", AsyncMock())
+    monkeypatch.setattr("arcwright_ai.engine.nodes.update_run_status", AsyncMock())
+    monkeypatch.setattr("arcwright_ai.engine.nodes.write_success_summary", AsyncMock())
+    monkeypatch.setattr("arcwright_ai.engine.nodes.append_entry", AsyncMock())
+    monkeypatch.setattr("arcwright_ai.engine.nodes.extract_agent_decisions", AsyncMock(return_value=None))
+    monkeypatch.setattr("arcwright_ai.engine.nodes._detect_default_branch", AsyncMock(return_value="main"))
+    monkeypatch.setattr(
+        "arcwright_ai.engine.nodes.git",
+        AsyncMock(return_value=MagicMock(stdout="abc1234567890", returncode=0)),
+    )
+    monkeypatch.setattr(
+        "arcwright_ai.engine.nodes.merge_pull_request",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        "arcwright_ai.engine.nodes.get_pull_request_merge_sha",
+        AsyncMock(return_value=None),
+    )
+    return mock_update
+
+
+@pytest.mark.asyncio
+async def test_commit_node_calls_update_sprint_status_with_worktree_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """commit_node awaits _update_sprint_status_done with state.worktree_path, not project_root (AC: #1)."""
+    slug = "10-16-mark-story-done"
+    project_root = tmp_path / "project"
+    worktree_path = tmp_path / "worktree"
+    project_root.mkdir()
+    worktree_path.mkdir()
+    state = _make_commit_node_state(tmp_path, slug, project_root, worktree_path)
+
+    mock_update = _patch_commit_node_collaborators(monkeypatch, push_succeeded=True)
+
+    await commit_node(state)
+
+    mock_update.assert_awaited_once_with(slug, state.worktree_path, state.config.methodology.artifacts_path)
+
+
+@pytest.mark.asyncio
+async def test_commit_node_updates_sprint_status_even_when_push_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """commit_node calls _update_sprint_status_done even when push_branch fails (AC: #5).
+
+    The sprint-status update now happens before push_branch() is even attempted, so a
+    failed push has no bearing on whether the update runs.
+    """
+    slug = "10-16-mark-story-done"
+    project_root = tmp_path / "project"
+    worktree_path = tmp_path / "worktree"
+    project_root.mkdir()
+    worktree_path.mkdir()
+    state = _make_commit_node_state(tmp_path, slug, project_root, worktree_path)
+
+    mock_update = _patch_commit_node_collaborators(monkeypatch, push_succeeded=False)
+
+    await commit_node(state)
+
+    mock_update.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_commit_node_updates_sprint_status_before_commit_story(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """_update_sprint_status_done is awaited before commit_story() (AC: #3)."""
+    slug = "10-16-mark-story-done"
+    project_root = tmp_path / "project"
+    worktree_path = tmp_path / "worktree"
+    project_root.mkdir()
+    worktree_path.mkdir()
+    state = _make_commit_node_state(tmp_path, slug, project_root, worktree_path)
+
+    call_order: list[str] = []
+
+    async def _record_update(*_args: object, **_kwargs: object) -> None:
+        call_order.append("update_sprint_status")
+
+    async def _record_commit(*_args: object, **_kwargs: object) -> str:
+        call_order.append("commit_story")
+        return "abc1234"
+
+    monkeypatch.setattr("arcwright_ai.engine.nodes._update_sprint_status_done", _record_update)
+    monkeypatch.setattr("arcwright_ai.engine.nodes.commit_story", _record_commit)
     monkeypatch.setattr("arcwright_ai.engine.nodes.push_branch", AsyncMock(return_value=True))
     monkeypatch.setattr("arcwright_ai.engine.nodes.generate_pr_body", AsyncMock(return_value="body"))
     monkeypatch.setattr("arcwright_ai.engine.nodes.open_pull_request", AsyncMock(return_value=None))
@@ -222,51 +336,4 @@ async def test_commit_node_calls_update_sprint_status_when_push_succeeded(
 
     await commit_node(state)
 
-    mock_update.assert_awaited_once_with(slug, tmp_path, state.config.methodology.artifacts_path)
-
-
-@pytest.mark.asyncio
-async def test_commit_node_does_not_update_sprint_status_when_push_failed(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """commit_node must NOT call _update_sprint_status_done when push_succeeded is False (AC: #6)."""
-    slug = "10-16-mark-story-done"
-    state = StoryState(
-        story_id=StoryId(slug),
-        epic_id=EpicId("epic-10"),
-        run_id=RunId("20260808-120000-a7f3"),
-        story_path=tmp_path / "_spec" / f"{slug}.md",
-        project_root=tmp_path,
-        status=TaskState.SUCCESS,
-        worktree_path=tmp_path,
-        config=_make_run_config(),
-    )
-
-    mock_update = AsyncMock()
-    monkeypatch.setattr("arcwright_ai.engine.nodes._update_sprint_status_done", mock_update)
-    monkeypatch.setattr("arcwright_ai.engine.nodes.commit_story", AsyncMock(return_value="abc1234"))
-    monkeypatch.setattr("arcwright_ai.engine.nodes.push_branch", AsyncMock(return_value=False))
-    monkeypatch.setattr("arcwright_ai.engine.nodes.remove_worktree", AsyncMock())
-    monkeypatch.setattr("arcwright_ai.engine.nodes.delete_remote_branch", AsyncMock(return_value=True))
-    monkeypatch.setattr("arcwright_ai.engine.nodes.update_story_status", AsyncMock())
-    monkeypatch.setattr("arcwright_ai.engine.nodes.update_run_status", AsyncMock())
-    monkeypatch.setattr("arcwright_ai.engine.nodes.write_success_summary", AsyncMock())
-    monkeypatch.setattr("arcwright_ai.engine.nodes.append_entry", AsyncMock())
-    monkeypatch.setattr("arcwright_ai.engine.nodes.extract_agent_decisions", AsyncMock(return_value=None))
-    monkeypatch.setattr("arcwright_ai.engine.nodes._detect_default_branch", AsyncMock(return_value="main"))
-    monkeypatch.setattr(
-        "arcwright_ai.engine.nodes.git",
-        AsyncMock(return_value=MagicMock(stdout="abc1234567890", returncode=0)),
-    )
-    monkeypatch.setattr(
-        "arcwright_ai.engine.nodes.merge_pull_request",
-        AsyncMock(return_value=None),
-    )
-    monkeypatch.setattr(
-        "arcwright_ai.engine.nodes.get_pull_request_merge_sha",
-        AsyncMock(return_value=None),
-    )
-
-    await commit_node(state)
-
-    mock_update.assert_not_awaited()
+    assert call_order == ["update_sprint_status", "commit_story"]

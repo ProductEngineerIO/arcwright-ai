@@ -167,7 +167,7 @@ def _derive_story_title(story_id: str) -> str:
 
 async def _update_sprint_status_done(
     story_slug: str,
-    project_root: Path,
+    repo_root: Path,
     artifacts_path: str,
 ) -> None:
     """Update sprint-status.yaml to mark the story as done.
@@ -177,10 +177,13 @@ async def _update_sprint_status_done(
 
     Args:
         story_slug: Story identifier (e.g. "10-16-mark-story-done-...").
-        project_root: Absolute path to the project root.
+        repo_root: Absolute path to the git working directory whose sprint-status.yaml
+            should be updated — the story's worktree when called from commit_node, so
+            the change is staged and committed together with the rest of the story's
+            changes.
         artifacts_path: Relative path to the artifacts directory (e.g. "_spec").
     """
-    sprint_status_path = project_root / artifacts_path / "implementation-artifacts" / "sprint-status.yaml"
+    sprint_status_path = repo_root / artifacts_path / "implementation-artifacts" / "sprint-status.yaml"
     try:
         if not sprint_status_path.exists():
             logger.warning(
@@ -1718,6 +1721,10 @@ async def commit_node(state: StoryState) -> StoryState:
     if state.worktree_path is not None:
         story_title = _derive_story_title(story_slug)
 
+        # Mark story done in sprint-status before committing, so the change is staged
+        # and included in the worktree's final commit (AC: #1, #2, #3, best-effort)
+        await _update_sprint_status_done(story_slug, state.worktree_path, state.config.methodology.artifacts_path)
+
         # Commit story changes in worktree (best-effort, non-fatal)
         commit_hash: str | None = None
         try:
@@ -1868,9 +1875,6 @@ async def commit_node(state: StoryState) -> StoryState:
                             )
                         }
                     )
-
-                # Mark story done in sprint-status before PR creation (AC: #1, best-effort)
-                await _update_sprint_status_done(story_slug, project_root, state.config.methodology.artifacts_path)
 
                 # Generate PR body and open PR (AC: #3, #4)
                 try:

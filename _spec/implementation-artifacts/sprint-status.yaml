@@ -141,6 +141,7 @@ development_status:
   10-15-run-cost-in-pr-body: done
   10-16-mark-story-done-in-sprint-status-before-pr-creation: done
   10-17-historical-cost-estimation-in-dispatch-confirmation: done
+  10-18-commit-sprint-status-update-in-worktree-before-final-commit: review
 
   # Epic 11: BMAD 6.1 Framework Upgrade (3 stories, 13 pts)
   epic-11: done
