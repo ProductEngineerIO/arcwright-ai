@@ -118,15 +118,17 @@ CLAUDE_ERROR_REGISTRY: Mapping[ClaudeErrorCategory, ClaudeErrorClassification] =
     ),
     ClaudeErrorCategory.MODEL_ACCESS_ERROR: ClaudeErrorClassification(
         error_code=ClaudeErrorCategory.MODEL_ACCESS_ERROR,
-        title="Model Access Denied",
-        summary="The configured account or API key does not have access to the requested model.",
+        title="Invalid or Inaccessible Model",
+        summary=(
+            "The configured model version does not exist, is misspelled, or the "
+            "account/API key does not have access to it."
+        ),
         retryable=False,
         remediation_steps=[
-            "Check which models your API key is authorised for.",
-            (
-                "Choose a model your account can use in your Arcwright "
-                "configuration (e.g. pyproject.toml or .arcwright-ai/config.yaml)."
-            ),
+            "Check models.generate.version / models.review.version in .arcwright-ai/config.yaml "
+            "for typos (e.g. 'claude-sonnet-5' is not a valid model id).",
+            "Confirm the model name against Anthropic's current model list at docs.anthropic.com.",
+            "Check which models your API key is authorised for at console.anthropic.com.",
             "Upgrade your Anthropic plan if the model requires a higher tier.",
         ],
     ),
@@ -248,7 +250,9 @@ _AUTH_RE = re.compile(
 _MODEL_ACCESS_RE = re.compile(
     (
         r"model access denied|does not have access to (?:the )?model|"
-        r"not authorized to use (?:the )?model|model[^\n]*not available for this key"
+        r"not authorized to use (?:the )?model|model[^\n]*not available for this key|"
+        r"issue with the selected model|model[^\n]*may not exist|"
+        r"invalid model|unknown model|model[^\n]*not found"
     ),
     re.IGNORECASE,
 )

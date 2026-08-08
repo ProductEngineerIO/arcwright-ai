@@ -22,6 +22,9 @@ from arcwright_ai.core.constants import (
     DIR_RUNS,
     DIR_STORIES,
     HALT_REPORT_FILENAME,
+    SCM_CLEANUP_ERROR_PREFIX,
+    SCM_COMMIT_ERROR_PREFIX,
+    SCM_PREFLIGHT_ERROR_PREFIX,
     STORY_COPY_FILENAME,
     VALIDATION_FILENAME,
 )
@@ -75,15 +78,14 @@ __all__: list[str] = [
 
 logger = logging.getLogger(__name__)
 
-SCM_COMMIT_ERROR_PREFIX = "Commit SCM error:"
-SCM_CLEANUP_ERROR_PREFIX = "Worktree cleanup error:"
-
 
 def _get_scm_error_prefix(agent_output: object) -> str | None:
     """Return the SCM error prefix when agent_output encodes an SCM halt message."""
 
     if not isinstance(agent_output, str):
         return None
+    if agent_output.startswith(SCM_PREFLIGHT_ERROR_PREFIX):
+        return SCM_PREFLIGHT_ERROR_PREFIX
     if agent_output.startswith(SCM_COMMIT_ERROR_PREFIX):
         return SCM_COMMIT_ERROR_PREFIX
     if agent_output.startswith(SCM_CLEANUP_ERROR_PREFIX):
@@ -383,7 +385,7 @@ async def preflight_node(state: StoryState) -> StoryState:
             update={
                 "status": TaskState.ESCALATED,
                 "worktree_path": None,
-                "agent_output": f"Preflight SCM error: {exc.message}",
+                "agent_output": f"{SCM_PREFLIGHT_ERROR_PREFIX} {exc.message}",
             }
         )
         logger.info(
@@ -2248,6 +2250,14 @@ def _derive_suggested_fix(state: StoryState) -> str:
         )
     if not state.retry_history:
         scm_prefix = _get_scm_error_prefix(state.agent_output)
+        if scm_prefix == SCM_PREFLIGHT_ERROR_PREFIX:
+            return (
+                "Git preflight sync/worktree setup failed before the agent was invoked "
+                "(no API cost incurred). Check the reported git error above — common causes are "
+                "network connectivity, a stale/conflicting worktree or branch, or corrupted local "
+                "refs (e.g. `git branch -a` warns 'ignoring ref with broken name'). Fix the "
+                "repository issue and resume with `--resume`."
+            )
         if scm_prefix == SCM_COMMIT_ERROR_PREFIX:
             return (
                 "Git commit/staging failed after validation passed. Review the preserved worktree, "

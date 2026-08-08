@@ -151,6 +151,39 @@ def test_classify_model_access_error() -> None:
     assert result.retryable is False
 
 
+def test_classify_invalid_model_error_matches_real_cli_message() -> None:
+    """The real Claude CLI message for a bad model id must classify as model_access_error,
+    not fall through to a generic/managed-settings misclassification.
+    """
+    result = classify_claude_error(
+        message=(
+            "There's an issue with the selected model (claude-sonnet-5). "
+            "It may not exist or you may not have access to it. Run --model to pick a different model."
+        )
+    )
+    assert result.error_code == ClaudeErrorCategory.MODEL_ACCESS_ERROR
+    assert result.retryable is False
+
+
+def test_classify_invalid_model_error_wins_over_managed_settings_noise() -> None:
+    """An invalid-model error must be classified correctly even when benign Claude CLI
+    startup debug noise mentioning 'managed-settings.json' also appears in stderr.
+    """
+    noisy_stderr = (
+        "[DEBUG] MDM settings load completed in 0ms\n"
+        "[DEBUG] Broken symlink or missing file encountered for settings.json at path: "
+        "/Library/Application Support/ClaudeCode/managed-settings.json\n"
+    )
+    result = classify_claude_error(
+        message=(
+            "There's an issue with the selected model (claude-sonnet-5). "
+            "It may not exist or you may not have access to it."
+        ),
+        stderr=noisy_stderr,
+    )
+    assert result.error_code == ClaudeErrorCategory.MODEL_ACCESS_ERROR
+
+
 def test_classify_rate_limit_error() -> None:
     result = classify_claude_error(message="rate limit exceeded (429)")
     assert result.error_code == ClaudeErrorCategory.RATE_LIMIT_ERROR

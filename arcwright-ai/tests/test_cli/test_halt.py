@@ -834,6 +834,25 @@ class TestHaltReasonStrings:
         budget = _make_budget(cost="0.10", max_cost="10.00")
         assert HaltController._halt_reason_for_graph_state(state, budget) == "SDK error"
 
+    def test_graph_state_preflight_scm_error_reason(self) -> None:
+        """Preflight SCM failures (empty retry history) are classified as SCM error, not SDK error."""
+        state = _make_story_state(
+            status=TaskState.ESCALATED,
+            retry_history=[],
+            agent_output="Preflight SCM error: Corrupted local git ref is blocking this operation",
+        )
+        budget = _make_budget(cost="0.10", max_cost="10.00")
+        assert HaltController._halt_reason_for_graph_state(state, budget) == "SCM error"
+
+    def test_graph_state_commit_scm_error_reason(self) -> None:
+        state = _make_story_state(
+            status=TaskState.ESCALATED,
+            retry_history=[],
+            agent_output="Commit SCM error: disk full",
+        )
+        budget = _make_budget(cost="0.10", max_cost="10.00")
+        assert HaltController._halt_reason_for_graph_state(state, budget) == "SCM error"
+
     def test_graph_state_sdk_failure_reason(self) -> None:
         failure = MagicMock()
         failure.check_name = "validation_sdk_error"
@@ -947,6 +966,20 @@ class TestSuggestedFixForGraphState:
 
         assert "Agent invocation failed before validation completed" in fix
         assert "SDK stderr logs" in fix
+
+    def test_preflight_scm_error_fix_message(self) -> None:
+        state = _make_story_state(
+            status=TaskState.ESCALATED,
+            retry_history=[],
+            agent_output="Preflight SCM error: Corrupted local git ref is blocking this operation",
+        )
+        budget = _make_budget(cost="0.10", max_cost="10.00")
+
+        fix = HaltController._suggested_fix_for_graph_state(state, budget)
+
+        assert "Git preflight sync/worktree setup failed" in fix
+        assert "no API cost incurred" in fix
+        assert "--resume" in fix
 
     def test_sdk_failure_fix_message(self) -> None:
         failure = MagicMock()

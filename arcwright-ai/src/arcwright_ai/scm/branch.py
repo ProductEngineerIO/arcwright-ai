@@ -752,9 +752,12 @@ async def fetch_and_sync(
         The resolved commit SHA of ``<remote>/<default_branch>`` after fetching.
 
     Raises:
-        ScmError: If ``git fetch`` fails, with message
-            ``"Failed to fetch from remote — check network connectivity"``
-            and ``details`` containing ``remote`` and ``branch``.
+        ScmError: If ``git fetch`` fails. When the underlying git error is
+            classified (e.g. a corrupted local ref blocking the fetch), the
+            specific, actionable message from that classification is
+            preserved. Otherwise falls back to
+            ``"Failed to fetch from remote — check network connectivity"``.
+            ``details`` always contains ``remote`` and ``branch``.
     """
     # Fetch latest commits from remote
     try:
@@ -771,6 +774,12 @@ async def fetch_and_sync(
                 }
             },
         )
+        exc_details = exc.details if isinstance(exc.details, dict) else {}
+        if exc_details.get("error_type") == "corrupt_ref":
+            raise ScmError(
+                exc.message,
+                details={**exc_details, "remote": remote, "branch": default_branch},
+            ) from exc
         raise ScmError(
             "Failed to fetch from remote \u2014 check network connectivity",
             details={"remote": remote, "branch": default_branch},

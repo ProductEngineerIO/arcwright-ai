@@ -49,16 +49,17 @@ story code defects.  Arcwright AI cannot resolve them; you must act on the Claud
 
 ---
 
-### `model_access_error` — Model Access Denied
+### `model_access_error` — Invalid or Inaccessible Model
 
-**Symptom:** "model access denied", "not authorized to use model".
+**Symptom:** "model access denied", "not authorized to use model", or "There's an issue with the selected model (X). It may not exist or you may not have access to it."
 
-**Cause:** The configured account or API key does not have access to the requested model.
+**Cause:** The configured model version does not exist (typo, retired model id), is misspelled, or the account/API key does not have access to it. The Claude CLI reports both cases with the same message, so this category covers either.
 
 **Actions (Claude platform):**
-1. Check which models your API key is authorised for.
-2. Update your Arcwright AI configuration (for example, in `.arcwright-ai/config.yaml` or the `arcwright-ai` section of `pyproject.toml`) to use a model your account can access.
-3. Upgrade your Anthropic plan if the model requires a higher tier.
+1. Check `models.generate.version` / `models.review.version` in `.arcwright-ai/config.yaml` (or the `arcwright-ai` section of `pyproject.toml`) for typos — e.g. `claude-sonnet-5` is not a valid model id.
+2. Confirm the model name against Anthropic's current model list at docs.anthropic.com.
+3. Check which models your API key is authorised for at console.anthropic.com.
+4. Upgrade your Anthropic plan if the model requires a higher tier.
 
 ---
 

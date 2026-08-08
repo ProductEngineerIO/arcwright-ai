@@ -25,6 +25,9 @@ from arcwright_ai.core.constants import (
     EXIT_SCM,
     EXIT_SUCCESS,
     EXIT_VALIDATION,
+    SCM_CLEANUP_ERROR_PREFIX,
+    SCM_COMMIT_ERROR_PREFIX,
+    SCM_PREFLIGHT_ERROR_PREFIX,
     VALIDATION_FILENAME,
 )
 from arcwright_ai.core.errors import (
@@ -68,6 +71,25 @@ _EPIC_PREFIX_LEN: int = 5
 
 # Regex to extract a plausible file path or home-relative path from stderr text.
 _PATH_HINT_RE: re.Pattern[str] = re.compile(r"(~?/[\w./\-]+\.\w+|~[\w./\-]+)")
+
+
+def _get_scm_error_prefix(agent_output: object) -> str | None:
+    """Return the SCM error prefix when agent_output encodes an SCM halt message.
+
+    Mirrors ``engine.nodes._get_scm_error_prefix`` so run-level halt
+    classification (this module) agrees with per-story halt classification
+    on whether an ESCALATED state with no retry history was caused by an
+    SCM (git) failure rather than a generic agent/SDK failure.
+    """
+    if not isinstance(agent_output, str):
+        return None
+    if agent_output.startswith(SCM_PREFLIGHT_ERROR_PREFIX):
+        return SCM_PREFLIGHT_ERROR_PREFIX
+    if agent_output.startswith(SCM_COMMIT_ERROR_PREFIX):
+        return SCM_COMMIT_ERROR_PREFIX
+    if agent_output.startswith(SCM_CLEANUP_ERROR_PREFIX):
+        return SCM_CLEANUP_ERROR_PREFIX
+    return None
 
 
 class HaltController:
@@ -540,6 +562,8 @@ class HaltController:
         if status == TaskState.ESCALATED:
             if HaltController._is_budget_exceeded(budget):
                 return "budget exceeded"
+            if _get_scm_error_prefix(story_state.agent_output) is not None:
+                return "SCM error"
             if HaltController._retry_history_has_sdk_failure(story_state):
                 return "SDK error"
             if not story_state.retry_history:
@@ -629,6 +653,25 @@ class HaltController:
             return (
                 "Budget ceiling was exceeded. Consider increasing `limits.cost_per_run` "
                 "or `limits.tokens_per_story` in pyproject.toml."
+            )
+        scm_prefix = _get_scm_error_prefix(story_state.agent_output)
+        if scm_prefix == SCM_PREFLIGHT_ERROR_PREFIX:
+            return (
+                "Git preflight sync/worktree setup failed before the agent was invoked "
+                "(no API cost incurred). Check the reported git error above — common causes are "
+                "network connectivity, a stale/conflicting worktree or branch, or corrupted local "
+                "refs (e.g. `git branch -a` warns 'ignoring ref with broken name'). Fix the "
+                "repository issue and resume with `--resume`."
+            )
+        if scm_prefix == SCM_COMMIT_ERROR_PREFIX:
+            return (
+                "Git commit/staging failed after validation passed. Review the preserved worktree, "
+                "fix the repository or filesystem issue reported in the halt report, and rerun the story."
+            )
+        if scm_prefix == SCM_CLEANUP_ERROR_PREFIX:
+            return (
+                "Worktree cleanup failed after the story completed. Inspect the preserved worktree, "
+                "remove or repair the blocking files, and rerun once cleanup succeeds."
             )
         if HaltController._retry_history_has_sdk_failure(story_state) or not story_state.retry_history:
             failure_cat = getattr(story_state, "failure_category", None)

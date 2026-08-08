@@ -1050,6 +1050,38 @@ async def test_fetch_and_sync_network_failure_raises_scm_error(
 
 
 @pytest.mark.asyncio
+async def test_fetch_and_sync_preserves_corrupt_ref_classification(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A corrupt_ref-classified fetch failure keeps its actionable message, not the generic one."""
+    mock_git = AsyncMock(
+        side_effect=ScmError(
+            "Corrupted local git ref is blocking this operation \u2014 a malformed ref file "
+            "(invalid name, e.g. trailing whitespace) exists under .git/refs/: "
+            "refs/heads/arcwright-ai/7-1-responsive-layouts 2.",
+            details={
+                "stderr": "fatal: bad object refs/heads/arcwright-ai/7-1-responsive-layouts 2",
+                "returncode": 1,
+                "error_type": "corrupt_ref",
+                "broken_refs": ["refs/heads/arcwright-ai/7-1-responsive-layouts 2"],
+            },
+        )
+    )
+    monkeypatch.setattr("arcwright_ai.scm.branch.git", mock_git)
+
+    with pytest.raises(ScmError) as exc_info:
+        await fetch_and_sync("develop", "origin", project_root=tmp_path)
+
+    assert "check network connectivity" not in exc_info.value.message
+    assert "Corrupted local git ref" in exc_info.value.message
+    assert exc_info.value.details is not None
+    assert exc_info.value.details["error_type"] == "corrupt_ref"
+    assert exc_info.value.details["remote"] == "origin"
+    assert exc_info.value.details["branch"] == "develop"
+
+
+@pytest.mark.asyncio
 async def test_fetch_and_sync_logs_structured_event(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,

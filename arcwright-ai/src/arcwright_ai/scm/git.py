@@ -171,6 +171,24 @@ async def _classify_and_raise(
             details={"command": list(args), "stderr": stderr, "returncode": rc, "cwd": str(cwd)},
         )
 
+    if _is_corrupt_ref(stderr):
+        broken_refs = _extract_broken_refs(stderr)
+        refs_hint = ", ".join(broken_refs) if broken_refs else "see stderr below"
+        raise ScmError(
+            "Corrupted local git ref is blocking this operation — a malformed ref file "
+            f"(invalid name, e.g. trailing whitespace) exists under .git/refs/: {refs_hint}. "
+            "This is typically leftover from a prior interrupted/concurrent branch or worktree "
+            "operation, not a network issue. Remove the offending file(s) under .git/refs/heads/ "
+            "and retry.",
+            details={
+                "command": list(args),
+                "stderr": stderr,
+                "returncode": rc,
+                "error_type": "corrupt_ref",
+                "broken_refs": broken_refs,
+            },
+        )
+
     command_name = args[0] if args else "(no-command)"
     raise ScmError(
         f"git {command_name} failed (exit {rc})",
@@ -212,6 +230,47 @@ def _is_not_a_repo(stderr: str) -> bool:
         bool: ``True`` when a not-a-git-repository error is detected.
     """
     return "not a git repository" in stderr.lower()
+
+
+def _is_corrupt_ref(stderr: str) -> bool:
+    """Return True if stderr indicates a malformed/broken local git ref.
+
+    Loose ref files with illegal names (e.g. a stray trailing space and digit
+    left behind by a race between concurrent branch/worktree operations) are
+    skipped with a warning by porcelain commands like ``git branch``, but can
+    make ``git fetch``/``git pull`` abort entirely with a misleading-looking
+    network error. Detecting this pattern lets callers surface an actionable
+    message instead of the generic "check network connectivity" fallback.
+
+    Args:
+        stderr: Standard error output from the git process.
+
+    Returns:
+        bool: ``True`` when a corrupted/broken ref is detected.
+    """
+    lowered = stderr.lower()
+    if "bad object refs/" in lowered:
+        return True
+    return "ignoring ref with broken name" in lowered
+
+
+def _extract_broken_refs(stderr: str) -> list[str]:
+    """Extract broken ref names referenced in git stderr output.
+
+    Args:
+        stderr: Standard error output from the git process.
+
+    Returns:
+        list[str]: Ref names/paths mentioned after a "bad object" marker,
+            in the order they appear. Empty when none are found.
+    """
+    marker = "bad object "
+    refs: list[str] = []
+    for line in stderr.splitlines():
+        idx = line.lower().find(marker)
+        if idx != -1:
+            refs.append(line[idx + len(marker) :].strip())
+    return refs
 
 
 # ---------------------------------------------------------------------------

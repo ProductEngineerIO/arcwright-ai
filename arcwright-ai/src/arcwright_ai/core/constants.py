@@ -52,6 +52,9 @@ __all__: list[str] = [
     "PYTHON_FILENAME_PATTERN",
     "RUN_ID_DATETIME_FORMAT",
     "RUN_METADATA_FILENAME",
+    "SCM_CLEANUP_ERROR_PREFIX",
+    "SCM_COMMIT_ERROR_PREFIX",
+    "SCM_PREFLIGHT_ERROR_PREFIX",
     "STORY_COPY_FILENAME",
     "SUMMARY_FILENAME",
     "VALIDATION_FILENAME",
@@ -116,6 +119,21 @@ STORY_COPY_FILENAME: str = "story.md"
 CONTEXT_BUNDLE_FILENAME: str = "context-bundle.md"
 AGENT_OUTPUT_FILENAME: str = "agent-output.md"
 VALIDATION_FILENAME: str = "validation.md"
+
+# ---------------------------------------------------------------------------
+# SCM error agent_output prefixes
+# ---------------------------------------------------------------------------
+#
+# These prefixes are prepended to ``StoryState.agent_output`` whenever a
+# story escalates due to an SCM (git) failure rather than an agent/SDK
+# failure.  Shared between ``engine/nodes.py`` (per-story halt classification)
+# and ``cli/halt.py`` (run-level halt classification) so both layers agree on
+# whether a halt with empty retry history is an SCM error or a generic
+# agent/SDK error.
+
+SCM_PREFLIGHT_ERROR_PREFIX: str = "Preflight SCM error:"
+SCM_COMMIT_ERROR_PREFIX: str = "Commit SCM error:"
+SCM_CLEANUP_ERROR_PREFIX: str = "Worktree cleanup error:"
 
 # ---------------------------------------------------------------------------
 # Configuration file names and directories

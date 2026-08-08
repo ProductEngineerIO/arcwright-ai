@@ -177,6 +177,28 @@ async def test_git_not_a_repo_raises_scm_error(monkeypatch: pytest.MonkeyPatch) 
 
 
 @pytest.mark.asyncio
+async def test_git_corrupt_ref_raises_actionable_scm_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A malformed local ref blocking fetch raises ScmError with actionable message and details."""
+    mock_proc = _make_mock_process(
+        returncode=1,
+        stdout=b"",
+        stderr=(
+            b"fatal: bad object refs/heads/arcwright-ai/7-1-responsive-layouts 2\n"
+            b"error: https://github.com/example/repo.git did not send all necessary objects"
+        ),
+    )
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=mock_proc))
+
+    with pytest.raises(ScmError, match="Corrupted local git ref") as exc_info:
+        await git("fetch", "origin", "develop")
+
+    err = exc_info.value
+    assert err.details is not None
+    assert err.details["error_type"] == "corrupt_ref"
+    assert err.details["broken_refs"] == ["refs/heads/arcwright-ai/7-1-responsive-layouts 2"]
+
+
+@pytest.mark.asyncio
 async def test_git_lock_contention_retries_and_succeeds(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
