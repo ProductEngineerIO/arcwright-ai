@@ -140,6 +140,7 @@ development_status:
   10-14-quality-gate-project-type-auto-detection: done
   10-15-run-cost-in-pr-body: done
   10-16-mark-story-done-in-sprint-status-before-pr-creation: done
+  10-17-historical-cost-estimation-in-dispatch-confirmation: done
 
   # Epic 11: BMAD 6.1 Framework Upgrade (3 stories, 13 pts)
   epic-11: done

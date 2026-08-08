@@ -20,9 +20,11 @@ from typer.testing import CliRunner
 from arcwright_ai.agent.invoker import InvocationResult
 from arcwright_ai.cli.app import app
 from arcwright_ai.cli.dispatch import (
+    _estimate_cost_range,
     _find_epic_stories,
     _find_story_file,
     _JsonlFileHandler,
+    _show_dispatch_confirmation,
 )
 from arcwright_ai.core.config import ApiConfig, RunConfig
 from arcwright_ai.core.exceptions import AgentBudgetError
@@ -1239,3 +1241,153 @@ def test_dispatch_continues_on_none_outcome(
     assert result.exit_code == 0, f"Unexpected exit {result.exit_code}:\n{result.output}"
     assert len(call_log["invoke_calls"]) == 2, "Both stories should be dispatched"
     assert "Epic halted" not in result.output
+
+
+# ---------------------------------------------------------------------------
+# Story 10.17 — _estimate_cost_range tests
+# ---------------------------------------------------------------------------
+
+
+def _write_run_yaml(runs_dir: Path, run_id: str, costs: list[str]) -> None:
+    """Write a minimal ``run.yaml`` with the given per-story cost strings.
+
+    Args:
+        runs_dir: The ``.arcwright-ai/runs`` directory (created if missing).
+        run_id: Run directory name (already time-ordered by convention).
+        costs: List of cost strings; one synthetic story slug is created per cost.
+    """
+    per_story = {f"slug-{i}": {"cost": cost} for i, cost in enumerate(costs)}
+    data = {"budget": {"per_story": per_story}}
+    run_dir = runs_dir / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "run.yaml").write_text(yaml.safe_dump(data), encoding="utf-8")
+
+
+def test_estimate_cost_range_returns_none_when_runs_dir_missing(tmp_path: Path) -> None:
+    """_estimate_cost_range returns None when the runs directory does not exist (AC #5)."""
+    result = _estimate_cost_range(tmp_path, story_count=3)
+    assert result is None
+
+
+def test_estimate_cost_range_returns_none_when_all_zero_cost(tmp_path: Path) -> None:
+    """_estimate_cost_range returns None when all stories have zero cost (AC #2, #4)."""
+    runs_dir = tmp_path / ".arcwright-ai" / "runs"
+    _write_run_yaml(runs_dir, "20260101-000000-aaaaaa", ["0", "0.0"])
+
+    result = _estimate_cost_range(tmp_path, story_count=3)
+
+    assert result is None
+
+
+def test_estimate_cost_range_single_run_single_story(tmp_path: Path) -> None:
+    """_estimate_cost_range projects a single sample across story_count (AC #1, #6)."""
+    runs_dir = tmp_path / ".arcwright-ai" / "runs"
+    _write_run_yaml(runs_dir, "20260101-000000-aaaaaa", ["0.5000"])
+
+    result = _estimate_cost_range(tmp_path, story_count=3)
+
+    assert result == (Decimal("1.50"), Decimal("1.50"), 1, 1)
+
+
+def test_estimate_cost_range_two_runs(tmp_path: Path) -> None:
+    """_estimate_cost_range computes min/max across samples from two distinct runs (AC #1)."""
+    runs_dir = tmp_path / ".arcwright-ai" / "runs"
+    _write_run_yaml(runs_dir, "20260101-000000-aaaaaa", ["0.50"])
+    _write_run_yaml(runs_dir, "20260102-000000-bbbbbb", ["1.20"])
+
+    result = _estimate_cost_range(tmp_path, story_count=2)
+
+    assert result == (Decimal("1.00"), Decimal("2.40"), 2, 2)
+
+
+def test_estimate_cost_range_limits_to_last_10_runs(tmp_path: Path) -> None:
+    """_estimate_cost_range only scans the most recent 10 run dirs (AC #3)."""
+    runs_dir = tmp_path / ".arcwright-ai" / "runs"
+    # Oldest run has an outlier low cost that must be excluded once 11 runs exist.
+    _write_run_yaml(runs_dir, "20260101-000000-000000", ["0.01"])
+    for i in range(1, 11):
+        _write_run_yaml(runs_dir, f"202601{i + 1:02d}-000000-{i:06d}", ["1.00"])
+
+    result = _estimate_cost_range(tmp_path, story_count=1)
+
+    assert result is not None
+    low, high, sample_count, runs_with_data = result
+    assert low == Decimal("1.00"), "Oldest run's 0.01 sample should have been excluded"
+    assert high == Decimal("1.00")
+    assert sample_count == 10
+    assert runs_with_data == 10
+
+
+def test_estimate_cost_range_skips_unparseable_run_yaml(tmp_path: Path) -> None:
+    """A run.yaml that fails to parse is silently skipped; valid runs still contribute (AC #5)."""
+    runs_dir = tmp_path / ".arcwright-ai" / "runs"
+    bad_dir = runs_dir / "20260101-000000-aaaaaa"
+    bad_dir.mkdir(parents=True)
+    # A YAML list (not a mapping) triggers ConfigError inside load_yaml.
+    (bad_dir / "run.yaml").write_text("- item1\n- item2\n", encoding="utf-8")
+    _write_run_yaml(runs_dir, "20260102-000000-bbbbbb", ["1.00"])
+
+    result = _estimate_cost_range(tmp_path, story_count=1)
+
+    assert result == (Decimal("1.00"), Decimal("1.00"), 1, 1)
+
+
+def test_estimate_cost_range_skips_non_mapping_story_entries(tmp_path: Path) -> None:
+    """A per_story entry that isn't a mapping is skipped; valid entries still contribute."""
+    runs_dir = tmp_path / ".arcwright-ai" / "runs"
+    run_dir = runs_dir / "20260101-000000-aaaaaa"
+    run_dir.mkdir(parents=True)
+    data = {
+        "budget": {
+            "per_story": {
+                "malformed-slug": "not-a-mapping",
+                "slug-0": {"cost": "1.00"},
+            }
+        }
+    }
+    (run_dir / "run.yaml").write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    result = _estimate_cost_range(tmp_path, story_count=1)
+
+    assert result == (Decimal("1.00"), Decimal("1.00"), 1, 1)
+
+
+# ---------------------------------------------------------------------------
+# Story 10.17 — _show_dispatch_confirmation cost range tests
+# ---------------------------------------------------------------------------
+
+
+def test_show_dispatch_confirmation_displays_estimated_range(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """_show_dispatch_confirmation prints the formatted range when historical data exists (AC #1)."""
+    runs_dir = tmp_path / ".arcwright-ai" / "runs"
+    _write_run_yaml(runs_dir, "20260101-000000-aaaaaa", ["0.50", "1.20"])
+    monkeypatch.setattr("arcwright_ai.cli.dispatch.typer.confirm", lambda *a, **k: None)
+
+    config = RunConfig(api=ApiConfig(claude_api_key="test-key"))
+    stories = [(tmp_path / "s.md", StoryId("5-1-x"), EpicId("epic-5"))]
+
+    _show_dispatch_confirmation("5", stories, config, project_root=tmp_path, skip_confirm=False)
+
+    captured = capsys.readouterr()
+    assert "Estimated cost range: $0.50 - $1.20 (based on 2 stories across 1 runs)" in captured.err
+
+
+def test_show_dispatch_confirmation_displays_fallback_without_data(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """_show_dispatch_confirmation prints the $?.?? fallback when no historical data exists (AC #2)."""
+    monkeypatch.setattr("arcwright_ai.cli.dispatch.typer.confirm", lambda *a, **k: None)
+
+    config = RunConfig(api=ApiConfig(claude_api_key="test-key"))
+    stories = [(tmp_path / "s.md", StoryId("5-1-x"), EpicId("epic-5"))]
+
+    _show_dispatch_confirmation("5", stories, config, project_root=tmp_path, skip_confirm=False)
+
+    captured = capsys.readouterr()
+    assert "Estimated cost range: $?.?? - $?.?? (no historical data available)" in captured.err

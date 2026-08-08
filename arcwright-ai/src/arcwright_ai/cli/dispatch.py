@@ -7,7 +7,7 @@ import json
 import logging
 import re
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -22,12 +22,14 @@ from arcwright_ai.cli.resume import (
 from arcwright_ai.core.config import ModelRole, RunConfig, load_config
 from arcwright_ai.core.constants import (
     DIR_ARCWRIGHT,
+    DIR_RUNS,
     EXIT_AGENT,
     EXIT_CONFIG,
     EXIT_INTERNAL,
     EXIT_SUCCESS,
     EXIT_VALIDATION,
     LOG_FILENAME,
+    RUN_METADATA_FILENAME,
 )
 from arcwright_ai.core.exceptions import (
     AgentBudgetError,
@@ -37,6 +39,7 @@ from arcwright_ai.core.exceptions import (
     ContextError,
     ProjectError,
 )
+from arcwright_ai.core.io import load_yaml
 from arcwright_ai.core.lifecycle import TaskState
 from arcwright_ai.core.types import BudgetState, EpicId, StoryId
 from arcwright_ai.engine.graph import build_story_graph
@@ -347,11 +350,70 @@ def _discover_project_root() -> Path:
     )
 
 
+def _estimate_cost_range(project_root: Path, story_count: int) -> tuple[Decimal, Decimal, int, int] | None:
+    """Estimate a total cost range for a dispatch from historical per-story costs.
+
+    Scans the most recent 10 run directories for per-story cost samples
+    recorded in ``run.yaml``, then projects the observed min/max per-story
+    cost across ``story_count`` stories.
+
+    Args:
+        project_root: Absolute path to the project root.
+        story_count: Number of stories about to be dispatched.
+
+    Returns:
+        ``(low_total, high_total, sample_count, runs_with_data)`` or ``None``
+        when no usable historical data exists (or ``story_count == 0``).
+    """
+    if story_count == 0:
+        return None
+
+    runs_dir = project_root / DIR_ARCWRIGHT / DIR_RUNS
+    if not runs_dir.exists():
+        return None
+
+    subdirs = sorted(p for p in runs_dir.iterdir() if p.is_dir())
+    subdirs = subdirs[-10:]
+
+    samples: list[Decimal] = []
+    runs_with_data: int = 0
+
+    for subdir in subdirs:
+        try:
+            raw = load_yaml(subdir / RUN_METADATA_FILENAME)
+        except ConfigError:
+            continue
+
+        per_story = raw.get("budget", {}).get("per_story", {})
+        run_samples: list[Decimal] = []
+        for entry in per_story.values():
+            if not isinstance(entry, dict):
+                continue
+            cost_str = entry.get("cost", "0")
+            try:
+                cost = Decimal(cost_str)
+            except (ValueError, InvalidOperation):
+                continue
+            if cost <= Decimal("0"):
+                continue
+            run_samples.append(cost)
+
+        if run_samples:
+            samples.extend(run_samples)
+            runs_with_data += 1
+
+    if not samples:
+        return None
+
+    return (min(samples) * story_count, max(samples) * story_count, len(samples), runs_with_data)
+
+
 def _show_dispatch_confirmation(
     epic_spec: str,
     stories: list[tuple[Path, StoryId, EpicId]],
     config: RunConfig,
     *,
+    project_root: Path,
     skip_confirm: bool = False,
 ) -> None:
     """Display a pre-dispatch summary and prompt the user to confirm.
@@ -364,6 +426,8 @@ def _show_dispatch_confirmation(
         epic_spec: Epic identifier string used in the confirmation header.
         stories: Ordered list of ``(story_path, StoryId, EpicId)`` tuples.
         config: Fully-loaded run configuration for budget ceiling display.
+        project_root: Absolute path to the project root, used to locate
+            historical run data for the estimated cost range.
         skip_confirm: When ``True`` the function returns immediately without
             prompting (equivalent to passing ``--yes``).
     """
@@ -380,10 +444,20 @@ def _show_dispatch_confirmation(
     typer.echo(f"     cost_per_run:     ${config.limits.cost_per_run}", err=True)
     typer.echo(f"     tokens_per_story: {config.limits.tokens_per_story:,}", err=True)
     typer.echo(f"     retry_budget:     {config.limits.retry_budget}", err=True)
-    typer.echo(
-        "\n   Estimated cost range: $?.?? - $?.?? (no historical data available)",
-        err=True,
-    )
+
+    estimate = _estimate_cost_range(project_root, story_count)
+    if estimate is None:
+        typer.echo(
+            "\n   Estimated cost range: $?.?? - $?.?? (no historical data available)",
+            err=True,
+        )
+    else:
+        low, high, sample_count, runs_with_data = estimate
+        typer.echo(
+            f"\n   Estimated cost range: ${low:.2f} - ${high:.2f} "
+            f"(based on {sample_count} stories across {runs_with_data} runs)",
+            err=True,
+        )
     typer.confirm("\nProceed with dispatch?", abort=True)
 
 
@@ -629,7 +703,9 @@ async def _dispatch_epic_async(epic_spec: str, *, skip_confirm: bool = False, re
         # --- Normal dispatch branch ---
         stories = all_stories
         try:
-            _show_dispatch_confirmation(epic_spec, stories, config, skip_confirm=skip_confirm)
+            _show_dispatch_confirmation(
+                epic_spec, stories, config, project_root=project_root, skip_confirm=skip_confirm
+            )
         except typer.Abort:
             typer.echo("\nDispatch cancelled by user.", err=True)
             return EXIT_SUCCESS
