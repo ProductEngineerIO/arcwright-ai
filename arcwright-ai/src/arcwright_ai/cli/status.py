@@ -135,6 +135,10 @@ ARCWRIGHT_API_CLAUDE_API_KEY=""
 
 # ==========================================================================
 # Methodology
+# (override only — configure these in .arcwright-ai/config.yaml instead)
+# These env vars let you override config.yaml without editing files, which
+# is useful in CI/CD pipelines or when running against multiple projects.
+# Most users should leave these commented out.
 # ==========================================================================
 # ARCWRIGHT_METHODOLOGY_ARTIFACTS_PATH="_spec"
 # ARCWRIGHT_METHODOLOGY_TYPE="bmad"
@@ -157,6 +161,7 @@ ARCWRIGHT_API_CLAUDE_API_KEY=""
 # LANGCHAIN_TRACING_V2="true"
 # LANGCHAIN_API_KEY="lsv2_pt_..."
 LANGCHAIN_PROJECT="arcwright-ai"
+LANGSMITH_ENDPOINT="https://api.smith.langchain.com"
 """
 
 

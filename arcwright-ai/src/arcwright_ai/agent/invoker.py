@@ -82,6 +82,8 @@ def _ensure_claude_remote_settings_file() -> None:
     Some Claude Code SDK builds abort startup when this file is absent.
     Arcwright does not require remote settings, so an empty object is safe.
     """
+    from arcwright_ai.core.exceptions import ConfigError
+
     remote_settings = _claude_meta_dir() / "remote-settings.json"
     if remote_settings.exists():
         return
@@ -93,10 +95,12 @@ def _ensure_claude_remote_settings_file() -> None:
         os.chmod(remote_settings, 0o600)
         logger.info("agent.remote_settings.created", extra={"data": {"path": str(remote_settings)}})
     except OSError as exc:
-        logger.warning(
-            "agent.remote_settings.create_failed",
-            extra={"data": {"path": str(remote_settings), "error": str(exc)}},
-        )
+        raise ConfigError(
+            f"Could not create {remote_settings}: {exc}\n\n"
+            "The Claude Code SDK requires this file to exist. Create it manually:\n\n"
+            f"    mkdir -p {remote_settings.parent} && echo '{{}}' > {remote_settings}\n\n"
+            "Then retry your dispatch command."
+        ) from exc
 
 
 def _suppress_bg_cancel_scope_errors() -> None:

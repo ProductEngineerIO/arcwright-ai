@@ -220,6 +220,8 @@ python3 -m venv .venv && source .venv/bin/activate && pip install -r requirement
 
 ### Quick Start
 
+> **Before you begin:** Complete [Installation](#installation) first. Any step below that runs `python -m arcwright_ai` requires your virtual environment to be active. Run `source .venv/bin/activate` once at the start of each session. Plain shell commands (like `cp`) do not require it.
+
 1. **Initialize** your project:
 
    ```bash
@@ -237,7 +239,9 @@ python3 -m venv .venv && source .venv/bin/activate && pip install -r requirement
    # Edit .env — at minimum set ARCWRIGHT_API_CLAUDE_API_KEY
    ```
 
-  Arcwright AI reads `.env` automatically on startup.
+   Arcwright AI reads `.env` automatically on startup.
+
+   > **Never commit `.env` to version control.** It contains secrets. `arcwright-ai init` adds `.env` to your `.gitignore` automatically.
 
 3. **Validate** your setup:
 

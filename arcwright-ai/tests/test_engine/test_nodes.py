@@ -304,10 +304,17 @@ async def test_budget_check_node_passes_through_when_running(make_story_state: S
 
 
 @pytest.mark.asyncio
-async def test_budget_check_node_transitions_retry_to_running(make_story_state: StoryState) -> None:
+async def test_budget_check_node_passes_through_retry_status_unchanged(make_story_state: StoryState) -> None:
+    """Routing-invariant regression guard: budget_check_node must not mutate RETRY status.
+
+    In the built graph, RETRY never reaches budget_check (preflight converts it
+    to RUNNING first).  This test ensures the removed RETRY → RUNNING transition
+    in budget_check_node does not reappear: if RETRY did somehow arrive here it
+    must be passed through unchanged, not silently promoted to RUNNING.
+    """
     state = make_story_state.model_copy(update={"status": TaskState.RETRY})
     result = await budget_check_node(state)
-    assert result.status == TaskState.RUNNING
+    assert result.status == TaskState.RETRY
 
 
 @pytest.mark.asyncio

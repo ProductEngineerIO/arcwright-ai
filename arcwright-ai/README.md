@@ -57,17 +57,6 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-Set your API key in `.env` (recommended and required for docs):
-
-Copy the generated `.env.example` and fill in your values:
-
-```bash
-cp .env.example .env
-# Edit .env — at minimum set ARCWRIGHT_API_CLAUDE_API_KEY
-```
-
-> **`.env` files** are loaded automatically by arcwright-ai on startup. The `.env` file is git-ignored by `init` — secrets never enter version control. See `.env.example` for the full list of supported variables.
-
 > **Tip — guaranteed local execution:** Use `python -m arcwright_ai` instead of
 > the bare `arcwright-ai` command. This always runs the copy installed in the
 > active virtual environment, never a stale global install.
