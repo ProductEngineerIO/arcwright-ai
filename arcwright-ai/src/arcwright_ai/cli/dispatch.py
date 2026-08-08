@@ -148,6 +148,10 @@ class _JsonlFileHandler(logging.FileHandler):
             record: The log record to write.
         """
         try:
+            stream = self.stream
+            if stream is None:
+                stream = self._open()
+                self.stream = stream
             data = getattr(record, "data", {})
             entry = {
                 "ts": datetime.now(UTC).isoformat(),
@@ -155,7 +159,7 @@ class _JsonlFileHandler(logging.FileHandler):
                 "level": record.levelname.lower(),
                 "data": data if isinstance(data, dict) else {},
             }
-            self.stream.write(json.dumps(entry) + "\n")
+            stream.write(json.dumps(entry) + "\n")
             self.flush()
         except Exception:
             self.handleError(record)

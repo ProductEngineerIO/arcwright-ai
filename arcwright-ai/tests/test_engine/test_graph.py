@@ -12,7 +12,7 @@ from langgraph.graph.state import CompiledStateGraph
 from arcwright_ai.agent.invoker import InvocationResult
 from arcwright_ai.core.config import ApiConfig, LimitsConfig, RunConfig
 from arcwright_ai.core.lifecycle import TaskState
-from arcwright_ai.core.types import BudgetState, EpicId, RunId, StoryId
+from arcwright_ai.core.types import BudgetState, ContextBundle, EpicId, RunId, StoryId
 from arcwright_ai.engine.graph import build_story_graph
 from arcwright_ai.engine.state import StoryState
 from arcwright_ai.validation.pipeline import PipelineOutcome, PipelineResult
@@ -158,8 +158,106 @@ def test_graph_contains_expected_conditional_routing() -> None:
 
     validate_branch = branches["validate"]["route_validation"].ends
     assert validate_branch["success"] == "commit"
-    assert validate_branch["retry"] == "budget_check"
+    assert validate_branch["retry"] == "preflight"
     assert validate_branch["escalated"] == "finalize"
+
+
+def test_graph_retry_edge_routes_through_preflight_not_budget_check() -> None:
+    """Retry routing must point to 'preflight', not 'budget_check' (AC: #1, #3)."""
+    graph = build_story_graph()
+    branches = graph.builder.branches
+    validate_branch = branches["validate"]["route_validation"].ends
+    assert validate_branch["retry"] == "preflight", (
+        "retry edge must target 'preflight' so context_bundle and worktree are rebuilt before next agent dispatch"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Retry freshness regression tests (Story 10-5)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_graph_retry_rebuilds_context_bundle_not_stale(
+    graph_project_state: StoryState,
+    mock_agent: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """preflight_node must be re-invoked on retry, rebuilding context_bundle from disk.
+
+    Simulates a changed artifact between the first attempt and the retry by
+    returning a different ContextBundle on each call to build_context_bundle.
+    Asserts that build_context_bundle is called twice (initial + retry) and
+    that the final context_bundle in state reflects the freshly rebuilt one,
+    not the stale bundle from the first attempt (AC: #2, #4).
+    """
+    initial_bundle = ContextBundle(story_content="## Story\n\nInitial context — attempt 1")
+    fresh_bundle = ContextBundle(story_content="## Story\n\nFresh context — artifact updated before retry")
+
+    build_context_call_count = 0
+
+    async def _mock_build_context(*args: object, **kwargs: object) -> ContextBundle:
+        nonlocal build_context_call_count
+        build_context_call_count += 1
+        return initial_bundle if build_context_call_count == 1 else fresh_bundle
+
+    monkeypatch.setattr("arcwright_ai.engine.nodes.build_context_bundle", _mock_build_context)
+
+    v6_pass = V6ValidationResult(
+        passed=True,
+        results=[V6CheckResult(check_name="file_existence", passed=True)],
+    )
+    feedback = ReflexionFeedback(
+        passed=False,
+        unmet_criteria=["1"],
+        feedback_per_criterion={"1": "Fix required"},
+        attempt_number=1,
+    )
+    fail_v3 = PipelineResult(
+        passed=False,
+        outcome=PipelineOutcome.FAIL_V3,
+        v6_result=v6_pass,
+        v3_result=V3ReflexionResult(
+            validation_result=ValidationResult(
+                passed=False,
+                ac_results=[ACResult(ac_id="1", passed=False, rationale="Missing impl")],
+            ),
+            feedback=feedback,
+            tokens_used=400,
+            cost=Decimal("0.008"),
+        ),
+        feedback=feedback,
+        tokens_used=400,
+        cost=Decimal("0.008"),
+    )
+    pass_result = PipelineResult(passed=True, outcome=PipelineOutcome.PASS, v6_result=v6_pass)
+
+    pipeline_call_count = 0
+
+    async def _mock_pipeline(*args: object, **kwargs: object) -> PipelineResult:
+        nonlocal pipeline_call_count
+        pipeline_call_count += 1
+        return fail_v3 if pipeline_call_count == 1 else pass_result
+
+    monkeypatch.setattr("arcwright_ai.engine.nodes.run_validation_pipeline", _mock_pipeline)
+
+    graph = build_story_graph()
+    result = await graph.ainvoke(graph_project_state)
+
+    final_status = result.get("status") if isinstance(result, dict) else result.status
+    final_bundle = result.get("context_bundle") if isinstance(result, dict) else result.context_bundle
+
+    assert final_status == TaskState.SUCCESS
+    # build_context_bundle called twice: once per preflight invocation (initial + retry)
+    assert build_context_call_count == 2, (
+        f"Expected build_context_bundle called 2 times (initial + retry), got {build_context_call_count}. "
+        "Stale context from first attempt would be reused if preflight does not re-run on retry."
+    )
+    # Final context_bundle must be the fresh one, not the stale initial bundle
+    assert final_bundle == fresh_bundle, (
+        "context_bundle in final state must equal the freshly rebuilt bundle from the retry preflight, "
+        "not the stale one from the first attempt."
+    )
 
 
 # ---------------------------------------------------------------------------

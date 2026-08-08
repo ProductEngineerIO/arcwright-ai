@@ -38,8 +38,11 @@ def build_story_graph() -> CompiledStateGraph[StoryState, Any, Any, Any]:
     Graph shape::
 
         START → preflight → budget_check →(ok)→ agent_dispatch → validate →(success)→ commit → finalize → END
-                                         ↓(exceeded)→ finalize → END        ↓(retry)→ budget_check
+                     ↑                   ↓(exceeded)→ finalize → END        ↓(retry)→ ┘
+                     └──────────────────────────────────────────────────────────────────
                                                                              ↓(escalated)→ finalize → END
+
+    Retry path: validate →(retry)→ preflight →(rebuilds context+worktree)→ budget_check →(ok)→ agent_dispatch
 
     Returns:
         A compiled LangGraph ``CompiledStateGraph`` ready for invocation via
@@ -70,7 +73,7 @@ def build_story_graph() -> CompiledStateGraph[StoryState, Any, Any, Any]:
     graph.add_conditional_edges(
         "validate",
         route_validation,
-        {"success": "commit", "retry": "budget_check", "escalated": "finalize"},
+        {"success": "commit", "retry": "preflight", "escalated": "finalize"},
     )
     graph.add_edge("commit", "finalize")
     graph.add_edge("finalize", END)
