@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import re
@@ -322,6 +323,25 @@ def _extract_epic_number(epic_spec: str) -> str:
         return prefixed_match.group(1)
 
     raise ProjectError(f"Invalid epic spec: {epic_spec!r}. Expected format: '4', 'epic-4', or 'EPIC-4'.")
+
+
+def _parse_epic_list(epics_arg: str) -> list[str]:
+    """Split a raw ``--epics`` CLI value into an ordered list of epic specs.
+
+    Splits on commas and/or whitespace and discards empty tokens.  This is a
+    normalization step only — it does not validate individual specs or
+    dedupe the list; that happens in :func:`_dispatch_epics_async`.
+
+    Args:
+        epics_arg: Raw ``--epics`` value (e.g., ``"2,3,4"``, ``"2 3 4"``, or
+            ``"epic-2, epic-3"``).
+
+    Returns:
+        Ordered list of raw epic-spec strings (may be empty if ``epics_arg``
+        contains no non-whitespace tokens).
+    """
+    tokens = re.split(r"[,\s]+", epics_arg.strip())
+    return [token for token in tokens if token]
 
 
 def _discover_project_root() -> Path:
@@ -1003,34 +1023,201 @@ async def _dispatch_epic_async(epic_spec: str, *, skip_confirm: bool = False, re
         handler.close()
 
 
+async def _dispatch_epics_async(epic_specs: list[str], *, skip_confirm: bool = False) -> int:
+    """Dispatch a sequence of epics, one at a time, in the order given.
+
+    Validates every epic spec up front (format + duplicates) and discovers
+    every epic's story list before any dispatch begins, so validation and the
+    single aggregate confirmation both happen before any side effects. Each
+    epic then runs through the unchanged :func:`_dispatch_epic_async`
+    pipeline (its own ``run_id``, worktrees, and run directory). The sequence
+    halts immediately on the first epic that does not return
+    :data:`EXIT_SUCCESS`; subsequent epics are never started.
+
+    Args:
+        epic_specs: Ordered list of raw epic-spec strings (e.g.,
+            ``["2", "epic-3", "EPIC-4"]``).
+        skip_confirm: When ``True``, skip the single aggregate pre-dispatch
+            confirmation prompt (equivalent to the ``--yes`` CLI flag).
+
+    Returns:
+        :data:`EXIT_SUCCESS` if every epic completes successfully, otherwise
+        the exit code returned by the epic that halted the sequence.
+    """
+    try:
+        project_root = _discover_project_root()
+    except ProjectError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        return EXIT_CONFIG
+
+    try:
+        config = load_config(project_root)
+    except ConfigError as exc:
+        typer.echo(f"Configuration error: {exc}", err=True)
+        return EXIT_CONFIG
+
+    artifacts_dir = project_root / config.methodology.artifacts_path / "implementation-artifacts"
+
+    # --- Validate every epic spec up front (fail fast, before touching any epic) ---
+    normalized_numbers: list[str] = []
+    for spec in epic_specs:
+        try:
+            normalized_numbers.append(_extract_epic_number(spec))
+        except ProjectError as exc:
+            typer.echo(f"Error: {exc}", err=True)
+            return EXIT_CONFIG
+
+    seen_numbers: set[str] = set()
+    duplicate_numbers: set[str] = set()
+    for number in normalized_numbers:
+        if number in seen_numbers:
+            duplicate_numbers.add(number)
+        seen_numbers.add(number)
+    if duplicate_numbers:
+        dup_list = ", ".join(sorted(duplicate_numbers))
+        typer.echo(f"Error: duplicate epic(s) in --epics list: {dup_list}", err=True)
+        return EXIT_CONFIG
+
+    # --- Discover each epic's story list up front (for the aggregate confirmation) ---
+    epic_stories: list[tuple[str, list[tuple[Path, StoryId, EpicId]]]] = []
+    for spec in epic_specs:
+        try:
+            stories = _find_epic_stories(spec, artifacts_dir)
+        except ProjectError as exc:
+            typer.echo(f"Error: {exc}", err=True)
+            return EXIT_CONFIG
+        epic_stories.append((spec, stories))
+
+    # --- Single aggregate confirmation ---
+    if not skip_confirm:
+        total_stories = sum(len(stories) for _, stories in epic_stories)
+        typer.echo(f"\n\U0001f4cb Sequential Epic Dispatch Plan \u2014 {len(epic_stories)} epics", err=True)
+        for spec, stories in epic_stories:
+            typer.echo(f"   Epic {spec}: {len(stories)} stories", err=True)
+        typer.echo(f"\n   Combined stories: {total_stories}", err=True)
+
+        aggregate_low = Decimal("0")
+        aggregate_high = Decimal("0")
+        have_estimate = False
+        for _, stories in epic_stories:
+            estimate = _estimate_cost_range(project_root, len(stories))
+            if estimate is not None:
+                low, high, _sample_count, _runs_with_data = estimate
+                aggregate_low += low
+                aggregate_high += high
+                have_estimate = True
+
+        if have_estimate:
+            typer.echo(
+                f"   Aggregate estimated cost range: ${aggregate_low:.2f} - ${aggregate_high:.2f}",
+                err=True,
+            )
+        else:
+            typer.echo(
+                "   Aggregate estimated cost range: $?.?? - $?.?? (no historical data available)",
+                err=True,
+            )
+
+        try:
+            typer.confirm("\nProceed with sequential dispatch?", abort=True)
+        except typer.Abort:
+            typer.echo("\nDispatch cancelled by user.", err=True)
+            return EXIT_SUCCESS
+
+    # --- Strict sequential dispatch; halt immediately on first failure ---
+    completed_specs: list[str] = []
+    for idx, spec in enumerate(epic_specs):
+        exit_code = await _dispatch_epic_async(spec, skip_confirm=True, resume=False)
+        if exit_code != EXIT_SUCCESS:
+            not_started = epic_specs[idx + 1 :]
+            typer.echo(f"\n\u26a0 Sequence halted: epic {spec} did not complete successfully.", err=True)
+            typer.echo(
+                f"   Completed before halt: {', '.join(completed_specs) if completed_specs else 'none'}",
+                err=True,
+            )
+            typer.echo(
+                f"   Never started: {', '.join(not_started) if not_started else 'none'}",
+                err=True,
+            )
+            return exit_code
+        completed_specs.append(spec)
+
+    # --- Aggregate success summary, read back from each completed epic's run metadata ---
+    total_stories_dispatched = sum(len(stories) for _, stories in epic_stories)
+    total_cost = Decimal("0")
+    total_tokens = 0
+    for spec in epic_specs:
+        prior_run = await _find_latest_run_for_epic(project_root, spec)
+        if prior_run is None:
+            continue
+        _, run_status = prior_run
+        budget_dict = run_status.budget
+        with contextlib.suppress(InvalidOperation):
+            total_cost += Decimal(str(budget_dict.get("estimated_cost", "0")))
+        total_tokens += int(budget_dict.get("total_tokens", 0) or 0)
+
+    typer.echo(
+        f"\n✓ Sequential dispatch complete — {len(epic_specs)} epics, {total_stories_dispatched} stories dispatched.",
+        err=True,
+    )
+    typer.echo(f"  💰 Combined cost: ${total_cost} | Combined tokens: {total_tokens}", err=True)
+    return EXIT_SUCCESS
+
+
 def dispatch_command(
     story: Annotated[str | None, typer.Option("--story", help="Story identifier (e.g., 2.7 or 2-7)")] = None,
     epic: Annotated[str | None, typer.Option("--epic", help="Epic identifier (e.g., 2, epic-2, or EPIC-2)")] = None,
+    epics: Annotated[
+        str | None,
+        typer.Option(
+            "--epics",
+            help='Comma or space-separated ordered list of epics to dispatch sequentially (e.g., "2,3,4")',
+        ),
+    ] = None,
     yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip pre-dispatch confirmation")] = False,
     resume: Annotated[
         bool, typer.Option("--resume", help="Resume a halted epic dispatch from the failure point")
     ] = False,
 ) -> None:
-    """Dispatch a story or epic for AI agent execution.
+    """Dispatch a story, epic, or ordered sequence of epics for AI agent execution.
 
     Args:
         story: Story identifier (e.g., 2.7 or 2-7).
         epic: Epic identifier (e.g., 2, epic-2, or EPIC-2).
+        epics: Ordered, comma/space-separated list of epics to dispatch
+            sequentially (e.g., "2,3,4"). Mutually exclusive with --story,
+            --epic, and --resume.
         yes: When set, skip the pre-dispatch confirmation prompt for epic
-            dispatch.
+            (or sequential multi-epic) dispatch.
         resume: When set, resume a halted epic dispatch from the failure point.
-            Can only be used with ``--epic``, not ``--story``.
+            Can only be used with ``--epic``, not ``--story`` or ``--epics``.
     """
+    if epics is not None and story:
+        typer.echo("Error: specify --epics or --story, not both.", err=True)
+        raise typer.Exit(code=1)
+    if epics is not None and epic:
+        typer.echo("Error: specify --epics or --epic, not both.", err=True)
+        raise typer.Exit(code=1)
+    if epics is not None and resume:
+        typer.echo("Error: --epics cannot be used with --resume.", err=True)
+        raise typer.Exit(code=1)
     if story and epic:
         typer.echo("Error: specify --story or --epic, not both.", err=True)
         raise typer.Exit(code=1)
-    if not story and not epic:
-        typer.echo("Error: specify --story or --epic.", err=True)
+    if not story and not epic and epics is None:
+        typer.echo("Error: specify --story, --epic, or --epics.", err=True)
         raise typer.Exit(code=1)
     if resume and story is not None:
         typer.echo("Error: --resume can only be used with --epic, not --story.", err=True)
         raise typer.Exit(code=1)
-    if story:
+
+    if epics is not None:
+        parsed_epics = _parse_epic_list(epics)
+        if not parsed_epics:
+            typer.echo("Error: --epics must contain at least one epic identifier.", err=True)
+            raise typer.Exit(code=1)
+        code = asyncio.run(_dispatch_epics_async(parsed_epics, skip_confirm=yes))
+    elif story:
         code = asyncio.run(_dispatch_story_async(story))
     else:
         assert epic is not None  # narrowing: validated above

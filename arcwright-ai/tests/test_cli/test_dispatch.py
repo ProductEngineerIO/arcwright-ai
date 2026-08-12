@@ -1391,3 +1391,102 @@ def test_show_dispatch_confirmation_displays_fallback_without_data(
 
     captured = capsys.readouterr()
     assert "Estimated cost range: $?.?? - $?.?? (no historical data available)" in captured.err
+
+
+# ---------------------------------------------------------------------------
+# Story 14.1 — Sequential multi-epic dispatch via --epics
+# ---------------------------------------------------------------------------
+
+
+def test_dispatch_epics_sequential_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Three epics dispatch sequentially in order; aggregate summary is printed (AC #1, #5, #8)."""
+    _make_epic_project(tmp_path, epic_num="5", story_count=1)
+    _make_epic_project(tmp_path, epic_num="6", story_count=1)
+    _make_epic_project(tmp_path, epic_num="7", story_count=1)
+    results = [_make_story_result("success") for _ in range(3)]
+    call_log = _patch_epic_deps(monkeypatch, tmp_path, results)
+
+    # Mixed comma/space separators exercise the AC #1 parsing formats.
+    result = runner.invoke(app, ["dispatch", "--epics", "5, 6 7", "--yes"])
+
+    assert result.exit_code == 0, f"Unexpected exit {result.exit_code}:\n{result.output}"
+    assert len(call_log["invoke_calls"]) == 3
+    story_ids = [str(s.story_id) for s in call_log["invoke_calls"]]  # type: ignore[attr-defined]
+    assert story_ids[0].startswith("5-1-")
+    assert story_ids[1].startswith("6-1-")
+    assert story_ids[2].startswith("7-1-")
+    assert "Sequential dispatch complete" in result.output
+    assert "3 epics" in result.output
+
+
+def test_dispatch_epics_halts_on_first_epic_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When epic 6's story escalates, epic 7 is never dispatched (AC #6, #7)."""
+    _make_epic_project(tmp_path, epic_num="5", story_count=1)
+    _make_epic_project(tmp_path, epic_num="6", story_count=1)
+    _make_epic_project(tmp_path, epic_num="7", story_count=1)
+    results = [
+        _make_story_result("success"),  # epic 5's story succeeds
+        _make_story_result("escalated"),  # epic 6's story fails
+    ]
+    call_log = _patch_epic_deps(monkeypatch, tmp_path, results)
+
+    result = runner.invoke(app, ["dispatch", "--epics", "5,6,7", "--yes"])
+
+    assert result.exit_code != 0, "Sequence should halt with a non-zero exit code"
+    assert len(call_log["invoke_calls"]) == 2, "Epic 7's story must never be dispatched"
+    assert "Sequence halted" in result.output
+    assert "epic 6" in result.output
+    assert "Completed before halt: 5" in result.output
+    assert "Never started: 7" in result.output
+
+
+def test_dispatch_epics_rejects_invalid_epic_spec(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An invalid epic spec in --epics is rejected before any dispatch begins (AC #1)."""
+    _make_epic_project(tmp_path, epic_num="5", story_count=1)
+    call_log = _patch_epic_deps(monkeypatch, tmp_path, [])
+
+    result = runner.invoke(app, ["dispatch", "--epics", "5,not-an-epic", "--yes"])
+
+    assert result.exit_code == 3, f"Invalid epic spec should exit EXIT_CONFIG (3), got {result.exit_code}"
+    assert len(call_log["invoke_calls"]) == 0, "No dispatch should occur when an epic spec is invalid"
+
+
+def test_dispatch_epics_rejects_duplicate_epic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A duplicate epic number in --epics is rejected before any dispatch begins (AC #1)."""
+    _make_epic_project(tmp_path, epic_num="5", story_count=1)
+    call_log = _patch_epic_deps(monkeypatch, tmp_path, [])
+
+    result = runner.invoke(app, ["dispatch", "--epics", "5,epic-5", "--yes"])
+
+    assert result.exit_code == 3, f"Duplicate epic should exit EXIT_CONFIG (3), got {result.exit_code}"
+    assert len(call_log["invoke_calls"]) == 0, "No dispatch should occur when the epic list has duplicates"
+
+
+def test_dispatch_rejects_epics_with_story() -> None:
+    """--epics together with --story exits with a non-zero code (AC #2)."""
+    result = runner.invoke(app, ["dispatch", "--epics", "2,3", "--story", "2.1"])
+    assert result.exit_code == 1
+
+
+def test_dispatch_rejects_epics_with_epic() -> None:
+    """--epics together with --epic exits with a non-zero code (AC #2)."""
+    result = runner.invoke(app, ["dispatch", "--epics", "2,3", "--epic", "2"])
+    assert result.exit_code == 1
+
+
+def test_dispatch_rejects_epics_with_resume() -> None:
+    """--epics together with --resume exits with a non-zero code (AC #3)."""
+    result = runner.invoke(app, ["dispatch", "--epics", "2,3", "--resume"])
+    assert result.exit_code == 1

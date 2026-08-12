@@ -798,6 +798,7 @@ Remains in MVP as a learning exercise, not a shipping feature. The spike answers
 - **FR37:** System supports a configurable default branch (`scm.default_branch`) with auto-detect fallback cascade (git remote show → gh repo view → origin/HEAD → fallback "main")
 - **FR38:** System fetches and fast-forward merges the remote default branch before worktree creation, ensuring stories start from the latest upstream state
 - **FR39:** System optionally auto-merges PRs via `gh pr merge --squash` after creation when `scm.auto_merge` is enabled in config
+- **FR40:** Developer can dispatch an ordered list of epics for sequential autonomous execution, with each epic run to full completion before the next epic begins, halting the entire sequence if any epic halts
 
 ## Non-Functional Requirements
 

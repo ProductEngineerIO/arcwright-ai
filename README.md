@@ -403,7 +403,8 @@ Arcwright AI is in **active development** and [available on PyPI](https://pypi.o
 | Phase | Focus |
 |-------|-------|
 | **MVP** | Sequential pipeline, V3+V6 validation, decision provenance, halt-and-notify, cost tracking, `--resume` |
-| **Growth** | Observe mode, deterministic replay, cost enforcement, parallel execution, public Python API, generated docs |
+| **Completed since MVP** | Cost enforcement (dual budget ceilings), public Python API, SCM auto-merge, role-based model registry, CI-aware merge wait, operator-facing error guidance, dynamic versioning |
+| **Growth** | Observe mode, deterministic replay, parallel execution, generated docs |
 | **Vision** | Methodology-agnostic orchestration, multi-user/team coordination, web UI, community workflow marketplace |
 
 ## BMAD Workflow Customizations

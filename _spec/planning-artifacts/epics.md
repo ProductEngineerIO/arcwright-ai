@@ -2130,3 +2130,38 @@ So that operator messaging stays consistent across surfaces and future error cat
 - `src/arcwright_ai/output/summary.py` or equivalent output layer — Summary rendering alignment if needed
 - `README.md` or `docs/validation-pipeline.md` — Troubleshooting matrix / operator guidance documentation
 - `tests/test_cli/`, `tests/test_engine/`, `tests/test_output/` — Cross-surface consistency tests
+
+---
+
+## Epic 14: Sequential Multi-Epic Dispatch
+
+> **Value prop**: Developer can queue multiple epics to run back-to-back in a single command — each epic runs to full completion (all its stories) before the next begins — without needing to babysit the CLI and manually re-invoke `dispatch` after every epic finishes.
+
+### Story 14.1: CLI and Dispatch-Loop Support for Sequential Multi-Epic Execution
+
+**Priority**: MEDIUM | **Points**: 5
+**Requirements**: FR40 (dispatch epic list), FR1 (dispatch epic), FR3 (sequential execution), FR4 (halt on failure), FR5 (resume halted epic)
+**Dependencies**: Story 5.1 (epic dispatch CLI to engine pipeline), Story 12.4 (dispatch loop halt on merge failure)
+
+**Description:**
+As a developer running Arcwright AI,
+I want to supply an ordered list of epics to `arcwright dispatch` via a new `--epics` option,
+So that each epic in the list is dispatched and fully completed — one at a time, in the order given — without me having to manually re-run `dispatch` after each epic finishes.
+
+**Acceptance Criteria:**
+
+**Given** the developer runs `arcwright dispatch --epics "2,3,4"` (or `epic-2,epic-3,epic-4`) **When** the command is parsed **Then** each element is validated using the same epic-spec rules as the existing `--epic` option (`"4"`, `"epic-4"`, `"EPIC-4"`), and an invalid element or duplicate epic in the list produces a clear error before any dispatch begins
+**And** `--epics` is mutually exclusive with `--story` and `--epic` — supplying more than one of these options produces a clear CLI error and no dispatch occurs
+**And** `--epics` is mutually exclusive with `--resume` — resuming remains scoped to a single halted epic via the existing `--resume --epic X` flow
+**And** a single upfront confirmation is shown (unless `--yes`) summarizing all epics in the sequence, their combined story count, and an aggregate historical cost estimate before any execution begins
+**And** epics are dispatched strictly in the order supplied — each epic runs as its own independent run (own `run_id`, own worktrees, own run directory under `.arcwright-ai/runs/`) using the existing per-epic dispatch pipeline, with the next epic only starting after the current epic's `run.complete` status is `COMPLETED`
+**And** if any epic in the sequence halts (validation exhaustion, budget exceeded, SDK/agent error, or merge failure) **Then** the sequence stops immediately — the CLI does not proceed to subsequent epics in the list — and the process exits with the halted epic's exit code
+**And** terminal output on a mid-sequence halt clearly states which epic halted, which epics in the list completed successfully beforehand, and which epics were never started
+**And** when every epic in the sequence completes successfully, the CLI prints an aggregate summary (total epics dispatched, total stories, combined cost, combined tokens) in addition to each epic's own existing per-epic summary output
+**And** existing single-epic behavior via `--epic` (including `--resume`) is unchanged — this story is purely additive
+**And** unit/integration tests cover: valid multi-epic sequence success, mid-sequence halt (subsequent epics not started), invalid/duplicate epic spec rejection, and mutual-exclusivity errors with `--story`/`--epic`/`--resume`
+**And** `ruff check`, `mypy --strict`, and `pytest` all pass with zero regressions
+
+**Files touched:**
+- `src/arcwright_ai/cli/dispatch.py` — New `--epics` option, sequence-loop orchestration reusing the existing per-epic dispatch pipeline (`_dispatch_epic_async` or an extracted helper), aggregate confirmation and summary output
+- `tests/test_cli/test_dispatch.py` — New coverage for sequential multi-epic dispatch, halt propagation, and CLI validation errors
